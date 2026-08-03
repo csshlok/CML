@@ -54,6 +54,18 @@ test("notifications remain accessible and manually dismissible", () => {
   assert.match(notificationsSource, /onClick=\{\(\) => dismiss\(notification\.id\)\}/);
 });
 
+test("persistent notifications support approve and cancel actions", () => {
+  assert.match(notificationsSource, /persistent\?: boolean/);
+  assert.match(notificationsSource, /if \(notification\.persistent\) return/);
+  assert.match(notificationsSource, /secondaryActionLabel\?: string/);
+  assert.match(notificationsSource, /notification\.onSecondaryAction\?\.\(\)/);
+  assert.match(appShellSource, /title: "Odin is requesting access"/);
+  assert.match(appShellSource, /secondaryActionLabel: "Cancel request"/);
+  assert.match(appShellSource, /actionLabel: "Approve"/);
+  assert.match(appShellSource, /listCliPairingChallenges\(\)/);
+  assert.match(appShellSource, /!onCodeConnectionsPage/);
+});
+
 test("model-dependent work reports outages once and confirms automatic recovery", () => {
   assert.match(appShellSource, /nextJobs\.blocked_local_model > 0/);
   assert.match(appShellSource, /title: "Local model unavailable"/);

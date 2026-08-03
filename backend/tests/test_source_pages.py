@@ -2562,7 +2562,6 @@ class SourcePageIndexingTests(unittest.TestCase):
             configure_embedding_runtime("sentence-transformers", None)
 
     def test_embedding_download_reports_missing_runtime_without_network(self) -> None:
-        import time
         from unittest.mock import patch
 
         from backend.app.core.embeddings import embedding_download_status, start_embedding_model_download

@@ -3948,7 +3948,7 @@ def _refresh_embedding_prerequisite() -> None:
             [now, *sorted(EMBEDDING_JOB_TYPES)],
         )
         conn.execute(
-            f"""
+            """
             UPDATE sources
             SET ingestion_stage = 'imported',
                 ingestion_status_detail = 'Memory search is ready. Source publication will resume.',

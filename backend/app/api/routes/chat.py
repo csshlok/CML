@@ -727,7 +727,7 @@ def stream_chat_context(payload: ChatContextRequest) -> StreamingResponse:
                         answer_parts.append(chunk)
                         yield _sse("token", {"text": chunk})
                     warnings.append("Answered by streaming local model runtime.")
-                except LLMRuntimeError as exc:
+                except LLMRuntimeError:
                     fallback = (
                         _build_conflict_answer(active_payload.prompt, citations)
                         if context.get("synthesis_strategy") == "explain_conflict"
@@ -1350,7 +1350,7 @@ def _build_retrieval_context(
             ))
             answer = result.text
             warnings.append(f"Answered by local model runtime: {result.provider} / {result.model}.")
-        except LLMRuntimeError as exc:
+        except LLMRuntimeError:
             answer = (
                 _build_conflict_answer(payload.prompt, citations)
                 if synthesis_guard["strategy"] == "explain_conflict"

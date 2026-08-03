@@ -218,7 +218,8 @@ function HomeView() {
       }
       if (typeCountResult.status === "fulfilled") setSourceTypeCounts(typeCountResult.value.items);
       if (totalResult.status === "fulfilled") setTotalSources(totalResult.value.total);
-      if (unsortedCountResult.status === "fulfilled") setUnsortedCount(unsortedCountResult.value.total);
+      if (unsortedCountResult.status === "fulfilled")
+        setUnsortedCount(unsortedCountResult.value.total);
       if (failedCountResult.status === "fulfilled") setFailedCount(failedCountResult.value.total);
       if (activityResult.status === "fulfilled") setActivityItems(activityResult.value.items);
       if (chatResult.status === "fulfilled") setChatSessions(chatResult.value);
@@ -284,6 +285,13 @@ function HomeView() {
   const workItems = useMemo(
     () => buildWorkItems(activityItems, projects, sources, preferences),
     [activityItems, projects, sources, preferences],
+  );
+  const hasHomeContent = Boolean(
+    totalSources ||
+    clusters.length ||
+    chatSessions.length ||
+    projects.length ||
+    activityItems.length,
   );
   const dense = preferences.density === "compact";
 
@@ -368,7 +376,11 @@ function HomeView() {
           <SourcesSection
             key={sectionId}
             title="Inbox"
-            description={unsortedCount ? `${unsortedCount} sources still need a cluster.` : "Everything is organized."}
+            description={
+              unsortedCount
+                ? `${unsortedCount} sources still need a cluster.`
+                : "Everything is organized."
+            }
             sources={unsortedSources}
             view="list"
             dense={dense}
@@ -378,22 +390,12 @@ function HomeView() {
       case "sourceTypes":
         return <SourceTypesSection key={sectionId} counts={sourceTypeCounts} dense={dense} />;
       case "timeline":
-        return (
-          <TimelineSection
-            key={sectionId}
-            items={activityItems.slice(0, 8)}
-            dense={dense}
-          />
-        );
+        return <TimelineSection key={sectionId} items={activityItems.slice(0, 8)} dense={dense} />;
       case "tasks":
         return <TasksSection key={sectionId} jobs={jobs} dense={dense} />;
       case "recentChats":
         return (
-          <RecentChatsSection
-            key={sectionId}
-            chats={chatSessions.slice(0, 6)}
-            dense={dense}
-          />
+          <RecentChatsSection key={sectionId} chats={chatSessions.slice(0, 6)} dense={dense} />
         );
     }
   }
@@ -417,45 +419,55 @@ function HomeView() {
           </div>
 
           <div className="flex max-w-full flex-wrap items-center gap-2">
-            <Select
-              value={preferences.type}
-              onValueChange={(value: HomeTypeFilter) =>
-                updatePreferences({ ...preferences, type: value }, true)
-              }
-            >
-              <SelectTrigger className="h-9 w-auto min-w-[132px] bg-card shadow-none" aria-label="Filter Home by source type">
-                <ListFilter className="mr-2 h-4 w-4 shrink-0 text-muted-foreground" />
-                <span className="mr-1 text-muted-foreground">Type:</span>
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent align="end">
-                {typeOptions.map((option) => (
-                  <SelectItem key={option.value} value={option.value}>
-                    {option.label}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
+            {hasHomeContent ? (
+              <>
+                <Select
+                  value={preferences.type}
+                  onValueChange={(value: HomeTypeFilter) =>
+                    updatePreferences({ ...preferences, type: value }, true)
+                  }
+                >
+                  <SelectTrigger
+                    className="h-9 w-auto min-w-[132px] bg-card shadow-none"
+                    aria-label="Filter Home by source type"
+                  >
+                    <ListFilter className="mr-2 h-4 w-4 shrink-0 text-muted-foreground" />
+                    <span className="mr-1 text-muted-foreground">Type:</span>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent align="end">
+                    {typeOptions.map((option) => (
+                      <SelectItem key={option.value} value={option.value}>
+                        {option.label}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
 
-            <Select
-              value={preferences.sort}
-              onValueChange={(value: HomeSort) =>
-                updatePreferences({ ...preferences, sort: value }, true)
-              }
-            >
-              <SelectTrigger className="h-9 w-auto min-w-[166px] bg-card shadow-none" aria-label="Sort Home">
-                <Clock3 className="mr-2 h-4 w-4 shrink-0 text-muted-foreground" />
-                <span className="mr-1 text-muted-foreground">Sort:</span>
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent align="end">
-                {sortOptions.map((option) => (
-                  <SelectItem key={option.value} value={option.value}>
-                    {option.label}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
+                <Select
+                  value={preferences.sort}
+                  onValueChange={(value: HomeSort) =>
+                    updatePreferences({ ...preferences, sort: value }, true)
+                  }
+                >
+                  <SelectTrigger
+                    className="h-9 w-auto min-w-[166px] bg-card shadow-none"
+                    aria-label="Sort Home"
+                  >
+                    <Clock3 className="mr-2 h-4 w-4 shrink-0 text-muted-foreground" />
+                    <span className="mr-1 text-muted-foreground">Sort:</span>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent align="end">
+                    {sortOptions.map((option) => (
+                      <SelectItem key={option.value} value={option.value}>
+                        {option.label}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </>
+            ) : null}
 
             <CustomizeHome
               preferences={preferences}
@@ -506,7 +518,9 @@ function CustomizeHome({
       >
         <div className="shrink-0 border-b border-border px-4 py-3">
           <h2 className="text-sm font-semibold">Customize Home</h2>
-          <p className="mt-1 text-xs text-muted-foreground">Choose what appears and in what order.</p>
+          <p className="mt-1 text-xs text-muted-foreground">
+            Choose what appears and in what order.
+          </p>
         </div>
 
         <div className="min-h-0 space-y-4 overflow-y-auto p-4">
@@ -580,7 +594,9 @@ function CustomizeHome({
                         })
                       }
                     />
-                    <span className="min-w-0 flex-1 truncate text-xs">{sectionLabels[sectionId]}</span>
+                    <span className="min-w-0 flex-1 truncate text-xs">
+                      {sectionLabels[sectionId]}
+                    </span>
                     <button
                       type="button"
                       className="rounded-sm p-1 text-muted-foreground hover:bg-accent hover:text-foreground disabled:opacity-30"
@@ -607,7 +623,12 @@ function CustomizeHome({
         </div>
 
         <div className="shrink-0 border-t border-border p-3">
-          <Button variant="ghost" size="sm" className="w-full justify-center gap-2" onClick={onReset}>
+          <Button
+            variant="ghost"
+            size="sm"
+            className="w-full justify-center gap-2"
+            onClick={onReset}
+          >
             <RotateCcw className="h-3.5 w-3.5" />
             Reset Home
           </Button>
@@ -642,7 +663,9 @@ function SegmentButton({
       onClick={onClick}
       className={cn(
         "flex min-h-8 flex-1 items-center justify-center gap-1.5 rounded px-2 text-xs transition-colors",
-        selected ? "bg-secondary font-medium text-foreground" : "text-muted-foreground hover:text-foreground",
+        selected
+          ? "bg-secondary font-medium text-foreground"
+          : "text-muted-foreground hover:text-foreground",
       )}
     >
       {children}
@@ -694,7 +717,10 @@ function AskVaultSection({
         />
         <div className="mt-3 flex flex-wrap items-center gap-2 border-t border-border pt-3">
           <Select value={scopeClusterId} onValueChange={onScopeChange}>
-            <SelectTrigger className="h-8 w-auto min-w-[150px] max-w-full border-0 bg-secondary text-xs shadow-none" aria-label="Chat scope">
+            <SelectTrigger
+              className="h-8 w-auto min-w-[150px] max-w-full border-0 bg-secondary text-xs shadow-none"
+              aria-label="Chat scope"
+            >
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
@@ -740,13 +766,7 @@ type AttentionItem = {
   search?: { filter: "unsorted" } | { section: "health" };
 };
 
-function AttentionSection({
-  items,
-  dense,
-}: {
-  items: AttentionItem[];
-  dense: boolean;
-}) {
+function AttentionSection({ items, dense }: { items: AttentionItem[]; dense: boolean }) {
   return (
     <ProductSection>
       <ProductSectionHeader
@@ -827,15 +847,31 @@ function WorkItemRow({ item, dense }: { item: WorkItem; dense: boolean }) {
     dense ? "min-h-12 py-2" : "min-h-16 py-3",
   );
   if (item.kind === "chat") {
-    return <Link to="/chat/$chatId" params={{ chatId: item.chatId }} className={className}>{content}</Link>;
+    return (
+      <Link to="/chat/$chatId" params={{ chatId: item.chatId }} className={className}>
+        {content}
+      </Link>
+    );
   }
   if (item.kind === "cluster") {
-    return <Link to="/clusters/$clusterId" params={{ clusterId: item.clusterId }} className={className}>{content}</Link>;
+    return (
+      <Link to="/clusters/$clusterId" params={{ clusterId: item.clusterId }} className={className}>
+        {content}
+      </Link>
+    );
   }
   if (item.kind === "project") {
-    return <Link to="/projects/$projectId" params={{ projectId: item.projectId }} className={className}>{content}</Link>;
+    return (
+      <Link to="/projects/$projectId" params={{ projectId: item.projectId }} className={className}>
+        {content}
+      </Link>
+    );
   }
-  return <Link to="/sources" search={{ source: item.sourceId }} className={className}>{content}</Link>;
+  return (
+    <Link to="/sources" search={{ source: item.sourceId }} className={className}>
+      {content}
+    </Link>
+  );
 }
 
 function WorkIcon({ kind }: { kind: WorkItem["kind"] }) {
@@ -866,7 +902,11 @@ function ActiveClustersSection({
       <ProductSectionHeader
         title="Active clusters"
         description="Recently used groups, ordered by your Home sort."
-        action={<Link to="/clusters" className="text-sm text-primary hover:underline">View all</Link>}
+        action={
+          <Link to="/clusters" className="text-sm text-primary hover:underline">
+            View all
+          </Link>
+        }
       />
       {clusters.length ? (
         <div className={sectionItemsClass(view)}>
@@ -889,10 +929,13 @@ function ActiveClustersSection({
                 <span className="min-w-0 flex-1">
                   <span className="block truncate text-sm font-medium">{cluster.name}</span>
                   <span className="mt-0.5 block text-xs text-muted-foreground">
-                    {metrics.total} {metrics.total === 1 ? "source" : "sources"} · {clusterStateText(cluster, metrics)}
+                    {metrics.total} {metrics.total === 1 ? "source" : "sources"} ·{" "}
+                    {clusterStateText(cluster, metrics)}
                   </span>
                 </span>
-                <time className="shrink-0 text-xs text-muted-foreground">{formatRelativeDay(cluster.lastActive)}</time>
+                <time className="shrink-0 text-xs text-muted-foreground">
+                  {formatRelativeDay(cluster.lastActive)}
+                </time>
               </Link>
             );
           })}
@@ -915,10 +958,7 @@ function SuggestedMovesSection({
 }) {
   if (suggestions.length === 0) return null;
 
-  async function decide(
-    suggestion: ClusterSuggestionRecord,
-    action: "accepted" | "dismissed",
-  ) {
+  async function decide(suggestion: ClusterSuggestionRecord, action: "accepted" | "dismissed") {
     await decideClusterSuggestion({
       source_id: suggestion.source_id,
       suggested_cluster_id: suggestion.suggested_cluster_id,
@@ -932,7 +972,11 @@ function SuggestedMovesSection({
       <ProductSectionHeader
         title="Suggested moves"
         description={`${suggestions.length} ${suggestions.length === 1 ? "source may fit" : "sources may fit"} better elsewhere.`}
-        action={<Link to="/clusters" className="text-sm text-primary hover:underline">Review all</Link>}
+        action={
+          <Link to="/clusters" className="text-sm text-primary hover:underline">
+            Review all
+          </Link>
+        }
       />
       <div className="divide-y divide-border">
         {suggestions.slice(0, 3).map((suggestion) => (
@@ -1039,7 +1083,9 @@ function SourcesSection({
           ))}
         </div>
       ) : (
-        <EmptyRow>{inbox ? "Nothing is waiting in your inbox." : "No sources match these filters."}</EmptyRow>
+        <EmptyRow>
+          {inbox ? "Nothing is waiting in your inbox." : "No sources match these filters."}
+        </EmptyRow>
       )}
     </ProductSection>
   );
@@ -1059,7 +1105,9 @@ function SourceRow({ source, dense }: { source: Source; dense: boolean }) {
       <Icon className="h-4 w-4 shrink-0 text-muted-foreground" />
       <span className="min-w-0 flex-1">
         <span className="block truncate text-sm font-medium">{source.title}</span>
-        <span className="mt-0.5 block truncate text-xs text-muted-foreground">{sourceSummaryText(source)}</span>
+        <span className="mt-0.5 block truncate text-xs text-muted-foreground">
+          {sourceSummaryText(source)}
+        </span>
       </span>
       <span className="shrink-0 text-xs text-muted-foreground">{sourceStateText(source)}</span>
     </Link>
@@ -1078,7 +1126,9 @@ function SourceTypesSection({
     .map((option) => ({
       ...option,
       total: counts
-        .filter((item) => sourceTypesForFilter(option.value)?.includes(item.source_type as SourceType))
+        .filter((item) =>
+          sourceTypesForFilter(option.value)?.includes(item.source_type as SourceType),
+        )
         .reduce((sum, item) => sum + item.total, 0),
     }));
   return (
@@ -1091,10 +1141,15 @@ function SourceTypesSection({
         {grouped.map((item) => (
           <div
             key={item.value}
-            className={cn("flex items-center justify-between gap-4 px-5", dense ? "min-h-10" : "min-h-12")}
+            className={cn(
+              "flex items-center justify-between gap-4 px-5",
+              dense ? "min-h-10" : "min-h-12",
+            )}
           >
             <dt className="text-sm">{item.label}</dt>
-            <dd className="text-sm tabular-nums text-muted-foreground">{item.total.toLocaleString()}</dd>
+            <dd className="text-sm tabular-nums text-muted-foreground">
+              {item.total.toLocaleString()}
+            </dd>
           </div>
         ))}
       </dl>
@@ -1102,19 +1157,17 @@ function SourceTypesSection({
   );
 }
 
-function TimelineSection({
-  items,
-  dense,
-}: {
-  items: ActivityRecord[];
-  dense: boolean;
-}) {
+function TimelineSection({ items, dense }: { items: ActivityRecord[]; dense: boolean }) {
   return (
     <ProductSection>
       <ProductSectionHeader
         title="Timeline"
         description="Recent changes across the library."
-        action={<Link to="/timeline" className="text-sm text-primary hover:underline">View all</Link>}
+        action={
+          <Link to="/timeline" className="text-sm text-primary hover:underline">
+            View all
+          </Link>
+        }
       />
       {items.length ? (
         <div className="divide-y divide-border">
@@ -1146,12 +1199,24 @@ function ActivityRow({ item, dense }: { item: ActivityRecord; dense: boolean }) 
     dense ? "min-h-12 py-2" : "min-h-15 py-3",
   );
   if (item.kind === "chat") {
-    return <Link to="/chat/$chatId" params={{ chatId: targetId }} className={className}>{content}</Link>;
+    return (
+      <Link to="/chat/$chatId" params={{ chatId: targetId }} className={className}>
+        {content}
+      </Link>
+    );
   }
   if (item.kind === "cluster") {
-    return <Link to="/clusters/$clusterId" params={{ clusterId: targetId }} className={className}>{content}</Link>;
+    return (
+      <Link to="/clusters/$clusterId" params={{ clusterId: targetId }} className={className}>
+        {content}
+      </Link>
+    );
   }
-  return <Link to="/sources" search={{ source: targetId }} className={className}>{content}</Link>;
+  return (
+    <Link to="/sources" search={{ source: targetId }} className={className}>
+      {content}
+    </Link>
+  );
 }
 
 function TasksSection({ jobs, dense }: { jobs: JobQueueStatus | null; dense: boolean }) {
@@ -1160,7 +1225,10 @@ function TasksSection({ jobs, dense }: { jobs: JobQueueStatus | null; dense: boo
         { label: "Running", value: jobs.running },
         { label: "Queued", value: jobs.queued },
         { label: "Waiting for model", value: jobs.blocked_local_model },
-        { label: "Waiting for setup", value: Math.max(0, jobs.blocked_setup_required - jobs.blocked_local_model) },
+        {
+          label: "Waiting for setup",
+          value: Math.max(0, jobs.blocked_setup_required - jobs.blocked_local_model),
+        },
         { label: "Waiting on another task", value: jobs.blocked_by_dependency },
         { label: "Needs review", value: jobs.manual_review },
         { label: "Paused", value: jobs.paused },
@@ -1172,14 +1240,21 @@ function TasksSection({ jobs, dense }: { jobs: JobQueueStatus | null; dense: boo
       <ProductSectionHeader
         title="Current tasks"
         description="Imports and background work that are still active."
-        action={<Link to="/tasks" className="text-sm text-primary hover:underline">Open Tasks</Link>}
+        action={
+          <Link to="/tasks" className="text-sm text-primary hover:underline">
+            Open Tasks
+          </Link>
+        }
       />
       {rows.length ? (
         <dl className="divide-y divide-border">
           {rows.map((row) => (
             <div
               key={row.label}
-              className={cn("flex items-center justify-between gap-4 px-5", dense ? "min-h-10" : "min-h-12")}
+              className={cn(
+                "flex items-center justify-between gap-4 px-5",
+                dense ? "min-h-10" : "min-h-12",
+              )}
             >
               <dt className="text-sm">{row.label}</dt>
               <dd className="text-sm tabular-nums text-muted-foreground">{row.value}</dd>
@@ -1193,19 +1268,17 @@ function TasksSection({ jobs, dense }: { jobs: JobQueueStatus | null; dense: boo
   );
 }
 
-function RecentChatsSection({
-  chats,
-  dense,
-}: {
-  chats: ChatSessionRecord[];
-  dense: boolean;
-}) {
+function RecentChatsSection({ chats, dense }: { chats: ChatSessionRecord[]; dense: boolean }) {
   return (
     <ProductSection>
       <ProductSectionHeader
         title="Recent conversations"
         description="Pick up where you left off."
-        action={<Link to="/chat" className="text-sm text-primary hover:underline">View all</Link>}
+        action={
+          <Link to="/chat" className="text-sm text-primary hover:underline">
+            View all
+          </Link>
+        }
       />
       {chats.length ? (
         <div className="divide-y divide-border">
@@ -1221,7 +1294,9 @@ function RecentChatsSection({
             >
               <MessageSquare className="h-4 w-4 shrink-0 text-muted-foreground" />
               <span className="min-w-0 flex-1 truncate text-sm font-medium">{chat.title}</span>
-              <time className="shrink-0 text-xs text-muted-foreground">{formatRelativeDay(chat.updated_at)}</time>
+              <time className="shrink-0 text-xs text-muted-foreground">
+                {formatRelativeDay(chat.updated_at)}
+              </time>
             </Link>
           ))}
         </div>
@@ -1314,11 +1389,32 @@ function buildWorkItems(
     const targetId = item.id.split(":", 2)[1] ?? "";
     if (preferences.type !== "all" && item.kind === "source" && !sourceIds.has(targetId)) continue;
     if (item.kind === "chat") {
-      items.push({ id: item.id, kind: "chat", title: item.title, detail: item.detail, time: item.time, chatId: targetId });
+      items.push({
+        id: item.id,
+        kind: "chat",
+        title: item.title,
+        detail: item.detail,
+        time: item.time,
+        chatId: targetId,
+      });
     } else if (item.kind === "cluster") {
-      items.push({ id: item.id, kind: "cluster", title: item.title, detail: item.detail, time: item.time, clusterId: targetId });
+      items.push({
+        id: item.id,
+        kind: "cluster",
+        title: item.title,
+        detail: item.detail,
+        time: item.time,
+        clusterId: targetId,
+      });
     } else {
-      items.push({ id: item.id, kind: "source", title: item.title, detail: item.detail, time: item.time, sourceId: targetId });
+      items.push({
+        id: item.id,
+        kind: "source",
+        title: item.title,
+        detail: item.detail,
+        time: item.time,
+        sourceId: targetId,
+      });
     }
   }
   for (const project of projects) {
@@ -1383,15 +1479,10 @@ function sourceTypesForFilter(filter: HomeTypeFilter): SourceType[] | undefined 
 }
 
 function sectionItemsClass(view: HomePreferences["view"]) {
-  return view === "grid"
-    ? "grid gap-px bg-border sm:grid-cols-2"
-    : "divide-y divide-border";
+  return view === "grid" ? "grid gap-px bg-border sm:grid-cols-2" : "divide-y divide-border";
 }
 
-function clusterStateText(
-  cluster: Cluster,
-  metrics: { total: number; indexed: number },
-) {
+function clusterStateText(cluster: Cluster, metrics: { total: number; indexed: number }) {
   if (cluster.lifecycle === "issue") return "Needs attention";
   if (cluster.lifecycle === "paused") return "Paused";
   if (metrics.total > 0 && metrics.indexed < metrics.total) return `${metrics.indexed} indexed`;

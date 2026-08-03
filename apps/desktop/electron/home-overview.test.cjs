@@ -34,6 +34,8 @@ const {
 } = preferencesModule.exports;
 
 test("Home presents a working overview instead of repeated dashboard actions", () => {
+  assert.match(homeSource, /const hasHomeContent = Boolean\(/);
+  assert.match(homeSource, /\{hasHomeContent \? \(/);
   assert.match(homeSource, />Type:<\/span>/);
   assert.match(homeSource, />Sort:<\/span>/);
   assert.match(homeSource, /\sCustomize\s*<\/Button>/);

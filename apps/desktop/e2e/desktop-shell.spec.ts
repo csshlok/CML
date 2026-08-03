@@ -3,38 +3,41 @@ import { expect, test, type Page } from "@playwright/test";
 const backendOrigin = "http://127.0.0.1:7343";
 
 async function installDesktopBridge(page: Page) {
-  await page.addInitScript(({ origin }) => {
-    const state = { maximized: false, fullScreen: false };
-    Object.defineProperty(window, "cmlDesktop", {
-      configurable: true,
-      value: {
-        getBackendUrl: async () => origin,
-        getBackendToken: async () => "rendered-shell-test-token",
-        getSetupState: async () => ({
-          phase: "complete",
-          profile: { display_name: "Shlok", avatar_path: "" },
-        }),
-        getMcpFeatureFlags: async () => ({
-          chatgpt_mcp_setup: true,
-          secure_mcp_tunnel: true,
-          chatgpt_mcp_write_tools: true,
-          mcp_streaming: false,
-          mcp_remote_http: false,
-        }),
-        getMcpLauncher: async () => null,
-        getTunnelStatus: async () => null,
-        onTunnelStatusChanged: () => () => undefined,
-        notifyRendererReady: async () => undefined,
-        windowControls: {
-          getState: async () => state,
-          onStateChanged: () => () => undefined,
-          minimize: async () => undefined,
-          toggleMaximize: async () => ({ ...state, maximized: !state.maximized }),
-          close: async () => undefined,
+  await page.addInitScript(
+    ({ origin }) => {
+      const state = { maximized: false, fullScreen: false };
+      Object.defineProperty(window, "cmlDesktop", {
+        configurable: true,
+        value: {
+          getBackendUrl: async () => origin,
+          getBackendToken: async () => "rendered-shell-test-token",
+          getSetupState: async () => ({
+            phase: "complete",
+            profile: { display_name: "Shlok", avatar_path: "" },
+          }),
+          getMcpFeatureFlags: async () => ({
+            chatgpt_mcp_setup: true,
+            secure_mcp_tunnel: true,
+            chatgpt_mcp_write_tools: true,
+            mcp_streaming: false,
+            mcp_remote_http: false,
+          }),
+          getMcpLauncher: async () => null,
+          getTunnelStatus: async () => null,
+          onTunnelStatusChanged: () => () => undefined,
+          notifyRendererReady: async () => undefined,
+          windowControls: {
+            getState: async () => state,
+            onStateChanged: () => () => undefined,
+            minimize: async () => undefined,
+            toggleMaximize: async () => ({ ...state, maximized: !state.maximized }),
+            close: async () => undefined,
+          },
         },
-      },
-    });
-  }, { origin: backendOrigin });
+      });
+    },
+    { origin: backendOrigin },
+  );
 }
 
 async function installBaseRoutes(page: Page) {
@@ -47,9 +50,7 @@ async function installBaseRoutes(page: Page) {
     if (url.pathname.endsWith("/folders")) return route.fulfill({ json: emptyPage });
     return route.fulfill({ json: [] });
   });
-  await page.route(`${backendOrigin}/health`, (route) =>
-    route.fulfill({ json: { status: "ok" } }),
-  );
+  await page.route(`${backendOrigin}/health`, (route) => route.fulfill({ json: { status: "ok" } }));
   await page.route(`${backendOrigin}/api/v1/system/backend-identity`, (route) =>
     route.fulfill({ json: { service: "cml-backend", api_prefix: "/api/v1" } }),
   );
@@ -58,6 +59,94 @@ async function installBaseRoutes(page: Page) {
 test.beforeEach(async ({ page }) => {
   await installDesktopBridge(page);
   await installBaseRoutes(page);
+});
+
+test("Odin pairing is actionable outside Code Connections", async ({ page }) => {
+  test.setTimeout(60_000);
+  const consoleProblems: string[] = [];
+  page.on("console", (message) => {
+    if (message.type() === "error" || message.type() === "warning") {
+      consoleProblems.push(`${message.type()}: ${message.text()}`);
+    }
+  });
+  page.on("pageerror", (error) => consoleProblems.push(`pageerror: ${error.message}`));
+
+  const vault = {
+    id: "vault-1",
+    name: "My Library",
+    path: "T:\\test",
+    created_at: "2026-08-01T09:00:00Z",
+    updated_at: "2026-08-01T09:00:00Z",
+  };
+  let pending = [
+    {
+      id: "pairing-1",
+      requester_name: "PowerShell on this computer",
+      requested_scopes: ["project_read", "project_write"],
+      executable_fingerprint: "0123456789abcdef0123456789abcdef",
+      expires_at: "2026-08-01T10:00:00Z",
+    },
+  ];
+  let approved = false;
+  let cancelled = false;
+
+  await page.route(`${backendOrigin}/api/v1/system/unlock/status`, (route) =>
+    route.fulfill({ json: { ready: true, state: "ready", secured_vault_count: 0 } }),
+  );
+  await page.route(`${backendOrigin}/api/v1/vaults`, (route) => route.fulfill({ json: [vault] }));
+  await page.route(
+    `${backendOrigin}/api/v1/cli-auth/pairing-challenges?status=pending&limit=20`,
+    (route) => route.fulfill({ json: pending }),
+  );
+  await page.route(
+    `${backendOrigin}/api/v1/cli-auth/pairing-challenges/pairing-1/approve`,
+    (route) => {
+      approved = true;
+      pending = [];
+      return route.fulfill({
+        json: { id: "client-1", display_name: "PowerShell on this computer" },
+      });
+    },
+  );
+  await page.route(
+    `${backendOrigin}/api/v1/cli-auth/pairing-challenges/pairing-1/deny`,
+    (route) => {
+      cancelled = true;
+      pending = [];
+      return route.fulfill({ json: { id: "pairing-1", status: "denied" } });
+    },
+  );
+
+  await page.goto(`/home?backendUrl=${encodeURIComponent(backendOrigin)}`);
+  const pairingNotice = page.getByRole("status").filter({ hasText: "Odin is requesting access" });
+  await expect(pairingNotice).toBeVisible({ timeout: 15_000 });
+  await expect(pairingNotice).toContainText("PowerShell on this computer");
+  await expect(pairingNotice).toContainText("project read, project write");
+  await expect(pairingNotice.getByRole("button", { name: "Cancel request" })).toBeVisible();
+  if (process.env.CML_QA_ODIN_PAIRING_SCREENSHOT) {
+    await page.screenshot({ path: process.env.CML_QA_ODIN_PAIRING_SCREENSHOT, fullPage: false });
+  }
+  await pairingNotice.getByRole("button", { name: "Approve" }).click();
+  await expect.poll(() => approved).toBe(true);
+  expect(cancelled).toBe(false);
+  await expect(page.getByText("Odin access approved")).toBeVisible();
+
+  await page.goto("/settings?section=connections");
+  await expect(page.getByRole("heading", { name: "Install Odin" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Odin code projects" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Odin command-line access" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Odin command reference" })).toBeVisible();
+  const guideButton = page.getByRole("link", { name: "How to install and connect" });
+  await guideButton.click();
+  expect(consoleProblems).toEqual([]);
+  await expect(guideButton).toHaveAttribute("aria-expanded", "true");
+  const guide = page.getByRole("region", { name: "Install and connect Odin" });
+  await expect(guide).toBeVisible();
+  await expect(guide.getByText("odin auth pair", { exact: true })).toBeVisible();
+  await expect(
+    guide.getByText('odin project add . --name "My Project"', { exact: true }),
+  ).toBeVisible();
+  expect(consoleProblems).toEqual([]);
 });
 
 test("default Home places Quick actions in the second section", async ({ page }) => {
@@ -74,10 +163,15 @@ test("default Home places Quick actions in the second section", async ({ page })
   await expect(page.getByRole("heading", { name: "Home" })).toBeVisible();
   await expect(page.getByRole("heading", { name: "Ask Vault" })).toBeVisible();
   await expect(page.getByRole("heading", { name: "Quick actions" })).toBeAttached();
+  await expect(page.getByLabel("Filter Home by source type")).toHaveCount(0);
+  await expect(page.getByLabel("Sort Home")).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Customize Home" })).toBeVisible();
 
-  const visibleSectionText = await page.locator("main section").evaluateAll((sections) =>
-    sections.map((section) => section.textContent?.replace(/\s+/g, " ").trim() ?? ""),
-  );
+  const visibleSectionText = await page
+    .locator("main section")
+    .evaluateAll((sections) =>
+      sections.map((section) => section.textContent?.replace(/\s+/g, " ").trim() ?? ""),
+    );
   expect(visibleSectionText[0]).toContain("Ask Vault");
   expect(visibleSectionText[1]).toContain("Add source");
   expect(visibleSectionText[1]).toContain("Start chat");
@@ -194,7 +288,10 @@ test("Tasks opens on active work and clears stale detail across filters", async 
   await page.goto("/tasks");
   await expect(page).toHaveTitle("Tasks");
   await expect(page.getByRole("heading", { name: "Tasks" })).toBeVisible();
-  await expect(page.getByRole("button", { name: /Active 2/ })).toHaveAttribute("aria-pressed", "true");
+  await expect(page.getByRole("button", { name: /Active 2/ })).toHaveAttribute(
+    "aria-pressed",
+    "true",
+  );
   await expect(page.getByText("Update cluster details", { exact: true })).toBeVisible();
   await expect(page.getByText("Organize analyzed sources", { exact: true })).toBeVisible();
   await expect(page.getByText("Vault Integrity Check", { exact: true })).not.toBeVisible();
@@ -231,27 +328,31 @@ test("timeline refreshes on demand and once per visible minute", async ({ page }
   let activityRequests = 0;
   await page.route(`${backendOrigin}/api/v1/vaults`, (route) =>
     route.fulfill({
-      json: [{
-        id: "vault-timeline",
-        name: "Timeline vault",
-        path: "T:\\timeline",
-        created_at: "2026-07-31T08:00:00Z",
-        updated_at: "2026-07-31T08:00:00Z",
-      }],
+      json: [
+        {
+          id: "vault-timeline",
+          name: "Timeline vault",
+          path: "T:\\timeline",
+          created_at: "2026-07-31T08:00:00Z",
+          updated_at: "2026-07-31T08:00:00Z",
+        },
+      ],
     }),
   );
   await page.route(`${backendOrigin}/api/v1/activity*`, (route) => {
     activityRequests += 1;
     return route.fulfill({
       json: {
-        items: [{
-          id: `activity-${activityRequests}`,
-          kind: "source",
-          time: "2026-07-31T08:30:00Z",
-          title: `Timeline activity ${activityRequests}`,
-          detail: `Refresh response ${activityRequests}`,
-          href: "/sources",
-        }],
+        items: [
+          {
+            id: `activity-${activityRequests}`,
+            kind: "source",
+            time: "2026-07-31T08:30:00Z",
+            title: `Timeline activity ${activityRequests}`,
+            detail: `Refresh response ${activityRequests}`,
+            href: "/sources",
+          },
+        ],
         next_cursor: null,
         has_more: false,
         total: 1,
@@ -290,7 +391,9 @@ test("timeline refreshes on demand and once per visible minute", async ({ page }
   }
 });
 
-test("Profile shows its library and the Health command opens a draggable latest check", async ({ page }) => {
+test("Profile shows its library and the Health command opens a draggable latest check", async ({
+  page,
+}) => {
   const consoleProblems: string[] = [];
   page.on("console", (message) => {
     if (message.type() === "error" || message.type() === "warning") {
@@ -303,15 +406,17 @@ test("Profile shows its library and the Health command opens a draggable latest 
   await page.route(
     (url) => url.origin === backendOrigin && url.pathname === "/api/v1/vaults",
     (route) =>
-    route.fulfill({
-      json: [{
-        id: "vault-profile",
-        name: "Research Library",
-        path: "T:\\research",
-        created_at: now,
-        updated_at: now,
-      }],
-    }),
+      route.fulfill({
+        json: [
+          {
+            id: "vault-profile",
+            name: "Research Library",
+            path: "T:\\research",
+            created_at: now,
+            updated_at: now,
+          },
+        ],
+      }),
   );
   await page.route(`${backendOrigin}/api/v1/system/unlock/status`, (route) =>
     route.fulfill({
@@ -355,7 +460,9 @@ test("Profile shows its library and the Health command opens a draggable latest 
   );
 
   await page.goto("/home");
-  await expect(page.locator(".vault-mobile-status").getByText("Ready", { exact: true })).toBeVisible({
+  await expect(
+    page.locator(".vault-mobile-status").getByText("Ready", { exact: true }),
+  ).toBeVisible({
     timeout: 15_000,
   });
   await page.goto("/settings?section=profile");
@@ -393,7 +500,9 @@ test("Profile shows its library and the Health command opens a draggable latest 
   }
 });
 
-test("assistant messages render structured Markdown without visible delimiters", async ({ page }) => {
+test("assistant messages render structured Markdown without visible delimiters", async ({
+  page,
+}) => {
   const consoleProblems: string[] = [];
   page.on("console", (message) => {
     if (message.type() === "error" || message.type() === "warning") {
@@ -420,32 +529,33 @@ test("assistant messages render structured Markdown without visible delimiters",
   };
   await page.route(`${backendOrigin}/api/v1/vaults`, (route) =>
     route.fulfill({
-      json: [{
-        id: "vault-rendered",
-        name: "Rendered vault",
-        path: "T:\\rendered",
-        created_at: now,
-        updated_at: now,
-      }],
+      json: [
+        {
+          id: "vault-rendered",
+          name: "Rendered vault",
+          path: "T:\\rendered",
+          created_at: now,
+          updated_at: now,
+        },
+      ],
     }),
   );
-  await page.route(
-    `${backendOrigin}/api/v1/chat/sessions/${sessionId}/metadata`,
-    (route) => route.fulfill({ json: session }),
+  await page.route(`${backendOrigin}/api/v1/chat/sessions/${sessionId}/metadata`, (route) =>
+    route.fulfill({ json: session }),
   );
-  await page.route(
-    `${backendOrigin}/api/v1/chat/sessions/${sessionId}/timeline*`,
-    (route) =>
-      route.fulfill({
-        json: {
-          session_id: sessionId,
-          items: [{
+  await page.route(`${backendOrigin}/api/v1/chat/sessions/${sessionId}/timeline*`, (route) =>
+    route.fulfill({
+      json: {
+        session_id: sessionId,
+        items: [
+          {
             message_type: "assistant_message",
             sort_key: `${now}:message-assistant`,
             id: "message-assistant",
             session_id: sessionId,
             role: "assistant",
-            content: "### Database fundamentals\n\n- *External level*: users' views\n  - **Conceptual level**: shared schema\n\nThis is a **bold assessment** with safe <script>text</script>.",
+            content:
+              "### Database fundamentals\n\n- *External level*: users' views\n  - **Conceptual level**: shared schema\n\nThis is a **bold assessment** with safe <script>text</script>.",
             clusters_used: [],
             citations: [],
             warnings: [],
@@ -456,12 +566,13 @@ test("assistant messages render structured Markdown without visible delimiters",
             reply_to_message_id: null,
             generation_state: "completed",
             attachments: [],
-          }],
-          next_cursor: null,
-          latest_cursor: `${now}:message-assistant`,
-          has_more: false,
-        },
-      }),
+          },
+        ],
+        next_cursor: null,
+        latest_cursor: `${now}:message-assistant`,
+        has_more: false,
+      },
+    }),
   );
   await page.route(`${backendOrigin}/api/v1/models/runtime`, (route) =>
     route.fulfill({ json: { state: "ready", available: true } }),
@@ -528,13 +639,15 @@ test("Sources preserves nested folders inside a grouped folder import", async ({
 
   await page.route(`${backendOrigin}/api/v1/vaults`, (route) =>
     route.fulfill({
-      json: [{
-        id: "vault-folders",
-        name: "Folder Library",
-        path: "T:\\folder-library",
-        created_at: now,
-        updated_at: now,
-      }],
+      json: [
+        {
+          id: "vault-folders",
+          name: "Folder Library",
+          path: "T:\\folder-library",
+          created_at: now,
+          updated_at: now,
+        },
+      ],
     }),
   );
   await page.route(
@@ -545,10 +658,38 @@ test("Sources preserves nested folders inside a grouped folder import", async ({
           root_path: rootPath,
           total_files: 20,
           items: [
-            { path: "a", parent_path: "", name: "a", depth: 0, source_count: 8, direct_source_count: 5 },
-            { path: "b", parent_path: "", name: "b", depth: 0, source_count: 6, direct_source_count: 6 },
-            { path: "c", parent_path: "", name: "c", depth: 0, source_count: 2, direct_source_count: 2 },
-            { path: "a/deep", parent_path: "a", name: "deep", depth: 1, source_count: 3, direct_source_count: 3 },
+            {
+              path: "a",
+              parent_path: "",
+              name: "a",
+              depth: 0,
+              source_count: 8,
+              direct_source_count: 5,
+            },
+            {
+              path: "b",
+              parent_path: "",
+              name: "b",
+              depth: 0,
+              source_count: 6,
+              direct_source_count: 6,
+            },
+            {
+              path: "c",
+              parent_path: "",
+              name: "c",
+              depth: 0,
+              source_count: 2,
+              direct_source_count: 2,
+            },
+            {
+              path: "a/deep",
+              parent_path: "a",
+              name: "deep",
+              depth: 1,
+              source_count: 3,
+              direct_source_count: 3,
+            },
           ],
         },
       }),
@@ -577,7 +718,9 @@ test("Sources preserves nested folders inside a grouped folder import", async ({
         : prefix === "a"
           ? [source("source-a", "a-note.txt", "a/a-note.txt")]
           : [source("source-root", "root-note.txt", "root-note.txt")];
-      return route.fulfill({ json: { items, next_cursor: null, has_more: false, total: items.length } });
+      return route.fulfill({
+        json: { items, next_cursor: null, has_more: false, total: items.length },
+      });
     },
   );
   await page.route(
@@ -639,13 +782,15 @@ test("Bridge presents connected AI write-back as a guided workflow", async ({ pa
   );
   await page.route(`${backendOrigin}/api/v1/vaults`, (route) =>
     route.fulfill({
-      json: [{
-        id: "vault-bridge",
-        name: "Connected Library",
-        path: "T:\\connected-library",
-        created_at: now,
-        updated_at: now,
-      }],
+      json: [
+        {
+          id: "vault-bridge",
+          name: "Connected Library",
+          path: "T:\\connected-library",
+          created_at: now,
+          updated_at: now,
+        },
+      ],
     }),
   );
 
@@ -653,15 +798,23 @@ test("Bridge presents connected AI write-back as a guided workflow", async ({ pa
   await expect(page).toHaveTitle("Bridge");
   await expect(page.getByRole("heading", { name: "Connect AI tools" })).toBeVisible();
   await expect(page.getByRole("button", { name: "Connect", exact: true })).toBeVisible();
-  await expect(page.getByRole("button", { name: "Access", exact: true })).toBeVisible();
   await expect(page.getByRole("button", { name: "Review", exact: true })).toBeVisible();
   await expect(page.getByRole("button", { name: "Activity", exact: true })).toBeVisible();
-  await expect(page.getByRole("button", { name: "Manual tools", exact: true })).toBeVisible();
-  await expect(page.getByRole("heading", { name: "Save useful answers without copying" })).toBeVisible();
-  await expect(page.getByText(/Save this answer to Vault/)).toBeVisible();
+  await expect(page.getByRole("button", { name: "Advanced", exact: true })).toBeVisible();
+  await expect(
+    page.getByText("Choose what the assistant can access", { exact: true }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("heading", { name: "Save useful answers without copying" }),
+  ).toHaveCount(0);
   await expect(page.getByText("Connections allowed", { exact: true })).toBeVisible();
+  if (process.env.CML_QA_BRIDGE_DEFAULT_SCREENSHOT) {
+    await page.screenshot({ path: process.env.CML_QA_BRIDGE_DEFAULT_SCREENSHOT, fullPage: false });
+  }
 
-  await page.getByRole("button", { name: "Manual tools", exact: true }).click();
+  await page.getByRole("button", { name: "Advanced", exact: true }).click();
+  await expect(page.getByRole("button", { name: "Connection access", exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "Manual save", exact: true }).click();
   await expect(page.getByText(/fallback for tools that cannot call Vault directly/i)).toBeVisible();
   await expect(page.getByText("Set up an AI connection", { exact: true })).not.toBeVisible();
   expect(consoleProblems).toEqual([]);
@@ -706,7 +859,7 @@ test("project detail distinguishes Odin freshness from Git changes", async ({ pa
     active_structure_snapshot_id: "snapshot-active",
     active_retrieval_snapshot_id: "snapshot-active",
     candidate_snapshot_id: null,
-    active_run_id: null,
+    active_run_id: "run-active",
     active_snapshot: null,
     brief: "A rendered project used to verify freshness semantics.",
     languages: { TypeScript: 12 },
@@ -715,6 +868,18 @@ test("project detail distinguishes Odin freshness from Git changes", async ({ pa
     source_count: 578,
     created_at: "2026-07-30T08:00:00Z",
     updated_at: "2026-07-30T08:30:00Z",
+  };
+  const activeRun = {
+    id: "run-active",
+    project_id: project.id,
+    status: "running",
+    phase: "retrieval_build",
+    eligible_total: 593,
+    completed_count: 324,
+    phase_total_count: 593,
+    phase_completed_count: 324,
+    created_at: "2026-07-30T08:30:00Z",
+    updated_at: "2026-07-30T08:31:00Z",
   };
   const changes = {
     project_id: project.id,
@@ -729,7 +894,10 @@ test("project detail distinguishes Odin freshness from Git changes", async ({ pa
     truncated: false,
     requires_full_scan: false,
     repository_detection_mode: "git_delta",
-    repository_changed_paths: ["backend/app/core/projects.py", "apps/desktop/src/routes/project.tsx"],
+    repository_changed_paths: [
+      "backend/app/core/projects.py",
+      "apps/desktop/src/routes/project.tsx",
+    ],
     repository_change_items: [
       { kind: "modified", path: "backend/app/core/projects.py", previous_path: null },
       { kind: "modified", path: "apps/desktop/src/routes/project.tsx", previous_path: null },
@@ -765,7 +933,10 @@ test("project detail distinguishes Odin freshness from Git changes", async ({ pa
     } }),
   );
   await page.route(`${backendOrigin}/api/v1/projects/${project.id}/runs*`, (route) =>
-    route.fulfill({ json: [] }),
+    route.fulfill({ json: [activeRun] }),
+  );
+  await page.route(`${backendOrigin}/api/v1/projects/${project.id}/runs/${activeRun.id}`, (route) =>
+    route.fulfill({ json: activeRun }),
   );
   await page.route(`${backendOrigin}/api/v1/projects/${project.id}/links`, (route) =>
     route.fulfill({ json: [] }),
@@ -773,38 +944,7 @@ test("project detail distinguishes Odin freshness from Git changes", async ({ pa
   await page.route(`${backendOrigin}/api/v1/projects/${project.id}/changes*`, (route) =>
     route.fulfill({ json: changes }),
   );
-  await page.route(`${backendOrigin}/api/v1/projects/${project.id}/operations`, async (route) => {
-    const payload = route.request().postDataJSON() as { operation: string };
-    const data = payload.operation === "project_state"
-      ? {
-          status: "ready",
-          live_state: {
-            branch: "main",
-            indexed_relation: "equal",
-            counts: { modified: 2 },
-            files: [
-              { status: "modified", relative_path: "backend/app/core/projects.py" },
-              { status: "modified", relative_path: "apps/desktop/src/routes/project.tsx" },
-            ],
-          },
-        }
-      : payload.operation === "decisions"
-        ? {
-            count: 1,
-            items: [{
-              id: "decision-1",
-              statement: "Keep project indexing local.",
-              status: "active",
-              confidence_class: "documented",
-              evidence: [{ id: "evidence-1" }],
-            }],
-          }
-        : { status: "unknown", exact_tests: [], unknown_reason: "No LCOV artifact has been imported." };
-    await route.fulfill({ json: { version: "odin-project-operations-v1", project_id: project.id, operation: payload.operation, display: "compact", data } });
-  });
-  await page.route(`${backendOrigin}/api/v1/clusters*`, (route) =>
-    route.fulfill({ json: [] }),
-  );
+  await page.route(`${backendOrigin}/api/v1/clusters*`, (route) => route.fulfill({ json: [] }));
   await page.route(`${backendOrigin}/api/v1/projects/${project.id}/graph/view*`, (route) =>
     route.fulfill({
       json: {
@@ -838,20 +978,17 @@ test("project detail distinguishes Odin freshness from Git changes", async ({ pa
   await expect(page).toHaveTitle("Project");
   await expect(page.getByRole("heading", { name: project.name })).toBeVisible();
   await expect(page.getByText(project.brief)).toBeVisible();
-  await expect(page.getByRole("heading", { name: "Ask about this project" })).toBeVisible();
-  await expect(page.getByRole("heading", { name: "Understand what is happening" })).toBeVisible();
-  await page.getByRole("button", { name: "Current work" }).click();
-  await expect(page.getByText("2 changed paths")).toBeVisible();
-  await expect(page.getByText(/backend\/app\/core\/projects\.py/)).toBeVisible();
-  await page.getByRole("button", { name: "Decisions" }).click();
-  await expect(page.getByText("Keep project indexing local.")).toBeVisible();
-  await page.getByRole("button", { name: "Test impact" }).click();
-  await expect(page.getByText("No LCOV artifact has been imported.")).toBeVisible();
-  if (process.env.CML_QA_INTELLIGENCE_SCREENSHOT) {
-    await page.getByRole("heading", { name: "Understand what is happening" }).scrollIntoViewIfNeeded();
-    await page.screenshot({ path: process.env.CML_QA_INTELLIGENCE_SCREENSHOT, fullPage: false });
-  }
+  await expect(page.getByRole("heading", { name: "Ask Odin" })).toBeVisible();
   await expect(page.getByLabel("Ask about this project")).toBeVisible();
+  const progress = page.getByRole("region", { name: "Project indexing progress" });
+  await expect(progress).toContainText("Preparing search");
+  await expect(progress).toContainText("324 / 593");
+  await expect(progress).not.toContainText("Step 3 of 4");
+  await expect(progress).not.toContainText("active index remains available");
+  if (process.env.CML_QA_OVERVIEW_SCREENSHOT) {
+    await page.screenshot({ path: process.env.CML_QA_OVERVIEW_SCREENSHOT, fullPage: false });
+  }
+  await page.getByText("Suggested questions", { exact: true }).click();
   const suggestedQuestions = page
     .getByRole("navigation", { name: "Suggested project questions" })
     .getByRole("button");
@@ -860,8 +997,11 @@ test("project detail distinguishes Odin freshness from Git changes", async ({ pa
     page.getByRole("button", { name: /Explain the application flow starting at src\/main\.ts/ }),
   ).toBeVisible();
   await expect(
-    page.getByRole("button", { name: /How is the detected package or workspace in Snapshot semantics organized/ }),
+    page.getByRole("button", {
+      name: /How is the detected package or workspace in Snapshot semantics organized/,
+    }),
   ).toBeVisible();
+  await page.getByText("Project details", { exact: true }).click();
   await expect(page.getByRole("heading", { name: "Odin freshness" })).toBeVisible();
   await expect(
     page.getByText(/The active Odin snapshot matches the current eligible files\./).first(),
@@ -898,17 +1038,18 @@ test("window-aware controls never intersect native controls at minimum size", as
   await expect(page.getByLabel("Window controls")).toBeVisible();
 
   const geometry = await page.evaluate(() => {
-    const safe = document.querySelector<HTMLElement>("[data-window-control-safe-zone]")
+    const safe = document
+      .querySelector<HTMLElement>("[data-window-control-safe-zone]")
       ?.getBoundingClientRect();
     const collisions = [...document.querySelectorAll<HTMLElement>(".vault-window-aware > *")]
       .filter((element) => {
         const rect = element.getBoundingClientRect();
         return Boolean(
-          safe
-          && rect.right > safe.left
-          && rect.left < safe.right
-          && rect.bottom > safe.top
-          && rect.top < safe.bottom,
+          safe &&
+          rect.right > safe.left &&
+          rect.left < safe.right &&
+          rect.bottom > safe.top &&
+          rect.top < safe.bottom,
         );
       })
       .map((element) => element.textContent?.trim().slice(0, 80) || element.tagName);
@@ -1019,13 +1160,15 @@ test("completed import summary disappears after ten seconds", async ({ page }) =
   };
   await page.route(`${backendOrigin}/api/v1/vaults`, (route) =>
     route.fulfill({
-      json: [{
-        id: "vault-import",
-        name: "Import vault",
-        path: "T:\\import",
-        created_at: now,
-        updated_at: now,
-      }],
+      json: [
+        {
+          id: "vault-import",
+          name: "Import vault",
+          path: "T:\\import",
+          created_at: now,
+          updated_at: now,
+        },
+      ],
     }),
   );
   await page.route(`${backendOrigin}/api/v1/sources/import-jobs/active*`, (route) =>
@@ -1049,13 +1192,15 @@ test("new cluster asks for its name after the action is chosen", async ({ page }
   const clusters: Array<Record<string, unknown>> = [];
   await page.route(`${backendOrigin}/api/v1/vaults`, (route) =>
     route.fulfill({
-      json: [{
-        id: "vault-clusters",
-        name: "Cluster vault",
-        path: "T:\\clusters",
-        created_at: now,
-        updated_at: now,
-      }],
+      json: [
+        {
+          id: "vault-clusters",
+          name: "Cluster vault",
+          path: "T:\\clusters",
+          created_at: now,
+          updated_at: now,
+        },
+      ],
     }),
   );
   await page.route(`${backendOrigin}/api/v1/clusters/page*`, (route) =>
@@ -1074,7 +1219,11 @@ test("new cluster asks for its name after the action is chosen", async ({ page }
     route.fulfill({ json: { items: [] } }),
   );
   await page.route(`${backendOrigin}/api/v1/clusters`, async (route) => {
-    const payload = route.request().postDataJSON() as { name: string; vault_id: string; color: string };
+    const payload = route.request().postDataJSON() as {
+      name: string;
+      vault_id: string;
+      color: string;
+    };
     const cluster = {
       id: "cluster-created",
       vault_id: payload.vault_id,
@@ -1117,13 +1266,15 @@ test("settings explains passphrase requirements before protected setup", async (
   let initializeRequests = 0;
   await page.route(`${backendOrigin}/api/v1/vaults`, (route) =>
     route.fulfill({
-      json: [{
-        id: "vault-unprotected",
-        name: "Unprotected vault",
-        path: "T:\\unprotected",
-        created_at: now,
-        updated_at: now,
-      }],
+      json: [
+        {
+          id: "vault-unprotected",
+          name: "Unprotected vault",
+          path: "T:\\unprotected",
+          created_at: now,
+          updated_at: now,
+        },
+      ],
     }),
   );
   await page.route(`${backendOrigin}/api/v1/system/unlock/status`, (route) =>
@@ -1171,6 +1322,136 @@ test("settings explains passphrase requirements before protected setup", async (
     await page.screenshot({ path: process.env.CML_QA_PASSPHRASE_SCREENSHOT, fullPage: false });
   }
   expect(initializeRequests).toBe(0);
+});
+
+test("Memory history settles completed refreshes and retries failed insight loads", async ({ page }) => {
+  test.setTimeout(30_000);
+  const consoleProblems: string[] = [];
+  page.on("console", (message) => {
+    if (
+      (message.type() === "error" || message.type() === "warning") &&
+      !message.text().includes("Failed to load resource")
+    ) {
+      consoleProblems.push(`${message.type()}: ${message.text()}`);
+    }
+  });
+  page.on("pageerror", (error) => consoleProblems.push(`pageerror: ${error.message}`));
+
+  const vault = {
+    id: "vault-memory",
+    name: "My Library",
+    path: "T:\\test",
+    created_at: "2026-08-02T09:00:00Z",
+    updated_at: "2026-08-02T09:00:00Z",
+  };
+  let refreshRunning = true;
+  let memoryAvailable = false;
+  let jobStatusRequests = 0;
+  let memoryStatusRequests = 0;
+  const memoryJob = {
+    id: "memory-refresh-1",
+    job_type: "temporal_fact_backfill",
+    status: "running",
+    created_at: "2026-08-02T09:00:00Z",
+    updated_at: "2026-08-02T09:00:01Z",
+  };
+
+  await page.route((url) => url.origin === backendOrigin && url.pathname === "/api/v1/system/unlock/status", (route) =>
+    route.fulfill({
+      json: {
+        ready: true,
+        state: "ready",
+        secured_vault_count: 0,
+        secured_vault_ids: [],
+      },
+    }),
+  );
+  await page.route(
+    (url) => url.origin === backendOrigin && url.pathname === "/api/v1/vaults",
+    (route) => route.fulfill({ json: [vault] }),
+  );
+  await page.route((url) => url.origin === backendOrigin && url.pathname === "/api/v1/jobs/status", (route) =>
+    {
+      jobStatusRequests += 1;
+      return route.fulfill({
+      json: {
+        queued: 0,
+        paused: 0,
+        blocked_by_dependency: 0,
+        blocked_setup_required: 0,
+        blocked_local_model: 0,
+        deferred: 0,
+        running: refreshRunning ? 1 : 0,
+        succeeded: refreshRunning ? 0 : 1,
+        partial_success: 0,
+        failed: 0,
+        cancelled: 0,
+        manual_review: 0,
+        running_jobs: refreshRunning ? [memoryJob] : [],
+        latest: refreshRunning ? [memoryJob] : [{ ...memoryJob, status: "succeeded" }],
+      },
+      });
+    },
+  );
+  await page.route((url) => url.origin === backendOrigin && url.pathname === "/api/v1/chat/evidence-retention/policy", (route) =>
+    route.fulfill({
+      json: {
+        default_keep_latest_snapshots_per_message: 1,
+        max_keep_latest_snapshots_per_message: 10,
+        default_excerpt_chars: 240,
+        deleted_source_state: "tombstoned",
+        compacted_state: "compacted",
+        query_cache_prune_endpoint: "",
+      },
+    }),
+  );
+  await page.route((url) => url.origin === backendOrigin && url.pathname === "/api/v1/jobs/temporal-facts/status", (route) =>
+    {
+      memoryStatusRequests += 1;
+      return memoryAvailable
+      ? route.fulfill({
+          json: {
+            vault_id: vault.id,
+            extractor_version: "test",
+            status_counts: { current: 0 },
+            speaker_counts: {},
+            assertion_kind_counts: {},
+            session_count: 0,
+            indexed_session_count: 0,
+            latest_observed_at: null,
+            latest_processed_at: "2026-08-02T09:00:02Z",
+          },
+        })
+      : route.fulfill({ status: 503, json: { detail: "Memory history unavailable" } });
+    },
+  );
+  await page.route((url) => url.origin === backendOrigin && url.pathname === "/api/v1/memory/facts", (route) =>
+    memoryAvailable
+      ? route.fulfill({ json: [] })
+      : route.fulfill({ status: 503, json: { detail: "Memory facts unavailable" } }),
+  );
+
+  await page.goto(`/settings?section=library&backendUrl=${encodeURIComponent(backendOrigin)}`);
+  const card = page.locator("section").filter({ has: page.getByRole("heading", { name: "Memory history" }) });
+  await expect.poll(() => jobStatusRequests).toBeGreaterThan(0);
+  await expect.poll(() => memoryStatusRequests).toBeGreaterThan(0);
+  expect(consoleProblems).toEqual([]);
+  await expect(card).toContainText("Refreshing");
+  await expect(card.getByRole("alert")).toContainText("Memory history could not be checked");
+  await expect(card.getByRole("button", { name: "Try again" })).toBeVisible();
+
+  refreshRunning = false;
+  memoryAvailable = true;
+  await card.getByRole("button", { name: "Try again" }).click();
+  await page.evaluate(() => window.dispatchEvent(new Event("focus")));
+
+  await expect(card).toContainText("0 of 0 conversations");
+  await expect(card).not.toContainText("Refreshing");
+  await expect(card.getByRole("button", { name: "Refresh memory history" })).toBeEnabled();
+  expect(consoleProblems).toEqual([]);
+  if (process.env.CML_QA_MEMORY_HISTORY_SCREENSHOT) {
+    await card.screenshot({ path: process.env.CML_QA_MEMORY_HISTORY_SCREENSHOT });
+  }
 });
 
 test("locked library reports a wrong passphrase beside the unlock form", async ({ page }) => {
@@ -1236,19 +1517,21 @@ test("minimum viewport remains usable with large text and reduced motion", async
   await page.waitForTimeout(100);
 
   const layout = await page.evaluate(() => {
-    const safe = document.querySelector<HTMLElement>("[data-window-control-safe-zone]")
+    const safe = document
+      .querySelector<HTMLElement>("[data-window-control-safe-zone]")
       ?.getBoundingClientRect();
-    const collisionCount = [...document.querySelectorAll<HTMLElement>(".vault-window-aware > *")]
-      .filter((element) => {
-        const rect = element.getBoundingClientRect();
-        return Boolean(
-          safe
-          && rect.right > safe.left
-          && rect.left < safe.right
-          && rect.bottom > safe.top
-          && rect.top < safe.bottom,
-        );
-      }).length;
+    const collisionCount = [
+      ...document.querySelectorAll<HTMLElement>(".vault-window-aware > *"),
+    ].filter((element) => {
+      const rect = element.getBoundingClientRect();
+      return Boolean(
+        safe &&
+        rect.right > safe.left &&
+        rect.left < safe.right &&
+        rect.bottom > safe.top &&
+        rect.top < safe.bottom,
+      );
+    }).length;
     return {
       collisionCount,
       horizontalOverflow: document.documentElement.scrollWidth - window.innerWidth,
@@ -1366,7 +1649,13 @@ test("settings never starts a computer model scan while polling", async ({ page 
   );
   await page.route(`${backendOrigin}/api/v1/models/runtime`, (route) =>
     route.fulfill({
-      json: { provider: "managed", base_url: "", model: "", available: false, detail: "Not started" },
+      json: {
+        provider: "managed",
+        base_url: "",
+        model: "",
+        available: false,
+        detail: "Not started",
+      },
     }),
   );
   await page.route(`${backendOrigin}/api/v1/models/embeddings`, (route) =>
@@ -1408,7 +1697,13 @@ test("settings never starts a computer model scan while polling", async ({ page 
   );
   await page.route(`${backendOrigin}/api/v1/system/hardware`, (route) =>
     route.fulfill({
-      json: { os: "Windows", machine: "x64", processor: "Test", cpu_count: 8, hardware_tier: "balanced" },
+      json: {
+        os: "Windows",
+        machine: "x64",
+        processor: "Test",
+        cpu_count: 8,
+        hardware_tier: "balanced",
+      },
     }),
   );
   await page.route(`${backendOrigin}/api/v1/jobs/status`, (route) =>

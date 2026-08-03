@@ -26,5 +26,8 @@
     "security:package": "node scripts/packaging/generate-helper-manifest.cjs && node scripts/packaging/audit-package-layout.cjs apps/desktop/packaging apps/desktop/packaging",
     "security:e2e": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts\\security\\run-security-e2e.ps1",
     "lockfile:check": "node scripts/dev/check-lockfile-policy.cjs"
+  },
+  "dependencies": {
+    "@openai/codex-security": "^0.1.4"
   }
 }

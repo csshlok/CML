@@ -38,7 +38,8 @@ benchmarks = [
   "pyarrow==25.0.0"
 ]
 test = [
-  "pyarrow==25.0.0"
+  "pyarrow==25.0.0",
+  "ruff==0.15.5"
 ]
 
 [project.scripts]

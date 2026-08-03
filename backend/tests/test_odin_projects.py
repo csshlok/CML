@@ -64,7 +64,6 @@ class OdinProjectTests(unittest.TestCase):
 
     def test_registration_is_idempotent_and_excludes_secrets_and_dependencies(self) -> None:
         from backend.app.core.database import connect
-        from backend.app.core.projects import register_project
 
         first = _register_project(vault_id="vault-odin", root_path=str(self.repo), name="Sample", sync=True)
         second = _register_project(vault_id="vault-odin", root_path=str(self.repo), name="Different", sync=False)
@@ -788,7 +787,7 @@ class OdinProjectTests(unittest.TestCase):
 
     def test_scope_change_persists_and_activates_through_a_candidate_snapshot(self) -> None:
         from backend.app.core.background_jobs import run_due_jobs_once
-        from backend.app.core.projects import get_project, register_project, sync_project
+        from backend.app.core.projects import get_project, sync_project
 
         (self.repo / "README.md").write_text("# Sample project\n", encoding="utf-8")
         project = _register_project(
@@ -822,7 +821,7 @@ class OdinProjectTests(unittest.TestCase):
 
     def test_sync_reconciles_modified_added_and_removed_files(self) -> None:
         from backend.app.core.database import connect
-        from backend.app.core.projects import register_project, sync_project
+        from backend.app.core.projects import sync_project
 
         project = _register_project(vault_id="vault-odin", root_path=str(self.repo), name="Sample", sync=True)
         with connect() as conn:
@@ -869,7 +868,6 @@ class OdinProjectTests(unittest.TestCase):
 
     def test_sync_populates_release_snapshot_and_run_contracts(self) -> None:
         from backend.app.core.database import connect
-        from backend.app.core.projects import register_project
 
         project = _register_project(vault_id="vault-odin", root_path=str(self.repo), name="Sample", sync=True)
 
@@ -1106,7 +1104,7 @@ class OdinProjectTests(unittest.TestCase):
 
     def test_remove_deletes_only_cml_records(self) -> None:
         from backend.app.core.database import connect
-        from backend.app.core.projects import register_project, remove_project
+        from backend.app.core.projects import remove_project
 
         project = _register_project(vault_id="vault-odin", root_path=str(self.repo), name="Sample", sync=True)
         remove_project(project["id"], confirmation_name="Sample")
@@ -1124,7 +1122,6 @@ class OdinProjectTests(unittest.TestCase):
 
     def test_bounded_graph_path_uses_proven_import_relationships(self) -> None:
         from backend.app.core.project_graph import shortest_path
-        from backend.app.core.projects import register_project
 
         project = _register_project(vault_id="vault-odin", root_path=str(self.repo), name="Sample", sync=True)
         result = shortest_path(project["id"], "start", "authorize")
@@ -1415,7 +1412,6 @@ class OdinProjectTests(unittest.TestCase):
 
     def test_project_chat_session_persists_project_scope(self) -> None:
         from backend.app.api.routes.chat import create_chat_session
-        from backend.app.core.projects import register_project
         from backend.app.schemas import ChatSessionCreate
 
         project = _register_project(vault_id="vault-odin", root_path=str(self.repo), name="Sample", sync=False)
@@ -1428,7 +1424,6 @@ class OdinProjectTests(unittest.TestCase):
 
     def test_graph_view_is_bounded_and_contains_evidence(self) -> None:
         from backend.app.core.project_graph import graph_view, graph_view_markdown
-        from backend.app.core.projects import register_project
 
         project = _register_project(vault_id="vault-odin", root_path=str(self.repo), name="Sample", sync=True)
         view = graph_view(project["id"], mode="graph", query="authorize", max_depth=2, max_nodes=20)
@@ -1463,7 +1458,6 @@ class OdinProjectTests(unittest.TestCase):
         from backend.app.core.code_structure import _insert_edge, _insert_node
         from backend.app.core.database import connect, utc_now
         from backend.app.core.project_graph import graph_view
-        from backend.app.core.projects import register_project
 
         project = _register_project(vault_id="vault-odin", root_path=str(self.repo), name="Sample", sync=True)
         snapshot_id = project["active_snapshot_id"]
@@ -1512,7 +1506,6 @@ class OdinProjectTests(unittest.TestCase):
 
     def test_tree_view_builds_hidden_project_file_symbol_hierarchy(self) -> None:
         from backend.app.core.project_graph import graph_view
-        from backend.app.core.projects import register_project
 
         project = _register_project(vault_id="vault-odin", root_path=str(self.repo), name="Sample", sync=True)
         view = graph_view(project["id"], mode="tree", root="src", max_nodes=30)

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections import defaultdict, deque
+from collections import defaultdict
 import hashlib
 import json
 from pathlib import PurePosixPath
@@ -11,7 +11,13 @@ from backend.app.core.database import connect, dict_from_row, utc_now
 
 GRAPH_METRICS_VERSION = "odin-graph-intelligence-v1"
 _AUTHORITY_EDGES = {
-    "calls", "imports", "references", "exports", "defines_route", "implements", "inherits",
+    "calls",
+    "imports",
+    "references",
+    "exports",
+    "defines_route",
+    "implements",
+    "inherits",
 }
 _FLOW_EDGES = {"calls", "defines_route", "imports", "references", "exports"}
 
@@ -38,7 +44,9 @@ def compute_graph_metrics(
     rank = {node_id: 1.0 / len(ordered) for node_id in ordered}
     base = (1.0 - damping) / len(ordered)
     for _ in range(max(1, min(int(iterations), 50))):
-        dangling = sum(rank[node_id] for node_id in ordered if not adjacency[node_id]) / len(ordered)
+        dangling = sum(rank[node_id] for node_id in ordered if not adjacency[node_id]) / len(
+            ordered
+        )
         next_rank = {}
         for node_id in ordered:
             incoming = sum(rank[parent] / len(adjacency[parent]) for parent in reverse[node_id])
@@ -70,7 +78,9 @@ def refresh_graph_intelligence(project_id: str) -> dict:
         if project_row is None:
             raise KeyError(project_id)
         project = dict_from_row(project_row)
-        snapshot_id = project.get("active_structure_snapshot_id") or project.get("active_snapshot_id")
+        snapshot_id = project.get("active_structure_snapshot_id") or project.get(
+            "active_snapshot_id"
+        )
         if not snapshot_id:
             return {"status": "unavailable", "reason": "No active structure snapshot."}
         nodes = [
@@ -127,9 +137,18 @@ def refresh_graph_intelligence(project_id: str) -> dict:
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
-                    project_id, snapshot_id, node_id, metric["pagerank"], metric["in_degree"],
-                    metric["out_degree"], metric["scc_id"], metric["scc_size"],
-                    community["id"], community["label"], int(metric["is_cycle"]), now,
+                    project_id,
+                    snapshot_id,
+                    node_id,
+                    metric["pagerank"],
+                    metric["in_degree"],
+                    metric["out_degree"],
+                    metric["scc_id"],
+                    metric["scc_size"],
+                    community["id"],
+                    community["label"],
+                    int(metric["is_cycle"]),
+                    now,
                 ),
             )
         for community in communities.values():
@@ -141,12 +160,23 @@ def refresh_graph_intelligence(project_id: str) -> dict:
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
-                    community["id"], project_id, snapshot_id, community["label"],
-                    community["root_path"], community["node_count"], community["file_count"],
-                    json.dumps(community["summary"], sort_keys=True, separators=(",", ":")), now,
+                    community["id"],
+                    project_id,
+                    snapshot_id,
+                    community["label"],
+                    community["root_path"],
+                    community["node_count"],
+                    community["file_count"],
+                    json.dumps(community["summary"], sort_keys=True, separators=(",", ":")),
+                    now,
                 ),
             )
-        flows = _execution_flows(nodes, edge_rows, metrics, project.get("entrypoints") or _json(project.get("entrypoints_json"), []))
+        flows = _execution_flows(
+            nodes,
+            edge_rows,
+            metrics,
+            project.get("entrypoints") or _json(project.get("entrypoints_json"), []),
+        )
         for flow in flows:
             conn.execute(
                 """
@@ -156,10 +186,16 @@ def refresh_graph_intelligence(project_id: str) -> dict:
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
-                    flow["id"], project_id, snapshot_id, flow["node_ids"][0], flow["node_ids"][-1],
+                    flow["id"],
+                    project_id,
+                    snapshot_id,
+                    flow["node_ids"][0],
+                    flow["node_ids"][-1],
                     json.dumps(flow["node_ids"], separators=(",", ":")),
                     json.dumps(flow["relationships"], separators=(",", ":")),
-                    flow["confidence"], flow["reason"], now,
+                    flow["confidence"],
+                    flow["reason"],
+                    now,
                 ),
             )
         _publish_graph_layer(conn, project_id, snapshot_id, communities, metrics, flows, now)
@@ -254,8 +290,13 @@ def get_graph_intelligence(project_id: str, *, refresh_missing: bool = True) -> 
             return get_graph_intelligence(project_id, refresh_missing=False)
         except Exception as exc:
             return {
-                "status": "failed", "version": GRAPH_METRICS_VERSION, "snapshot_id": snapshot_id,
-                "metric_count": 0, "communities": [], "cycles": [], "flows": [],
+                "status": "failed",
+                "version": GRAPH_METRICS_VERSION,
+                "snapshot_id": snapshot_id,
+                "metric_count": 0,
+                "communities": [],
+                "cycles": [],
+                "flows": [],
                 "unknown_reason": f"Graph intelligence could not be built: {type(exc).__name__}: {str(exc)[:240]}",
             }
     return {
@@ -304,7 +345,9 @@ def _strongly_connected_components(
                 if parent not in result:
                     result[parent] = "pending"
                     stack.append(parent)
-        stable = "scc-" + hashlib.sha256("\0".join(sorted(members)).encode("utf-8")).hexdigest()[:16]
+        stable = (
+            "scc-" + hashlib.sha256("\0".join(sorted(members)).encode("utf-8")).hexdigest()[:16]
+        )
         for node_id in members:
             result[node_id] = stable
     return result
@@ -325,7 +368,9 @@ def _communities(nodes: list[dict]) -> tuple[dict[str, str], dict[str, dict]]:
     communities: dict[str, dict] = {}
     by_node: dict[str, str] = {}
     for root, members in sorted(grouped.items()):
-        community_id = "community-" + hashlib.sha256(root.casefold().encode("utf-8")).hexdigest()[:16]
+        community_id = (
+            "community-" + hashlib.sha256(root.casefold().encode("utf-8")).hexdigest()[:16]
+        )
         kinds: dict[str, int] = defaultdict(int)
         paths = set()
         for node in members:
@@ -340,7 +385,12 @@ def _communities(nodes: list[dict]) -> tuple[dict[str, str], dict[str, dict]]:
             "node_count": len(members),
             "file_count": len(paths),
             "summary": {
-                "primary_kinds": [name for name, _count in sorted(kinds.items(), key=lambda item: (-item[1], item[0]))[:4]],
+                "primary_kinds": [
+                    name
+                    for name, _count in sorted(kinds.items(), key=lambda item: (-item[1], item[0]))[
+                        :4
+                    ]
+                ],
                 "description": f"{label} contains {len(members)} indexed code items across {len(paths)} files.",
             },
         }
@@ -393,20 +443,27 @@ def _execution_flows(
             continue
         seen.add(tuple(path))
         stable = hashlib.sha256("\0".join(path).encode("utf-8")).hexdigest()[:20]
-        flows.append({
-            "id": f"flow-{stable}",
-            "node_ids": path,
-            "relationships": relationships,
-            "confidence": "user_confirmed" if confidences and all(item == "user_confirmed" for item in confidences) else "extracted",
-            "reason": "Bounded execution-flow candidate from an indexed entry point or route using "
-                      + ", then ".join(item.replace("_", " ") for item in relationships) + ".",
-        })
+        flows.append(
+            {
+                "id": f"flow-{stable}",
+                "node_ids": path,
+                "relationships": relationships,
+                "confidence": "user_confirmed"
+                if confidences and all(item == "user_confirmed" for item in confidences)
+                else "extracted",
+                "reason": "Bounded execution-flow candidate from an indexed entry point or route using "
+                + ", then ".join(item.replace("_", " ") for item in relationships)
+                + ".",
+            }
+        )
         if len(flows) >= 20:
             break
     return flows
 
 
-def _publish_graph_layer(conn, project_id: str, snapshot_id: str, communities: dict, metrics: dict, flows: list, now: str) -> None:
+def _publish_graph_layer(
+    conn, project_id: str, snapshot_id: str, communities: dict, metrics: dict, flows: list, now: str
+) -> None:
     row = conn.execute(
         """
         SELECT * FROM project_intelligence_snapshots
@@ -418,23 +475,40 @@ def _publish_graph_layer(conn, project_id: str, snapshot_id: str, communities: d
     if row is None:
         return
     architecture = _json(row["architecture_json"], {})
-    architecture.update({
-        "community_count": len(communities),
-        "cycle_count": len({item["scc_id"] for item in metrics.values() if item["is_cycle"]}),
-        "execution_flow_count": len(flows),
-        "communities": [
-            {"id": item["id"], "label": item["label"], "root_path": item["root_path"], "node_count": item["node_count"]}
-            for item in sorted(communities.values(), key=lambda value: (-value["node_count"], value["root_path"]))[:20]
-        ],
-    })
+    architecture.update(
+        {
+            "community_count": len(communities),
+            "cycle_count": len({item["scc_id"] for item in metrics.values() if item["is_cycle"]}),
+            "execution_flow_count": len(flows),
+            "communities": [
+                {
+                    "id": item["id"],
+                    "label": item["label"],
+                    "root_path": item["root_path"],
+                    "node_count": item["node_count"],
+                }
+                for item in sorted(
+                    communities.values(),
+                    key=lambda value: (-value["node_count"], value["root_path"]),
+                )[:20]
+            ],
+        }
+    )
     layers = _json(row["layer_states_json"], {})
     layers["graph_intelligence"] = {
-        "status": "ready", "version": GRAPH_METRICS_VERSION, "generated_at": now,
-        "truncated": False, "unknown_reason": None,
+        "status": "ready",
+        "version": GRAPH_METRICS_VERSION,
+        "generated_at": now,
+        "truncated": False,
+        "unknown_reason": None,
     }
     conn.execute(
         "UPDATE project_intelligence_snapshots SET architecture_json = ?, layer_states_json = ? WHERE id = ?",
-        (json.dumps(architecture, sort_keys=True, separators=(",", ":")), json.dumps(layers, sort_keys=True, separators=(",", ":")), row["id"]),
+        (
+            json.dumps(architecture, sort_keys=True, separators=(",", ":")),
+            json.dumps(layers, sort_keys=True, separators=(",", ":")),
+            row["id"],
+        ),
     )
 
 

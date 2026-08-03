@@ -1339,7 +1339,6 @@ def sync_project_delta(
     changed_paths: list[str],
     trigger_source: str = "auto_delta",
 ) -> dict:
-    project = get_project(project_id)
     normalized_paths = sorted(
         dict.fromkeys(
             str(path or "").replace("\\", "/").lstrip("/")

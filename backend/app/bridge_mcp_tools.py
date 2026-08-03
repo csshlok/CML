@@ -316,7 +316,7 @@ def _validate_value(key: str, value: object, schema: dict) -> str | None:
             return f"{key} must be {choices}."
     elif expected == "boolean":
         if not isinstance(value, bool):
-            return f"decide_writeback_review requires boolean approved." if key == "approved" else f"Tool argument must be boolean: {key}"
+            return "decide_writeback_review requires boolean approved." if key == "approved" else f"Tool argument must be boolean: {key}"
     elif expected == "integer":
         if not isinstance(value, int) or isinstance(value, bool):
             return f"Tool argument must be an integer: {key}"

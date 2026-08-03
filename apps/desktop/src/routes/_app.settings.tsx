@@ -1,8 +1,9 @@
-import { createFileRoute, useNavigate } from "@tanstack/react-router";
+import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
   Activity,
   Camera,
+  Copy,
   Database,
   Download,
   FileText,
@@ -133,8 +134,9 @@ import {
 } from "@/lib/settingsController";
 
 export const Route = createFileRoute("/_app/settings")({
-  validateSearch: (search: Record<string, unknown>): { section?: string } => ({
+  validateSearch: (search: Record<string, unknown>): { section?: string; guide?: "odin" } => ({
     section: typeof search.section === "string" ? search.section : undefined,
+    guide: search.guide === "odin" ? "odin" : undefined,
   }),
   head: () => ({ meta: [{ title: "Settings" }] }),
   component: SettingsView,
@@ -149,8 +151,48 @@ const settingsSections = [
   { id: "advanced", label: "Advanced", icon: SlidersHorizontal },
 ] as const;
 
+const odinCommandGroups = [
+  {
+    title: "Setup and diagnostics",
+    commands: [
+      ["odin --help", "Show built-in help."],
+      ["odin doctor", "Check the launcher, Vault connection, and approval."],
+      ["odin auth pair", "Request access from Vault."],
+      ["odin auth status", "Verify the current connection."],
+      ["odin auth logout", "Remove this computer's stored credential."],
+      ["odin auth forget", "Forget a stale local pairing."],
+    ],
+  },
+  {
+    title: "Projects",
+    commands: [
+      ["odin project add [path] --name \"Project name\"", "Register and index a project."],
+      ["odin project list", "List registered projects."],
+      ["odin project status [path]", "Show indexing and freshness status."],
+      ["odin project changes [path]", "Preview changed files without indexing."],
+      ["odin project sync [path]", "Apply current file changes."],
+      ["odin project reindex [path] --layer full", "Rebuild selected derived data."],
+      ["odin project rename [path] \"New name\"", "Rename the project and primary cluster."],
+      ["odin project link [path] --cluster \"Cluster\"", "Link another cluster."],
+      ["odin project unlink [path] --cluster \"Cluster\"", "Remove a secondary cluster link."],
+      ["odin project links [path]", "List cluster links."],
+      ["odin project explain [path] SYMBOL", "Explain a symbol and nearby relationships."],
+      ["odin project path [path] SOURCE TARGET", "Find an evidence-backed path between symbols."],
+      ["odin project graph [path] --query \"flow\"", "Render a bounded relationship graph."],
+      ["odin project tree [path] --root \"backend/app\"", "Render a bounded project tree."],
+      ["odin project remove [path]", "Remove Odin's index without touching repository files."],
+    ],
+  },
+  {
+    title: "Ask Odin",
+    commands: [
+      ["odin context \"How does authentication work?\" --project [path]", "Retrieve a grounded project context packet."],
+    ],
+  },
+] as const;
+
 function SettingsView() {
-  const { section } = Route.useSearch();
+  const { section, guide } = Route.useSearch();
   const navigate = useNavigate();
   const desktop = typeof window !== "undefined" ? window.cmlDesktop : undefined;
   const backendHealth = useBackendHealth();
@@ -170,6 +212,7 @@ function SettingsView() {
   const [jobs, setJobs] = useState<JobQueueStatus | null>(null);
   const [temporalFacts, setTemporalFacts] = useState<TemporalFactDiagnostics | null>(null);
   const [reviewableFacts, setReviewableFacts] = useState<TemporalFactRecord[]>([]);
+  const [memoryInsightsError, setMemoryInsightsError] = useState<string | null>(null);
   const [temporalBackfillBusy, setTemporalBackfillBusy] = useState(false);
   const [editingFactId, setEditingFactId] = useState<string | null>(null);
   const [factCorrectionDraft, setFactCorrectionDraft] = useState("");
@@ -336,6 +379,7 @@ function SettingsView() {
         setBackendVault(firstVault ? { ...firstVault, path: "" } : null);
         setTemporalFacts(null);
         setReviewableFacts([]);
+        setMemoryInsightsError(null);
         if (!pathDraftDirtyRef.current) setPathDraft("");
         setHealthCheckedAt(new Date());
         setPollingStatusMessage(
@@ -384,18 +428,16 @@ function SettingsView() {
       if (firstVault && activeSection === "library") {
         add("folder sync", listIntegrationImports(firstVault.id), (value) =>
           setIntegrationImports(value as IntegrationImportRecord[]));
-      }
-      if (firstVault && activeSection === "connections") {
-        add("projects", listProjects(firstVault.id), (value) =>
-          setProjects(value as ProjectRecord[]));
-      }
-      if (firstVault && activeSection === "advanced") {
+        add("tasks", getJobStatus(), (value) => setJobs(value as JobQueueStatus));
         add("memory status", getTemporalFactStatus(firstVault.id), (value) =>
           setTemporalFacts(value as TemporalFactDiagnostics));
         add("memory facts", listTemporalFacts(firstVault.id), (value) =>
           setReviewableFacts(value as TemporalFactRecord[]));
       }
-
+      if (firstVault && activeSection === "connections") {
+        add("projects", listProjects(firstVault.id), (value) =>
+          setProjects(value as ProjectRecord[]));
+      }
       const results = await Promise.allSettled(loads.map((item) => item.request));
       const failures: string[] = [];
       results.forEach((result, index) => {
@@ -403,6 +445,13 @@ function SettingsView() {
         if (result.status === "fulfilled") load.apply(result.value);
         else failures.push(load.label);
       });
+      if (activeSection === "library") {
+        setMemoryInsightsError(
+          failures.some((label) => label === "memory status" || label === "memory facts")
+            ? "Memory history could not be checked. Try again."
+            : null,
+        );
+      }
       setHealthLoadError(
         failures.length ? `Some settings could not refresh: ${failures.join(", ")}.` : null,
       );
@@ -1104,6 +1153,7 @@ function SettingsView() {
 
   async function refreshMemoryInsights() {
     if (!backendVault) return;
+    setMemoryInsightsError(null);
     const [statusResult, factsResult] = await Promise.allSettled([
       getTemporalFactStatus(backendVault.id),
       listTemporalFacts(backendVault.id),
@@ -1111,7 +1161,10 @@ function SettingsView() {
     if (statusResult.status === "fulfilled") setTemporalFacts(statusResult.value);
     if (factsResult.status === "fulfilled") setReviewableFacts(factsResult.value);
     const failures = [statusResult, factsResult].filter((result) => result.status === "rejected");
-    if (failures.length) setStatusMessage("Some memory details could not refresh.");
+    if (failures.length) {
+      setMemoryInsightsError("Memory history could not be checked. Try again.");
+      setStatusMessage("Some memory details could not refresh.");
+    }
   }
 
   async function installOdinWithUv() {
@@ -1324,6 +1377,7 @@ function SettingsView() {
       (job) => job.job_type === "temporal_fact_backfill" && ["queued", "running"].includes(job.status),
     ),
   );
+  const temporalRefreshPending = temporalBackfillBusy || temporalBackfillActive;
 
   return (
     <div className="vault-page-wash grid h-full grid-cols-1 overflow-hidden xl:grid-cols-[205px_minmax(0,1fr)]">
@@ -1493,49 +1547,9 @@ function SettingsView() {
 
           {showSection("connections") && (<>
             <SettingsCard
-              icon={<Folder className="h-4 w-4" />}
-              title="Odin code projects"
-              description="Code projects available in this library. Odin reads and indexes them without changing repository files."
-              status={projects.length ? `${projects.length} registered` : "None"}
-              statusTone={projects.some((project) => project.status === "issue") ? "issue" : "ready"}
-            >
-              <div className="mt-4 flex flex-wrap gap-2">
-                <Button
-                  variant="outline"
-                  onClick={() => void addCodeProject()}
-                  disabled={addingProject || !backendVault || !window.cmlDesktop?.selectSourceFolders}
-                >
-                  <Folder className="h-4 w-4" />
-                  {addingProject ? "Adding..." : "Add project"}
-                </Button>
-              </div>
-              <p className="mt-3 text-xs text-muted-foreground">
-                Or run <code className="text-foreground">odin project add .</code> from a project folder.
-              </p>
-              <div className="mt-4 divide-y divide-border">
-                {projects.length ? projects.map((project) => (
-                  <div key={project.id} className="py-3">
-                    <div className="flex flex-wrap items-center justify-between gap-2">
-                      <span className="font-medium">{project.name}</span>
-                      <span className="text-xs capitalize text-muted-foreground">{project.status}</span>
-                    </div>
-                    <div className="mt-1 truncate text-xs text-muted-foreground" title={project.root_path}>
-                      {displayPath(project.root_path)}
-                    </div>
-                    <div className="mt-1 text-xs text-muted-foreground">
-                      {project.source_count.toLocaleString()} files / Code map {formatHealthLabel(project.structure_status)} / Search {formatHealthLabel(project.retrieval_status)}
-                    </div>
-                  </div>
-                )) : (
-                  <div className="py-3 text-sm text-muted-foreground">No code projects are registered yet.</div>
-                )}
-              </div>
-            </SettingsCard>
-
-            <SettingsCard
               icon={<TerminalSquare className="h-4 w-4" />}
-              title="Odin command"
-              description="Install Odin, then open a new PowerShell window and run odin --help."
+              title="Install Odin"
+              description="Install the Odin command first, then connect PowerShell to this library."
               status={
                 odinLauncher?.needs_repair
                   ? "Repair needed"
@@ -1576,6 +1590,12 @@ function SettingsView() {
                 >
                   Install with uv
                 </Button>
+                <OdinSetupGuide
+                  open={guide === "odin"}
+                  installed={Boolean(odinLauncher?.installed)}
+                  busy={odinLauncherBusy}
+                  onPrimary={() => void (odinLauncher?.installed ? startOdinPairing() : installOrRepairOdin())}
+                />
               </div>
               <p className="mt-3 text-xs text-muted-foreground">
                 Use the Vault installer for the simplest setup. The uv option is available for developer-managed Python tools.
@@ -1593,6 +1613,46 @@ function SettingsView() {
                   <div className="mt-2 break-all font-mono">{odinLauncher.launcher_path}</div>
                 </details>
               ) : null}
+            </SettingsCard>
+
+            <SettingsCard
+              icon={<Folder className="h-4 w-4" />}
+              title="Odin code projects"
+              description="Code projects available in this library. Odin reads and indexes them without changing repository files."
+              status={projects.length ? `${projects.length} registered` : "None"}
+              statusTone={projects.some((project) => project.status === "issue") ? "issue" : "ready"}
+            >
+              <div className="mt-4 flex flex-wrap gap-2">
+                <Button
+                  variant="outline"
+                  onClick={() => void addCodeProject()}
+                  disabled={addingProject || !backendVault || !window.cmlDesktop?.selectSourceFolders}
+                >
+                  <Folder className="h-4 w-4" />
+                  {addingProject ? "Adding..." : "Add project"}
+                </Button>
+              </div>
+              <p className="mt-3 text-xs text-muted-foreground">
+                Or run <code className="text-foreground">odin project add .</code> from a project folder.
+              </p>
+              <div className="mt-4 divide-y divide-border">
+                {projects.length ? projects.map((project) => (
+                  <div key={project.id} className="py-3">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <span className="font-medium">{project.name}</span>
+                      <span className="text-xs capitalize text-muted-foreground">{project.status}</span>
+                    </div>
+                    <div className="mt-1 truncate text-xs text-muted-foreground" title={project.root_path}>
+                      {displayPath(project.root_path)}
+                    </div>
+                    <div className="mt-1 text-xs text-muted-foreground">
+                      {project.source_count.toLocaleString()} files / Code map {formatHealthLabel(project.structure_status)} / Search {formatHealthLabel(project.retrieval_status)}
+                    </div>
+                  </div>
+                )) : (
+                  <div className="py-3 text-sm text-muted-foreground">No code projects are registered yet.</div>
+                )}
+              </div>
             </SettingsCard>
 
             <SettingsCard
@@ -1722,6 +1782,16 @@ function SettingsView() {
                   </div>
                 ) : null}
               </div>
+            </SettingsCard>
+
+            <SettingsCard
+              icon={<TerminalSquare className="h-4 w-4" />}
+              title="Odin command reference"
+              description="Every Odin command currently available. Optional flags and machine-readable output are in odin --help."
+              status={`${odinCommandGroups.reduce((total, group) => total + group.commands.length, 0)} commands`}
+              statusTone="ready"
+            >
+              <OdinCommandReference />
             </SettingsCard>
           </>)}
 
@@ -2142,20 +2212,24 @@ function SettingsView() {
             title="Memory history"
             description="Review and correct details remembered from your chats."
             status={
-              temporalBackfillActive
+              temporalRefreshPending
                 ? "Refreshing"
-                : temporalFacts
-                  ? `${temporalFacts.indexed_session_count} of ${temporalFacts.session_count} conversations`
-                  : "Checking"
+                : memoryInsightsError
+                  ? "Unavailable"
+                  : temporalFacts
+                    ? `${temporalFacts.indexed_session_count} of ${temporalFacts.session_count} conversations`
+                    : "Checking"
             }
             statusTone={
-              temporalFacts && temporalFacts.indexed_session_count < temporalFacts.session_count
+              memoryInsightsError || (temporalFacts && temporalFacts.indexed_session_count < temporalFacts.session_count)
                 ? "issue"
                 : "ready"
             }
           >
             <p className="mt-4 text-sm text-muted-foreground">
-              {temporalFacts ? (
+              {memoryInsightsError ? (
+                <span role="alert">{memoryInsightsError}</span>
+              ) : temporalFacts ? (
                 <>
                   Vault remembers {temporalFacts.status_counts.current ?? 0} current details.
                   {temporalFacts.latest_observed_at
@@ -2167,14 +2241,19 @@ function SettingsView() {
               )}
             </p>
             <div className="mt-3 flex flex-wrap gap-2">
+              {memoryInsightsError ? (
+                <Button variant="outline" onClick={() => void refreshMemoryInsights()} disabled={!backendVault}>
+                  Try again
+                </Button>
+              ) : null}
               <Button
                 variant="outline"
                 className="gap-2"
                 onClick={() => void refreshTemporalHistory()}
-                disabled={!backendVault || temporalBackfillBusy || temporalBackfillActive}
+                disabled={!backendVault || temporalRefreshPending}
               >
-                <RefreshCw className={`h-4 w-4 ${temporalBackfillActive ? "animate-spin" : ""}`} />
-                {temporalBackfillActive ? "Refreshing..." : "Refresh memory history"}
+                <RefreshCw className={`h-4 w-4 ${temporalRefreshPending ? "animate-spin" : ""}`} />
+                {temporalRefreshPending ? "Refreshing..." : "Refresh memory history"}
               </Button>
             </div>
             <div className="mt-5 border-t border-border pt-4">
@@ -2747,6 +2826,125 @@ function SettingsView() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+    </div>
+  );
+}
+
+function OdinSetupGuide({
+  open,
+  installed,
+  busy,
+  onPrimary,
+}: {
+  open: boolean;
+  installed: boolean;
+  busy: boolean;
+  onPrimary: () => void;
+}) {
+  return (
+    <>
+      <Button asChild variant="outline">
+        <Link
+          to="/settings"
+          search={{ section: "connections", guide: open ? undefined : "odin" }}
+          replace
+          aria-expanded={open}
+        >
+          How to install and connect
+        </Link>
+      </Button>
+      {open ? (
+        <section
+          className="basis-full rounded-md border border-border bg-background p-4"
+          aria-label="Install and connect Odin"
+        >
+          <div className="flex items-start justify-between gap-3">
+            <div>
+              <h3 className="font-medium text-foreground">Install and connect Odin</h3>
+              <p className="mt-1 max-w-[68ch] text-xs leading-5 text-muted-foreground">
+                Complete these steps once. Odin keeps repository files unchanged and stores its index in this library.
+              </p>
+            </div>
+            <Button asChild variant="ghost" size="sm">
+              <Link to="/settings" search={{ section: "connections" }} replace>Close</Link>
+            </Button>
+          </div>
+          <ol className="mt-4 space-y-5 text-sm">
+          <li>
+            <div className="font-medium">1. Install the command</div>
+            <p className="mt-1 leading-6 text-muted-foreground">
+              Use Vault's installer below. When it finishes, open a new PowerShell window so Windows can find the command.
+            </p>
+            <div className="mt-2 rounded-md border border-border bg-background px-3 py-2 font-mono text-xs">odin --help</div>
+          </li>
+          <li>
+            <div className="font-medium">2. Request access</div>
+            <p className="mt-1 leading-6 text-muted-foreground">
+              Run this in PowerShell. Return to Vault and approve the notification that appears at the bottom of the window.
+            </p>
+            <div className="mt-2 rounded-md border border-border bg-background px-3 py-2 font-mono text-xs">odin auth pair</div>
+          </li>
+          <li>
+            <div className="font-medium">3. Add a project</div>
+            <p className="mt-1 leading-6 text-muted-foreground">
+              Open PowerShell in the repository folder, register it, then ask for grounded code context.
+            </p>
+            <div className="mt-2 space-y-2 rounded-md border border-border bg-background px-3 py-2 font-mono text-xs">
+              <div>odin project add . --name "My Project"</div>
+              <div>odin context "How does authentication work?" --project .</div>
+            </div>
+          </li>
+          </ol>
+          <div className="mt-4 flex justify-end">
+            <Button type="button" onClick={onPrimary} disabled={busy}>
+              {installed ? "Pair Odin" : "Install Odin"}
+            </Button>
+          </div>
+        </section>
+      ) : null}
+    </>
+  );
+}
+
+function OdinCommandReference() {
+  async function copyCommand(command: string) {
+    try {
+      if (window.cmlDesktop?.copyText) await window.cmlDesktop.copyText(command);
+      else await window.navigator.clipboard.writeText(command);
+      notify({ title: "Command copied", description: command, tone: "success" });
+    } catch {
+      notify({ title: "Command was not copied", description: "Select the command and copy it manually.", tone: "error" });
+    }
+  }
+
+  return (
+    <div className="mt-5 divide-y divide-border rounded-md border border-border bg-background">
+      {odinCommandGroups.map((group) => (
+        <section key={group.title} className="p-3 sm:p-4">
+          <h3 className="text-sm font-medium text-foreground">{group.title}</h3>
+          <div className="mt-2 divide-y divide-border">
+            {group.commands.map(([command, description]) => (
+              <div key={command} className="flex items-start gap-3 py-2.5">
+                <div className="min-w-0 flex-1">
+                  <code className="block break-words text-xs text-foreground">{command}</code>
+                  <p className="mt-1 text-xs leading-5 text-muted-foreground">{description}</p>
+                </div>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon"
+                  className="h-8 w-8 shrink-0"
+                  aria-label={`Copy ${command}`}
+                  title="Copy command"
+                  onClick={() => void copyCommand(command)}
+                >
+                  <Copy className="h-3.5 w-3.5" />
+                </Button>
+              </div>
+            ))}
+          </div>
+        </section>
+      ))}
     </div>
   );
 }
