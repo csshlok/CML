@@ -84,7 +84,11 @@ def vector_backend_policy(vault_id: str | None = None) -> dict[str, Any]:
         try:
             policy["vault_status"] = turbovec_phase_c_status(vault_id)
         except KeyError:
-            policy["vault_status"] = {"vault_id": vault_id, "status": "vault_not_found", "approved": False}
+            policy["vault_status"] = {
+                "vault_id": vault_id,
+                "status": "vault_not_found",
+                "approved": False,
+            }
     return policy
 
 
@@ -128,7 +132,11 @@ def semantic_search_results(
                     cluster_id=cluster_id,
                     limit=limit,
                 )
-                return {"backend": "exact_fallback", "results": results, "eligible_count": eligible_count}
+                return {
+                    "backend": "exact_fallback",
+                    "results": results,
+                    "eligible_count": eligible_count,
+                }
         results = _semantic_search_exact(
             conn,
             vault_id,
@@ -145,7 +153,9 @@ def build_turbovec_sidecar(vault_id: str, *, rebuild_reason: str = "manual") -> 
         raise TurbovecSidecarUnavailable("turbovec_runtime_unavailable")
     with connect() as conn:
         snapshot = _active_snapshot(conn, vault_id)
-        return _build_turbovec_sidecar_conn(conn, vault_id, snapshot=snapshot, rebuild_reason=rebuild_reason)
+        return _build_turbovec_sidecar_conn(
+            conn, vault_id, snapshot=snapshot, rebuild_reason=rebuild_reason
+        )
 
 
 def turbovec_sidecar_status(vault_id: str) -> dict[str, Any]:
@@ -159,7 +169,10 @@ def turbovec_sidecar_repair_plan(vault_id: str | None = None) -> dict[str, Any]:
         if vault_id:
             vault_ids = [vault_id]
         else:
-            vault_ids = [str(row["id"]) for row in conn.execute("SELECT id FROM vaults ORDER BY id").fetchall()]
+            vault_ids = [
+                str(row["id"])
+                for row in conn.execute("SELECT id FROM vaults ORDER BY id").fetchall()
+            ]
         items = []
         for current_vault_id in vault_ids:
             snapshot = _active_snapshot(conn, current_vault_id)
@@ -186,7 +199,10 @@ def repair_turbovec_sidecars(vault_id: str | None = None) -> dict[str, Any]:
         if vault_id:
             vault_ids = [vault_id]
         else:
-            vault_ids = [str(row["id"]) for row in conn.execute("SELECT id FROM vaults ORDER BY id").fetchall()]
+            vault_ids = [
+                str(row["id"])
+                for row in conn.execute("SELECT id FROM vaults ORDER BY id").fetchall()
+            ]
         for current_vault_id in vault_ids:
             snapshot = _active_snapshot(conn, current_vault_id)
             status = _sidecar_status_for_snapshot(conn, current_vault_id, snapshot)
@@ -244,7 +260,9 @@ def turbovec_phase_c_status(vault_id: str) -> dict[str, Any]:
         }
 
 
-def benchmark_turbovec_phase_c(vault_id: str, *, query_limit: int = 20, top_k: int = 10) -> dict[str, Any]:
+def benchmark_turbovec_phase_c(
+    vault_id: str, *, query_limit: int = 20, top_k: int = 10
+) -> dict[str, Any]:
     from backend.app.core.turbovec_benchmark import (
         BenchmarkChunkRow,
         benchmark_current_scan,
@@ -260,7 +278,9 @@ def benchmark_turbovec_phase_c(vault_id: str, *, query_limit: int = 20, top_k: i
             raise KeyError("vault_not_found")
         snapshot = _active_snapshot(conn, vault_id)
         benchmark_rows = []
-        for item in _hydrate_candidate_rows(conn, vault_id, snapshot=snapshot, cluster_id=None, chunk_ids=None):
+        for item in _hydrate_candidate_rows(
+            conn, vault_id, snapshot=snapshot, cluster_id=None, chunk_ids=None
+        ):
             benchmark_rows.append(
                 BenchmarkChunkRow(
                     chunk_id=str(item["chunk_id"]),
@@ -280,7 +300,9 @@ def benchmark_turbovec_phase_c(vault_id: str, *, query_limit: int = 20, top_k: i
                 "eligible_chunk_count": 0,
                 "derived_state_epoch": snapshot["epoch"],
                 "thresholds": phase_c_thresholds(),
-                "checks": [{"id": "eligible_chunks_present", "ok": False, "detail": "0 eligible chunks"}],
+                "checks": [
+                    {"id": "eligible_chunks_present", "ok": False, "detail": "0 eligible chunks"}
+                ],
                 "benchmark": {},
             }
             _write_phase_c_result(vault_id, snapshot=snapshot, report=report)
@@ -291,8 +313,7 @@ def benchmark_turbovec_phase_c(vault_id: str, *, query_limit: int = 20, top_k: i
             sidecar = _sidecar_status_for_snapshot(conn, vault_id, snapshot)
         queries = sampled_queries(benchmark_rows, limit=max(1, min(query_limit, 100)))
         query_source = {
-            query: str(row.source_id)
-            for query, row in zip(queries, benchmark_rows, strict=False)
+            query: str(row.source_id) for query, row in zip(queries, benchmark_rows, strict=False)
         }
         exact = benchmark_current_scan(benchmark_rows, queries, top_k=top_k)
         candidate = benchmark_turbovec_scan(
@@ -308,7 +329,8 @@ def benchmark_turbovec_phase_c(vault_id: str, *, query_limit: int = 20, top_k: i
             candidate.get("search_latency_ms", candidate.get("latency_ms", {})),
         )
         size_ratio = round(
-            float(sidecar.get("tvim_size_bytes") or 0) / max(1.0, float(stats.get("total_embedding_bytes") or 0)),
+            float(sidecar.get("tvim_size_bytes") or 0)
+            / max(1.0, float(stats.get("total_embedding_bytes") or 0)),
             4,
         )
         cluster_overlap = _cluster_overlap_report(overlap, query_source=query_source)
@@ -371,10 +393,14 @@ def apply_source_delta_to_sidecar(
         return {"applied": False, "reason": "sidecar_snapshot_mismatch"}
     removed = len({chunk_id for chunk_id in removed_chunk_ids if chunk_id})
     added = len(added_chunks)
-    allocated = max(1, int(manifest.get("allocated_slot_count") or manifest.get("chunk_count") or 0))
+    allocated = max(
+        1, int(manifest.get("allocated_slot_count") or manifest.get("chunk_count") or 0)
+    )
     threshold = max(1, math.ceil(allocated * REBUILD_CHURN_THRESHOLD))
     if removed + added >= threshold or removed >= threshold or added >= threshold:
-        rebuilt = _build_turbovec_sidecar_conn(conn, vault_id, snapshot=snapshot, rebuild_reason=rebuild_reason)
+        rebuilt = _build_turbovec_sidecar_conn(
+            conn, vault_id, snapshot=snapshot, rebuild_reason=rebuild_reason
+        )
         rebuilt["applied"] = False
         rebuilt["reason"] = "rebuild_threshold"
         return rebuilt
@@ -386,11 +412,17 @@ def apply_source_delta_to_sidecar(
                 removed_applied += 1
         if added_chunks:
             vectors = np.ascontiguousarray(
-                np.array([_decode_embedding(str(chunk["embedding"])) for chunk in added_chunks], dtype=np.float32)
+                np.array(
+                    [_decode_embedding(str(chunk["embedding"])) for chunk in added_chunks],
+                    dtype=np.float32,
+                )
             )
             if vectors.size > 0:
                 ids = np.ascontiguousarray(
-                    np.array([stable_u64(str(chunk["chunk_id"])) for chunk in added_chunks], dtype=np.uint64)
+                    np.array(
+                        [stable_u64(str(chunk["chunk_id"])) for chunk in added_chunks],
+                        dtype=np.uint64,
+                    )
                 )
                 index.add_with_ids(vectors, ids)
         index.prepare()
@@ -470,7 +502,9 @@ def _semantic_search_exact(
     if positive_indices.size == 0:
         return []
     top_count = min(int(limit), int(positive_indices.size))
-    top_positions = positive_indices[np.argpartition(weighted_scores[positive_indices], -top_count)[-top_count:]]
+    top_positions = positive_indices[
+        np.argpartition(weighted_scores[positive_indices], -top_count)[-top_count:]
+    ]
     ordered_positions = top_positions[np.argsort(weighted_scores[top_positions])[::-1]]
     chunk_ids = [snapshot_cache.chunk_ids[int(index)] for index in ordered_positions.tolist()]
     raw_score_by_chunk = {
@@ -510,7 +544,9 @@ def _semantic_search_turbovec(
         raise TurbovecSidecarUnhealthy(f"sidecar_{manifest.get('status') or 'unknown'}")
     if not _manifest_matches_snapshot(manifest, snapshot):
         raise TurbovecSidecarUnavailable("sidecar_snapshot_mismatch")
-    allowlist_chunk_ids = _eligible_chunk_ids(conn, vault_id, snapshot=snapshot, cluster_id=cluster_id)
+    allowlist_chunk_ids = _eligible_chunk_ids(
+        conn, vault_id, snapshot=snapshot, cluster_id=cluster_id
+    )
     if not allowlist_chunk_ids:
         return []
     try:
@@ -520,12 +556,20 @@ def _semantic_search_turbovec(
             max(limit * TURBOVEC_CANDIDATE_MULTIPLIER, TURBOVEC_MIN_CANDIDATES),
         )
         query = np.ascontiguousarray(np.array([query_vector], dtype=np.float32))
-        allowlist = np.ascontiguousarray(np.array([stable_u64(chunk_id) for chunk_id in allowlist_chunk_ids], dtype=np.uint64))
+        allowlist = np.ascontiguousarray(
+            np.array([stable_u64(chunk_id) for chunk_id in allowlist_chunk_ids], dtype=np.uint64)
+        )
         _scores, ids = index.search(query, k=candidate_k, allowlist=allowlist)
     except Exception as exc:
         _mark_manifest_unhealthy(conn, vault_id, snapshot["epoch"], error=str(exc))
         raise TurbovecSidecarUnhealthy("sidecar_search_failed") from exc
-    candidate_ids = [chunk_id for chunk_id in (_stable_id_lookup(allowlist_chunk_ids).get(int(value)) for value in ids[0].tolist()) if chunk_id]
+    candidate_ids = [
+        chunk_id
+        for chunk_id in (
+            _stable_id_lookup(allowlist_chunk_ids).get(int(value)) for value in ids[0].tolist()
+        )
+        if chunk_id
+    ]
     if not candidate_ids:
         return []
     rows = _hydrate_candidate_rows(
@@ -569,6 +613,7 @@ def _score_rows(rows: list[dict[str, Any]], query_vector: list[float]) -> list[d
                 "low_trust": is_low_trust(row),
                 "raw_score": round(raw_score, 4),
                 "score": round(score, 4),
+                **_evidence_locators(row),
             }
         )
     return scored
@@ -614,6 +659,7 @@ def _hydrate_scored_rows(
                 "low_trust": is_low_trust(row),
                 "raw_score": raw_score_by_chunk[chunk_id],
                 "score": weighted_score_by_chunk[chunk_id],
+                **_evidence_locators(row),
             }
         )
     return scored
@@ -701,7 +747,9 @@ def _build_exact_search_snapshot(
     return ExactSearchSnapshot(chunk_ids=chunk_ids, vectors=vectors, trust_weights=trust_weights)
 
 
-def _exact_cache_key(conn, vault_id: str, *, snapshot: dict, cluster_id: str | None) -> tuple[Any, ...]:
+def _exact_cache_key(
+    conn, vault_id: str, *, snapshot: dict, cluster_id: str | None
+) -> tuple[Any, ...]:
     return (
         str(get_settings().database_path),
         vault_id,
@@ -738,7 +786,9 @@ def _eligible_chunk_count(conn, vault_id: str, snapshot: dict, *, cluster_id: st
     return int(row["count"] if row is not None else 0)
 
 
-def _eligible_chunk_ids(conn, vault_id: str, *, snapshot: dict, cluster_id: str | None) -> list[str]:
+def _eligible_chunk_ids(
+    conn, vault_id: str, *, snapshot: dict, cluster_id: str | None
+) -> list[str]:
     params: list[Any] = [vault_id]
     cluster_clause = ""
     if cluster_id == UNCLUSTERED_SCOPE_ID:
@@ -796,6 +846,7 @@ def _hydrate_candidate_rows(
             chunks.chunk_index,
             chunks.text,
             chunks.embedding,
+            chunks.chunk_meta_json,
             sources.title AS source_title,
             sources.source_type,
             sources.provenance,
@@ -816,6 +867,21 @@ def _hydrate_candidate_rows(
     return [chunk_from_encrypted_row(conn, row) for row in rows]
 
 
+def _evidence_locators(row: dict[str, Any]) -> dict[str, Any]:
+    try:
+        metadata = json.loads(str(row.get("chunk_meta_json") or "{}"))
+    except (TypeError, ValueError, json.JSONDecodeError):
+        metadata = {}
+    if not isinstance(metadata, dict):
+        metadata = {}
+    return {
+        "relative_path": str(row.get("import_relative_path") or "").replace("\\", "/"),
+        "line_start": metadata.get("line_start"),
+        "line_end": metadata.get("line_end"),
+        "symbol": metadata.get("symbol"),
+    }
+
+
 def _build_turbovec_sidecar_conn(
     conn,
     vault_id: str,
@@ -831,19 +897,32 @@ def _build_turbovec_sidecar_conn(
     manifest_path = epoch_dir / MANIFEST_NAME
     bit_width = int(get_settings().turbovec_bit_width)
     chunk_rows = _chunk_vector_rows(conn, vault_id, snapshot=snapshot)
-    manifest = _base_manifest(vault_id, snapshot, index_path=index_path, bit_width=bit_width, rebuild_reason=rebuild_reason)
+    manifest = _base_manifest(
+        vault_id,
+        snapshot,
+        index_path=index_path,
+        bit_width=bit_width,
+        rebuild_reason=rebuild_reason,
+    )
     manifest["status"] = "staging"
     manifest["chunk_count"] = len(chunk_rows)
     manifest["allocated_slot_count"] = len(chunk_rows)
     _write_manifest(manifest_path, manifest)
     try:
         vectors = np.ascontiguousarray(
-            np.array([_decode_embedding(str(row["embedding"] or "")) for row in chunk_rows], dtype=np.float32)
+            np.array(
+                [_decode_embedding(str(row["embedding"] or "")) for row in chunk_rows],
+                dtype=np.float32,
+            )
         )
         if chunk_rows and (vectors.shape[1] <= 0 or vectors.shape[1] % 8 != 0):
-            raise TurbovecSidecarError(f"invalid_embedding_dimensions_for_turbovec:{vectors.shape[1]}")
+            raise TurbovecSidecarError(
+                f"invalid_embedding_dimensions_for_turbovec:{vectors.shape[1]}"
+            )
         if chunk_rows:
-            ids = np.ascontiguousarray(np.array([stable_u64(str(row["id"])) for row in chunk_rows], dtype=np.uint64))
+            ids = np.ascontiguousarray(
+                np.array([stable_u64(str(row["id"])) for row in chunk_rows], dtype=np.uint64)
+            )
             index = IdMapIndex(dim=vectors.shape[1], bit_width=bit_width)
             index.add_with_ids(vectors, ids)
         else:
@@ -1089,7 +1168,9 @@ def _current_phase_c_approval(vault_id: str, *, snapshot: dict) -> dict[str, Any
     return vault
 
 
-def _cluster_overlap_report(overlap: dict[str, Any], *, query_source: dict[str, str]) -> dict[str, Any]:
+def _cluster_overlap_report(
+    overlap: dict[str, Any], *, query_source: dict[str, str]
+) -> dict[str, Any]:
     grouped: dict[str, list[float]] = {}
     for item in overlap.get("overlaps", []):
         key = query_source.get(str(item.get("query") or ""), "unassigned")
@@ -1190,7 +1271,9 @@ def _sidecar_root(conn, vault_id: str) -> Path:
     return root / SIDECAR_DIR_NAME
 
 
-def _read_manifest_with_validation(conn, vault_id: str, epoch: int) -> tuple[dict[str, Any] | None, str | None]:
+def _read_manifest_with_validation(
+    conn, vault_id: str, epoch: int
+) -> tuple[dict[str, Any] | None, str | None]:
     path = _manifest_path(conn, vault_id, epoch)
     if not path.exists():
         return None, None
@@ -1242,7 +1325,9 @@ def _base_manifest(
     }
 
 
-def _manifest_validation_error(conn, vault_id: str, epoch: int, manifest: dict[str, Any]) -> str | None:
+def _manifest_validation_error(
+    conn, vault_id: str, epoch: int, manifest: dict[str, Any]
+) -> str | None:
     if int(manifest.get("manifest_version") or 0) != VECTOR_MANIFEST_VERSION:
         return "manifest_version_mismatch"
     if str(manifest.get("vault_id") or "") != vault_id:
@@ -1284,7 +1369,8 @@ def _manifest_matches_snapshot(manifest: dict[str, Any], snapshot: dict) -> bool
         and int(manifest.get("derived_state_epoch") or 0) == int(snapshot["epoch"])
         and str(manifest.get("embedding_model_id") or "") == str(snapshot["embedding_model_id"])
         and str(manifest.get("index_version") or "") == str(snapshot["index_version"])
-        and str(manifest.get("normalization_version") or "") == str(snapshot["normalization_version"])
+        and str(manifest.get("normalization_version") or "")
+        == str(snapshot["normalization_version"])
         and str(manifest.get("extraction_version") or "") == str(snapshot["extraction_version"])
         and str(manifest.get("status") or "") in MANIFEST_STATUSES
     )

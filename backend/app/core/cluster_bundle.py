@@ -61,8 +61,12 @@ def build_cluster_bundle_context(
         "bundle_status": {
             "mode": mode,
             "cluster_id": cluster_id,
-            "sources_considered": int(evidence_payload.get("sources_considered") or len(evidence_payload["citations"])),
-            "sources_analyzed": int(evidence_payload.get("sources_analyzed") or len(evidence_payload["citations"])),
+            "sources_considered": int(
+                evidence_payload.get("sources_considered") or len(evidence_payload["citations"])
+            ),
+            "sources_analyzed": int(
+                evidence_payload.get("sources_analyzed") or len(evidence_payload["citations"])
+            ),
             "sources_low_relevance": int(evidence_payload.get("sources_low_relevance") or 0),
             "analysis_full_scope": bool(evidence_payload.get("analysis_full_scope")),
         },
@@ -139,8 +143,10 @@ def retrieve_bundle_evidence(
         raw_scope_parts: list[str] = []
         for index, item in enumerate(packet_rows, start=1):
             source = source_by_id.get(str(item.get("source_id") or ""))
-            source_title = str(item.get("source_title") or (source or {}).get("title") or f"Source {index}")
-            snippet = " ".join(str(item.get("evidence_excerpt") or item.get("excerpt") or "").split())
+            source_title = str(
+                item.get("source_title") or (source or {}).get("title") or f"Source {index}"
+            )
+            snippet = _normalize_snippet(item.get("evidence_excerpt") or item.get("excerpt") or "")
             handle = (
                 f"chunk:{item['chunk_id']}"
                 if str(item.get("chunk_id") or "").strip()
@@ -152,9 +158,16 @@ def retrieve_bundle_evidence(
                 "chunk_id": item.get("chunk_id"),
                 "page_id": item.get("page_id"),
                 "page_number": item.get("page_number"),
+                "relative_path": item.get("relative_path")
+                or (source or {}).get("import_relative_path"),
+                "line_start": item.get("line_start"),
+                "line_end": item.get("line_end"),
+                "symbol": item.get("symbol"),
                 "title": source_title,
                 "trust_tier": str(item.get("trust_tier") or "trusted_local"),
-                "source_type": str(item.get("source_type") or (source or {}).get("source_type") or "unknown"),
+                "source_type": str(
+                    item.get("source_type") or (source or {}).get("source_type") or "unknown"
+                ),
                 "snippet": snippet,
                 "score": float(item.get("score") or 0.0),
                 "provenance": str(item.get("provenance") or "local_import"),
@@ -169,6 +182,11 @@ def retrieve_bundle_evidence(
                     "chunk_id": item.get("chunk_id"),
                     "page_id": item.get("page_id"),
                     "page_number": item.get("page_number"),
+                    "relative_path": item.get("relative_path")
+                    or (source or {}).get("import_relative_path"),
+                    "line_start": item.get("line_start"),
+                    "line_end": item.get("line_end"),
+                    "symbol": item.get("symbol"),
                     "snippet": snippet,
                     "score": float(item.get("score") or 0.0),
                     "provenance": str(item.get("provenance") or "local_import"),
@@ -176,11 +194,18 @@ def retrieve_bundle_evidence(
                     "security_labels": item.get("security_labels") or "[]",
                     "low_trust": bool(item.get("low_trust")),
                     "state": "current",
-                    "source_type": str(item.get("source_type") or (source or {}).get("source_type") or "unknown"),
+                    "source_type": str(
+                        item.get("source_type") or (source or {}).get("source_type") or "unknown"
+                    ),
                 }
             )
             if source:
-                summary = str(source.get("summary") or source.get("extracted_text") or source.get("raw_text") or "").strip()
+                summary = str(
+                    source.get("summary")
+                    or source.get("extracted_text")
+                    or source.get("raw_text")
+                    or ""
+                ).strip()
                 source_snippets.append(
                     {
                         "id": source.get("id"),
@@ -221,7 +246,13 @@ def retrieve_bundle_evidence(
         )
     )
     results = list(search_response.get("results") or [])
-    source_ids = list(OrderedDict.fromkeys(str(result.get("source_id") or "") for result in results if str(result.get("source_id") or "").strip()))
+    source_ids = list(
+        OrderedDict.fromkeys(
+            str(result.get("source_id") or "")
+            for result in results
+            if str(result.get("source_id") or "").strip()
+        )
+    )
     cluster_ids = list(
         OrderedDict.fromkeys(
             str(result.get("cluster_id") or "")
@@ -264,18 +295,31 @@ def retrieve_bundle_evidence(
     raw_scope_parts: list[str] = []
     for index, result in enumerate(results, start=1):
         source = source_by_id.get(str(result.get("source_id") or ""))
-        source_title = str(result.get("source_title") or (source or {}).get("title") or f"Source {index}")
-        snippet = " ".join(str(result.get("snippet") or "").split())
-        handle = f"chunk:{result['chunk_id']}" if str(result.get("chunk_id") or "").strip() else f"source:{result.get('source_id') or f'item-{index}'}"
+        source_title = str(
+            result.get("source_title") or (source or {}).get("title") or f"Source {index}"
+        )
+        snippet = _normalize_snippet(result.get("snippet") or "")
+        handle = (
+            f"chunk:{result['chunk_id']}"
+            if str(result.get("chunk_id") or "").strip()
+            else f"source:{result.get('source_id') or f'item-{index}'}"
+        )
         evidence_item = {
             "handle": handle,
             "source_id": result.get("source_id"),
             "chunk_id": result.get("chunk_id"),
             "page_id": result.get("page_id"),
             "page_number": result.get("page_number"),
+            "relative_path": result.get("relative_path")
+            or (source or {}).get("import_relative_path"),
+            "line_start": result.get("line_start"),
+            "line_end": result.get("line_end"),
+            "symbol": result.get("symbol"),
             "title": source_title,
             "trust_tier": str(result.get("trust_tier") or "trusted_local"),
-            "source_type": str(result.get("source_type") or (source or {}).get("source_type") or "unknown"),
+            "source_type": str(
+                result.get("source_type") or (source or {}).get("source_type") or "unknown"
+            ),
             "snippet": snippet,
             "score": float(result.get("score") or 0.0),
             "provenance": str(result.get("provenance") or "local_import"),
@@ -289,6 +333,11 @@ def retrieve_bundle_evidence(
                 "chunk_id": result.get("chunk_id"),
                 "page_id": result.get("page_id"),
                 "page_number": result.get("page_number"),
+                "relative_path": result.get("relative_path")
+                or (source or {}).get("import_relative_path"),
+                "line_start": result.get("line_start"),
+                "line_end": result.get("line_end"),
+                "symbol": result.get("symbol"),
                 "snippet": snippet,
                 "score": float(result.get("score") or 0.0),
                 "provenance": str(result.get("provenance") or "local_import"),
@@ -296,11 +345,18 @@ def retrieve_bundle_evidence(
                 "security_labels": result.get("security_labels") or "[]",
                 "low_trust": bool(result.get("low_trust")),
                 "state": "current",
-                "source_type": str(result.get("source_type") or (source or {}).get("source_type") or "unknown"),
+                "source_type": str(
+                    result.get("source_type") or (source or {}).get("source_type") or "unknown"
+                ),
             }
         )
         if source:
-            summary = str(source.get("summary") or source.get("extracted_text") or source.get("raw_text") or "").strip()
+            summary = str(
+                source.get("summary")
+                or source.get("extracted_text")
+                or source.get("raw_text")
+                or ""
+            ).strip()
             source_snippets.append(
                 {
                     "id": source.get("id"),
@@ -330,6 +386,17 @@ def retrieve_bundle_evidence(
     }
 
 
+def _normalize_snippet(value: object) -> str:
+    """Normalize noisy whitespace without flattening code, logs, or tables."""
+    text = str(value or "").replace("\r\n", "\n").replace("\r", "\n")
+    lines = [line.rstrip() for line in text.split("\n")]
+    while lines and not lines[0].strip():
+        lines.pop(0)
+    while lines and not lines[-1].strip():
+        lines.pop()
+    return "\n".join(lines)
+
+
 def build_cluster_profile(*, vault_id: str, cluster_id: str | None, evidence: list[dict]) -> dict:
     summary = ""
     local_terms: list[str] = []
@@ -344,7 +411,9 @@ def build_cluster_profile(*, vault_id: str, cluster_id: str | None, evidence: li
             ).fetchone()
         if row is not None:
             cluster_name = str(row["name"] or "").strip()
-            summary = str(row["cluster_summary"] or "").strip() or str(row["description"] or "").strip()
+            summary = (
+                str(row["cluster_summary"] or "").strip() or str(row["description"] or "").strip()
+            )
             glossary = str(row["cluster_glossary"] or "").strip()
             if glossary:
                 try:
@@ -393,15 +462,25 @@ def build_cluster_profile(*, vault_id: str, cluster_id: str | None, evidence: li
     }
 
 
-def estimate_bundle_tokens(*, query: str, evidence: list[dict], cluster_profile: dict, memory_items: list[dict]) -> dict:
+def estimate_bundle_tokens(
+    *, query: str, evidence: list[dict], cluster_profile: dict, memory_items: list[dict]
+) -> dict:
     citations_text = "\n".join(str(item.get("snippet") or "") for item in evidence)
     profile_text = "\n".join(
         part
         for part in [
             str(cluster_profile.get("summary") or "").strip(),
             str(cluster_profile.get("style_profile") or "").strip(),
-            "\n".join(str(item).strip() for item in cluster_profile.get("local_terms") or [] if str(item).strip()),
-            "\n".join(str(item).strip() for item in cluster_profile.get("reasoning_patterns") or [] if str(item).strip()),
+            "\n".join(
+                str(item).strip()
+                for item in cluster_profile.get("local_terms") or []
+                if str(item).strip()
+            ),
+            "\n".join(
+                str(item).strip()
+                for item in cluster_profile.get("reasoning_patterns") or []
+                if str(item).strip()
+            ),
         ]
         if part
     )
