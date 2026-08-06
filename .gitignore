@@ -144,3 +144,10 @@ docs/UI_UX_DEEP_AUDIT_2026-07-24.md
 docs/LORA_TO_RAG_MIGRATION_PLAN.md
 docs/TURBOVEC_INTEGRATION_PLAN.md
 docs/ODIN_PROJECT_INTELLIGENCE_IMPLEMENTATION_PLAN_2026-07-31.md
+
+# Isolated LongMemEval 88%-at-7k side experiment. Every experiment-created
+# script, copied module, fixture, cache, manifest, and report belongs here.
+/docs/LONGMEMEVAL_88_AT_7K_SIDE_EXPERIMENT.md
+/side-experiments/longmemeval-88-at-7k/
+/side-experiments/memory-compiler-v1/
+/side-experiments/memory-compiler-v2/
