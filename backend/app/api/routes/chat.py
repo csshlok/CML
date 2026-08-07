@@ -2549,6 +2549,14 @@ def _trim_snippet(text: str, limit: int = 420) -> str:
 
 def _build_extract_answer(prompt: str, citations: list[dict]) -> str:
     lead = f'Based on the closest local context for: "{prompt}"'
+    bullet_count = _requested_summary_bullet_count(prompt)
+    if bullet_count:
+        bullets = _build_grounded_summary_bullets(citations, bullet_count)
+        if bullets:
+            return lead + "\n\n" + "\n".join(
+                f"{index}. {text} [E{evidence_index}]"
+                for index, (text, evidence_index) in enumerate(bullets, start=1)
+            )
     points = []
     for index, citation in enumerate(citations[:3], start=1):
         trust_note = " [low-trust]" if is_low_trust(citation) else ""
@@ -2557,6 +2565,41 @@ def _build_extract_answer(prompt: str, citations: list[dict]) -> str:
             f"{_trim_snippet(str(citation.get('snippet') or ''))}"
         )
     return lead + "\n\n" + "\n".join(points)
+
+
+def _requested_summary_bullet_count(prompt: str) -> int:
+    normalized = " ".join(prompt.lower().split())
+    if "bullet" not in normalized or not re.search(r"\bsummari[sz]e?\b|\bsummary\b", normalized):
+        return 0
+    match = re.search(
+        r"\b(?P<count>\d+|one|two|three|four|five)\s+(?:grounded\s+)?bullets?\b",
+        normalized,
+    )
+    if not match:
+        return 3
+    words = {"one": 1, "two": 2, "three": 3, "four": 4, "five": 5}
+    raw_count = match.group("count")
+    return max(1, min(5, words.get(raw_count, int(raw_count) if raw_count.isdigit() else 3)))
+
+
+def _build_grounded_summary_bullets(
+    citations: list[dict],
+    limit: int,
+) -> list[tuple[str, int]]:
+    bullets: list[tuple[str, int]] = []
+    for evidence_index, citation in enumerate(citations[:3], start=1):
+        snippet = _trim_snippet(str(citation.get("snippet") or ""))
+        if not snippet:
+            continue
+        segments = re.split(r"(?<=[.!?])\s+|;\s*|,\s+(?:and\s+)?", snippet)
+        for segment in segments:
+            cleaned = segment.strip(" -.,;")
+            if not cleaned:
+                continue
+            bullets.append((cleaned[0].upper() + cleaned[1:], evidence_index))
+            if len(bullets) >= limit:
+                return bullets
+    return bullets
 
 
 def _build_conflict_answer(prompt: str, citations: list[dict]) -> str:

@@ -151,3 +151,12 @@ docs/ODIN_PROJECT_INTELLIGENCE_IMPLEMENTATION_PLAN_2026-07-31.md
 /side-experiments/longmemeval-88-at-7k/
 /side-experiments/memory-compiler-v1/
 /side-experiments/memory-compiler-v2/
+
+# Local-only documentation. Keep product/research notes on disk without tracking
+# or publishing them from this repository.
+/docs/
+*.md
+*.mdx
+*.rst
+!/ReadME.md
+!/BENCHMARK.md

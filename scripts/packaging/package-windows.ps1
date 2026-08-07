@@ -64,7 +64,7 @@ $backendRuntimePackages = @(
   "fastapi==0.136.3",
   "uvicorn[standard]==0.48.0",
   "pydantic-settings==2.14.2",
-  "cryptography==48.0.1",
+  "cryptography==50.0.0",
   "psutil==7.2.2",
   "numpy==2.4.6",
   "turbovec==0.8.0",

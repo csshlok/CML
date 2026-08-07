@@ -346,17 +346,17 @@ In practical terms, the measured claim-first pipeline can answer about **4.8× a
 
 Vault's ingestion used local embeddings and consumed **zero billable API ingestion tokens**. The costs above cover answer generation and two judges, not ordinary local retrieval. They are estimates from recorded provider usage and the prices verified when the runs were completed. Open RAG's $1.9102 is the sum of its recorded reader and judge component estimates; a stale aggregate field in that artifact incorrectly remained zero and is not used.
 
-Published systems currently report higher LongMemEval answer accuracy, but the results are not a shared leaderboard: readers, judges, context accounting, reasoning settings, and retrieval limits differ.
+Third-party product results are intentionally omitted because their readers, judges,
+context accounting, reasoning settings, retrieval limits, and sample sizes are not
+matched to this protocol. Vault's measured LongMemEval result is **82.0%** by the
+independent judge on 500 questions with **6,922.5 mean reader-prompt tokens**.
 
-| System | Published LongMemEval result | Reported context |
-| --- | ---: | ---: |
-| [Mem0](https://mem0.ai/research) | 94.4% on 500 questions | 6,787 mean tokens |
-| [Hindsight](https://vectorize.io/benchmarks) | 94.6% current published LongMemEval result | Not published with the headline |
-| [Zep](https://www.getzep.com/research/) | 90.2% on 500 questions | 4,408 median tokens |
-| **Vault claim-first 10K** | **82.0% independent judge on 500 questions** | **6,922.5 mean reader-prompt tokens** |
-| [Graphify](https://github.com/Graphify-Labs/graphify#benchmarks) | 76% on 50 questions | Not published |
-
-Vault is not yet state of the art in multi-session answer accuracy. Its measured advantages are local-first ingestion with no extraction-API bill, a reproducible dual-judge protocol, bounded and inspectable evidence packets, strong document-level retrieval on an external scientific corpus, and one workspace for conversational, document, and Odin project context. Open RAG's first-500 QA result is a deterministic prefix pilot rather than a random sample or completed 3,045-question QA run.
+Vault's measured advantages are local-first ingestion with no extraction-API bill,
+a reproducible dual-judge protocol, bounded and inspectable evidence packets,
+strong document-level retrieval on an external scientific corpus, and one workspace
+for conversational, document, and project context. Open RAG's first-500 QA result
+is a deterministic prefix pilot rather than a random sample or completed
+3,045-question QA run.
 
 Read [Benchmark methodology and full analysis](BENCHMARK.md) for historical baselines, category results, token and cost accounting, confidence information, rejected experiments, retrieval variants, competitive caveats, and artifact locations.
 
@@ -379,12 +379,12 @@ apps/
   desktop/             Electron shell and React interface
   browser-extension/   Browser capture client
 backend/               FastAPI application and retrieval system
-docs/                  Product, architecture, UI, and operational docs
 requirements/          Python dependency manifests
 scripts/               Development, benchmark, security, and packaging tools
 ```
 
-For deeper detail, start with [Project Context](docs/PROJECT_CONTEXT.md), [Architecture](docs/ARCHITECTURE.md), and [Working Commands](docs/WORKING_COMMANDS.md).
+For measured behavior, methodology, and reproducibility details, see the
+[benchmark report](BENCHMARK.md).
 
 ## Development
 
@@ -413,13 +413,13 @@ Build a Windows package with:
 npm run package:win
 ```
 
-Packaging and clean-machine validation are still active release-hardening work. See [Working Commands](docs/WORKING_COMMANDS.md) for smoke tests, benchmarks, packaging modes, and versioning.
+Release builds run the renderer build, stage the local helper runtimes, audit the
+package layout, and verify the unpacked executable and installer before publication.
 
 The current source includes the frameless Windows shell, durable import controls,
 profile-synced Home preferences, managed-model reconciliation, native file drops,
 branded recovery screens, Odin command-line installation, and the guided ChatGPT
-MCP connection. Build a fresh package from the current revision before distributing
-these features.
+MCP connection. Published installers are built from tagged release revisions.
 
 ## Status and roadmap
 

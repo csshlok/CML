@@ -2103,16 +2103,12 @@ class SystemVaultLockAndEmbeddingTests(unittest.TestCase):
         self.assertEqual(result["scan_limit"], WATCHED_FOLDER_SCAN_LIMIT)
         self.assertEqual(limits["watched_folder_scan_limit"], WATCHED_FOLDER_SCAN_LIMIT)
 
-    def test_backend_policy_docs_and_packaging_validation_scripts_exist(self) -> None:
+    def test_packaging_validation_scripts_preserve_required_checks(self) -> None:
         repo_root = Path(__file__).resolve().parents[2]
-        threat_model = (repo_root / "docs" / "THREAT_MODEL.md").read_text(encoding="utf-8")
-        merge_policy = (repo_root / "docs" / "CLUSTER_MERGE_POLICY.md").read_text(encoding="utf-8")
         clean_machine = (repo_root / "scripts" / "packaging" / "validate-clean-machine-package.ps1").read_text(encoding="utf-8")
         full_vault = (repo_root / "scripts" / "packaging" / "smoke-packaged-full-vault.ps1").read_text(encoding="utf-8")
         benchmark_1k = (repo_root / "scripts" / "backend" / "benchmark-1k-vault.ps1").read_text(encoding="utf-8")
 
-        self.assertIn("Bridge/MCP capture", threat_model)
-        self.assertIn("Every cluster merge must write a merge artifact", merge_policy)
         self.assertIn("clean-machine validation plan", clean_machine)
         self.assertIn("semantic search returned no results", full_vault)
         self.assertIn("[int]$Sources = 1000", benchmark_1k)

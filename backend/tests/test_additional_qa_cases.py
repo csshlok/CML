@@ -2424,7 +2424,6 @@ class AdditionalQACases(unittest.TestCase):
         validate_script = repo_root / "scripts" / "packaging" / "validate-clean-machine-package.ps1"
         root_main = repo_root / "apps" / "desktop" / "main.cjs"
         desktop_icon = repo_root / "apps" / "desktop" / "build" / "icon.ico"
-        ocr_readme = repo_root / "backend" / "bin" / "ocr" / "README.md"
 
         stage_text = stage_script.read_text(encoding="utf-8")
         package_text = package_script.read_text(encoding="utf-8")
@@ -2432,7 +2431,6 @@ class AdditionalQACases(unittest.TestCase):
         installed_launch_text = installed_launch_smoke.read_text(encoding="utf-8")
         validate_text = validate_script.read_text(encoding="utf-8")
         root_main_text = root_main.read_text(encoding="utf-8")
-        readme_text = ocr_readme.read_text(encoding="utf-8")
 
         self.assertIn("tessdata_fast/main/eng.traineddata", stage_text)
         self.assertIn("repos/qpdf/qpdf/releases/latest", stage_text)
@@ -2495,7 +2493,6 @@ class AdditionalQACases(unittest.TestCase):
         icon_header = desktop_icon.read_bytes()[:6]
         self.assertEqual(icon_header[:4], b"\x00\x00\x01\x00")
         self.assertGreaterEqual(int.from_bytes(icon_header[4:6], "little"), 1)
-        self.assertIn("scripts/packaging/stage-ocr-runtime.ps1", readme_text)
 
     def test_windows_dev_package_is_checkout_portable_and_preflighted(self) -> None:
         repo_root = Path(__file__).resolve().parents[2]
@@ -2506,7 +2503,6 @@ class AdditionalQACases(unittest.TestCase):
             repo_root / "scripts" / "packaging" / "check-windows-dev-build.ps1"
         ).read_text(encoding="utf-8")
         package_json = json.loads((repo_root / "package.json").read_text(encoding="utf-8"))
-        commands = (repo_root / "docs" / "WORKING_COMMANDS.md").read_text(encoding="utf-8")
 
         self.assertIn('& $devBuildCheckScript', package_script)
         self.assertNotIn('$python = "python"', package_script)
@@ -2520,9 +2516,10 @@ class AdditionalQACases(unittest.TestCase):
             "powershell -NoProfile -ExecutionPolicy Bypass -File "
             "scripts\\packaging\\check-windows-dev-build.ps1",
         )
-        self.assertIn("npm run package:win:check", commands)
-        self.assertIn("npm run package:win", commands)
-        self.assertNotIn("expert-python-runtime", commands)
+        self.assertEqual(
+            package_json["scripts"]["package:win"],
+            "npm run package:win --workspace @cml/desktop",
+        )
 
     def test_version_bump_script_updates_every_authoritative_version_surface(self) -> None:
         repo_root = Path(__file__).resolve().parents[2]
@@ -3091,6 +3088,9 @@ class AdditionalQACases(unittest.TestCase):
 
         self.assertIn("Based on the closest local context", answer)
         self.assertIn("1. Keep a simple log", answer)
+        self.assertIn("2. Focus on the process", answer)
+        self.assertIn("3. Write practical follow-ups", answer)
+        self.assertEqual(answer.count("[E1]"), 3)
 
     def test_bridge_error_code_registry_matches_spec_for_vault_not_found(self) -> None:
         from backend.app.bridge_mcp import app_error_code

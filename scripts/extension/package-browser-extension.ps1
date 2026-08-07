@@ -29,7 +29,6 @@ Copy-Item -LiteralPath (Join-Path $extensionRoot "popup.css") -Destination $stag
 Copy-Item -LiteralPath (Join-Path $extensionRoot "popup-core.js") -Destination $stagingPath
 Copy-Item -LiteralPath (Join-Path $extensionRoot "popup.js") -Destination $stagingPath
 Copy-Item -LiteralPath (Join-Path $extensionRoot "extension-core.js") -Destination $stagingPath
-Copy-Item -LiteralPath (Join-Path $extensionRoot "README.md") -Destination $stagingPath
 
 $iconsPath = Join-Path $extensionRoot "icons"
 if (-not (Test-Path $iconsPath)) {
