@@ -3088,6 +3088,9 @@ class AdditionalQACases(unittest.TestCase):
 
         self.assertIn("Based on the closest local context", answer)
         self.assertIn("1. Keep a simple log", answer)
+        self.assertIn("2. Focus on the process", answer)
+        self.assertIn("3. Write practical follow-ups", answer)
+        self.assertEqual(answer.count("[E1]"), 3)
 
     def test_bridge_error_code_registry_matches_spec_for_vault_not_found(self) -> None:
         from backend.app.bridge_mcp import app_error_code
