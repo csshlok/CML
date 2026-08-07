@@ -17,7 +17,7 @@
     "package:win": "powershell -NoProfile -ExecutionPolicy Bypass -File ..\\..\\scripts\\packaging\\package-windows.ps1 -OutputDir release"
   },
   "dependencies": {
-    "@cloudflare/vite-plugin": "^1.25.5",
+    "@cloudflare/vite-plugin": "^1.51.1",
     "@radix-ui/react-alert-dialog": "^1.1.15",
     "@radix-ui/react-dialog": "^1.1.15",
     "@radix-ui/react-popover": "^1.1.15",

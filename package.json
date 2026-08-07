@@ -27,7 +27,7 @@
     "security:e2e": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts\\security\\run-security-e2e.ps1",
     "lockfile:check": "node scripts/dev/check-lockfile-policy.cjs"
   },
-  "dependencies": {
-    "@openai/codex-security": "^0.1.4"
+  "devDependencies": {
+    "@openai/codex-security": "^0.1.7"
   }
 }
