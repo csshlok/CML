@@ -393,22 +393,13 @@ The $1.9102 figure is the sum of the artifact's recorded component estimates: $1
 
 ---
 
-## Published comparison
+## Comparison boundary
 
-### LongMemEval
-
-| System | Published accuracy | Questions | Published context | Important difference |
-| --- | ---: | ---: | ---: | --- |
-| [Mem0](https://mem0.ai/research) | 94.4%; 94.8% at a different cutoff | 500 | 6,787 mean retrieval tokens | Managed pipeline and its own reader/judge protocol |
-| [Hindsight](https://vectorize.io/benchmarks) | 94.6% current published result | 500 | Not published with the headline | Updated composite methodology and different evaluation stack |
-| [Zep](https://www.getzep.com/research/) | 90.2% | 500 | 4,408 median context tokens | GPT-5.4 with medium reasoning; managed graph retrieval |
-| **Vault typed-v1** | 83.8% Kimi / 83.2% GPT | 500 | 33,331.9 mean complete reader-prompt tokens | Local dense ingestion; Kimi reader; dual strict judges |
-| **Vault claim-first v2** | 81.8% Kimi / 82.0% GPT | 500 | 6,922.5 latest mean reader-prompt tokens | Bounded cited claims |
-| [Graphify](https://github.com/Graphify-Labs/graphify#benchmarks) | 76% | 50 | Not published | Smaller sample; tied with its dense-RAG baseline |
-
-Vault is credible but not state of the art on LongMemEval answer accuracy. Claim-first closes most of the token-efficiency gap while preserving local ingestion and inspectable evidence, but multi-session and preference synthesis still trail the strongest published systems.
-
-Hindsight's separately published benchmark repository reports an earlier 91.4% Gemini-3 result with category detail. The current 94.6% page uses an updated five-dimension composite presentation. Both differ from Vault's six-type, Kimi-reader, dual-judge protocol, so this report uses the current figure for market context without treating it as a matched rerun.
+Third-party product results are intentionally excluded from this report. Published
+benchmarks often use different readers, judges, context accounting, reasoning
+settings, retrieval limits, and sample sizes, so their headline values are not a
+matched comparison. Vault's results below describe only the frozen artifacts and
+protocols produced by this repository.
 
 ## Product improvements produced by the benchmark program
 
