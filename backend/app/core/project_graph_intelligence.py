@@ -9,7 +9,7 @@ from typing import Iterable
 from backend.app.core.database import connect, dict_from_row, utc_now
 
 
-GRAPH_METRICS_VERSION = "odin-graph-intelligence-v1"
+GRAPH_METRICS_VERSION = "odin-graph-intelligence-v2"
 _AUTHORITY_EDGES = {
     "calls",
     "imports",
@@ -69,7 +69,9 @@ def compute_graph_metrics(
     }
 
 
-def refresh_graph_intelligence(project_id: str) -> dict:
+def refresh_graph_intelligence(
+    project_id: str, *, expected_snapshot_id: str | None = None
+) -> dict:
     now = utc_now()
     with connect() as conn:
         project_row = conn.execute(
@@ -83,6 +85,14 @@ def refresh_graph_intelligence(project_id: str) -> dict:
         )
         if not snapshot_id:
             return {"status": "unavailable", "reason": "No active structure snapshot."}
+        if expected_snapshot_id and expected_snapshot_id != snapshot_id:
+            return {
+                "status": "superseded",
+                "version": GRAPH_METRICS_VERSION,
+                "snapshot_id": snapshot_id,
+                "expected_snapshot_id": expected_snapshot_id,
+                "reason": "The project structure changed before this graph job started.",
+            }
         nodes = [
             dict_from_row(row)
             for row in conn.execute(
@@ -112,7 +122,9 @@ def refresh_graph_intelligence(project_id: str) -> dict:
             if str(row["edge_type"]) in _AUTHORITY_EDGES
         ]
         metrics = compute_graph_metrics((str(node["id"]) for node in nodes), authority_edges)
-        community_by_node, communities = _communities(nodes)
+        community_by_node, communities = _communities(
+            nodes, project_id=project_id, snapshot_id=snapshot_id
+        )
         conn.execute(
             "DELETE FROM project_graph_metrics WHERE project_id = ? AND snapshot_id = ?",
             (project_id, snapshot_id),
@@ -353,7 +365,9 @@ def _strongly_connected_components(
     return result
 
 
-def _communities(nodes: list[dict]) -> tuple[dict[str, str], dict[str, dict]]:
+def _communities(
+    nodes: list[dict], *, project_id: str = "", snapshot_id: str = ""
+) -> tuple[dict[str, str], dict[str, dict]]:
     grouped: dict[str, list[dict]] = defaultdict(list)
     for node in nodes:
         path = str(node.get("relative_path") or "").replace("\\", "/").strip("/")
@@ -369,7 +383,10 @@ def _communities(nodes: list[dict]) -> tuple[dict[str, str], dict[str, dict]]:
     by_node: dict[str, str] = {}
     for root, members in sorted(grouped.items()):
         community_id = (
-            "community-" + hashlib.sha256(root.casefold().encode("utf-8")).hexdigest()[:16]
+            "community-"
+            + hashlib.sha256(
+                "\0".join((project_id, snapshot_id, root.casefold())).encode("utf-8")
+            ).hexdigest()[:16]
         )
         kinds: dict[str, int] = defaultdict(int)
         paths = set()

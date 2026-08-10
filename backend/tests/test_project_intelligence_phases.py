@@ -8,6 +8,19 @@ from pathlib import Path
 
 
 class ProjectIntelligenceUnitTests(unittest.TestCase):
+    def test_project_map_question_terms_drop_conversational_noise(self) -> None:
+        from backend.app.core.project_graph import _projection_query_terms
+
+        self.assertEqual(
+            _projection_query_terms("How does batch upload clustering work?"),
+            ["batch", "upload", "clustering"],
+        )
+        self.assertEqual(
+            _projection_query_terms("Why are map connections shown?"),
+            ["map", "connections"],
+        )
+        self.assertEqual(_projection_query_terms("Open the project map."), [])
+
     def test_graph_metrics_are_deterministic_and_scale_without_recursion(self) -> None:
         from backend.app.core.project_graph_intelligence import compute_graph_metrics
 
@@ -30,6 +43,63 @@ class ProjectIntelligenceUnitTests(unittest.TestCase):
         self.assertTrue(metrics["b"]["is_cycle"])
         self.assertFalse(metrics["c"]["is_cycle"])
         self.assertFalse(metrics["d"]["is_cycle"])
+
+    def test_community_ids_are_unique_per_project_snapshot(self) -> None:
+        from backend.app.core.project_graph_intelligence import _communities
+
+        nodes = [{"id": "node-1", "kind": "file", "relative_path": "src/main.py"}]
+        _, first = _communities(nodes, project_id="project-1", snapshot_id="snapshot-1")
+        _, next_snapshot = _communities(
+            nodes, project_id="project-1", snapshot_id="snapshot-2"
+        )
+        _, other_project = _communities(
+            nodes, project_id="project-2", snapshot_id="snapshot-1"
+        )
+
+        self.assertNotEqual(set(first), set(next_snapshot))
+        self.assertNotEqual(set(first), set(other_project))
+
+    def test_legacy_graph_community_ids_are_migrated_with_their_metrics(self) -> None:
+        import hashlib
+        import sqlite3
+
+        from backend.app.core.migrations import (
+            _migration_031_snapshot_scoped_graph_communities,
+        )
+
+        conn = sqlite3.connect(":memory:")
+        conn.row_factory = sqlite3.Row
+        conn.executescript(
+            """
+            CREATE TABLE project_graph_communities (
+                id TEXT PRIMARY KEY, project_id TEXT, snapshot_id TEXT, root_path TEXT
+            );
+            CREATE TABLE project_graph_metrics (
+                project_id TEXT, snapshot_id TEXT, community_id TEXT
+            );
+            """
+        )
+        legacy_id = "community-" + hashlib.sha256(b"src").hexdigest()[:16]
+        conn.execute(
+            "INSERT INTO project_graph_communities VALUES (?, 'project-1', 'snapshot-2', 'src')",
+            (legacy_id,),
+        )
+        conn.execute(
+            "INSERT INTO project_graph_metrics VALUES ('project-1', 'snapshot-2', ?)",
+            (legacy_id,),
+        )
+
+        _migration_031_snapshot_scoped_graph_communities(conn)
+
+        community_id = conn.execute(
+            "SELECT id FROM project_graph_communities"
+        ).fetchone()["id"]
+        metric_id = conn.execute(
+            "SELECT community_id FROM project_graph_metrics"
+        ).fetchone()["community_id"]
+        self.assertNotEqual(community_id, legacy_id)
+        self.assertEqual(metric_id, community_id)
+        conn.close()
 
     def test_git_history_parser_handles_5000_bounded_commits(self) -> None:
         from backend.app.core.project_git_intelligence import _parse_log
@@ -90,6 +160,57 @@ class ProjectIntelligenceUnitTests(unittest.TestCase):
             )
         self.assertEqual(ambiguous["files"], {})
         self.assertIn("src/removed.py", deleted["files"])
+
+    def test_lcov_parser_rejects_pathological_record_and_line_counts(self) -> None:
+        from backend.app.core import project_coverage
+
+        with tempfile.TemporaryDirectory() as root:
+            lines = ["SF:a.py", "DA:1,1", "end_of_record", "SF:b.py", "end_of_record"]
+            with patch.object(project_coverage, "MAX_LCOV_RECORDS", 1):
+                with self.assertRaisesRegex(ValueError, "record count"):
+                    project_coverage._parse_lcov_lines(lines, root_path=root)
+
+            with patch.object(project_coverage, "MAX_LCOV_LINES", 2):
+                with self.assertRaisesRegex(ValueError, "line count"):
+                    project_coverage._parse_lcov_lines(lines, root_path=root)
+
+    def test_lcov_file_reader_streams_and_rejects_oversized_lines(self) -> None:
+        from backend.app.core import project_coverage
+
+        with tempfile.TemporaryDirectory() as root:
+            artifact = Path(root) / "coverage.info"
+            artifact.write_bytes(b"SF:a.py\n" + b"D" * 64 + b"\n")
+            with patch.object(project_coverage, "MAX_LCOV_LINE_BYTES", 32):
+                with self.assertRaisesRegex(ValueError, "oversized line"):
+                    list(project_coverage._iter_lcov_lines(artifact))
+
+    def test_git_subprocess_output_is_streamed_and_hard_capped(self) -> None:
+        from backend.app.core.project_git_intelligence import _git
+
+        with tempfile.TemporaryDirectory() as root:
+            repo = Path(root)
+            subprocess.run(["git", "init", str(repo)], check=True, capture_output=True)
+            payload = repo / "large.bin"
+            payload.write_bytes(b"x" * 8192)
+            object_id = subprocess.run(
+                ["git", "-C", str(repo), "hash-object", "-w", str(payload)],
+                check=True,
+                capture_output=True,
+                text=True,
+            ).stdout.strip()
+
+            result = _git(
+                repo,
+                "cat-file",
+                "blob",
+                object_id,
+                max_output_bytes=1024,
+                timeout_seconds=5,
+            )
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertLessEqual(len(result.stdout.encode("utf-8")), 1024)
+        self.assertIn("git_output_limit_exceeded", result.stderr)
 
 
 class ProjectIntelligenceIntegrationTests(unittest.TestCase):
@@ -189,6 +310,93 @@ class ProjectIntelligenceIntegrationTests(unittest.TestCase):
             all(item["status"] == "succeeded" for item in jobs),
             [(item["job_type"], item["status"]) for item in jobs],
         )
+
+    def test_graph_metrics_survive_reindexing_the_same_project_roots(self) -> None:
+        from backend.app.core.background_jobs import run_due_jobs_once
+        from backend.app.core.database import connect
+        from backend.app.core.projects import get_project, reindex_project
+
+        project = self._project()
+        first_snapshot_id = project["active_structure_snapshot_id"]
+        (self.repo / "src" / "auth.py").write_text(
+            "def authorize(user):\n    return bool(user)\n", encoding="utf-8"
+        )
+        reindex_project(project["id"], layer="full")
+        for _ in range(20):
+            run_due_jobs_once(limit=20)
+            current = get_project(project["id"])
+            if (
+                current["active_structure_snapshot_id"] != first_snapshot_id
+                and current["status"] == "ready"
+            ):
+                break
+        current = get_project(project["id"])
+        second_snapshot_id = current["active_structure_snapshot_id"]
+        self.assertNotEqual(second_snapshot_id, first_snapshot_id)
+        for _ in range(10):
+            run_due_jobs_once(limit=20)
+
+        with connect() as conn:
+            graph_jobs = conn.execute(
+                """SELECT status, payload, last_error FROM app_jobs
+                   WHERE scope_id = ? AND job_type = 'project_graph_metrics'
+                   ORDER BY created_at""",
+                (project["id"],),
+            ).fetchall()
+            communities = conn.execute(
+                """SELECT id, snapshot_id FROM project_graph_communities
+                   WHERE project_id = ? AND snapshot_id IN (?, ?)""",
+                (project["id"], first_snapshot_id, second_snapshot_id),
+            ).fetchall()
+        self.assertGreaterEqual(len(graph_jobs), 2)
+        self.assertTrue(
+            all(row["status"] == "succeeded" for row in graph_jobs),
+            [(row["status"], row["last_error"]) for row in graph_jobs],
+        )
+        ids_by_snapshot = {
+            snapshot_id: {row["id"] for row in communities if row["snapshot_id"] == snapshot_id}
+            for snapshot_id in (first_snapshot_id, second_snapshot_id)
+        }
+        self.assertTrue(ids_by_snapshot[first_snapshot_id])
+        self.assertTrue(ids_by_snapshot[second_snapshot_id])
+        self.assertTrue(
+            ids_by_snapshot[first_snapshot_id].isdisjoint(ids_by_snapshot[second_snapshot_id])
+        )
+
+    def test_stale_graph_job_does_not_rebuild_a_newer_structure_snapshot(self) -> None:
+        from backend.app.core.project_graph_intelligence import refresh_graph_intelligence
+
+        project = self._project()
+        result = refresh_graph_intelligence(
+            project["id"], expected_snapshot_id="project-snapshot-superseded"
+        )
+        self.assertEqual(result["status"], "superseded")
+        self.assertEqual(result["snapshot_id"], project["active_structure_snapshot_id"])
+        self.assertEqual(
+            result["expected_snapshot_id"], "project-snapshot-superseded"
+        )
+
+    def test_ready_intelligence_is_reflected_in_project_status_and_refresh_queues_work(self) -> None:
+        from backend.app.core.database import connect
+        from backend.app.core.projects import get_project, reindex_project
+
+        project = self._project()
+        self.assertEqual(project["interpretation_status"], "ready")
+
+        # Simulate a vault created by the affected build. Reads must derive the
+        # authoritative status from the active intelligence snapshot.
+        with connect() as conn:
+            conn.execute(
+                "UPDATE projects SET interpretation_status = 'unavailable' WHERE id = ?",
+                (project["id"],),
+            )
+        self.assertEqual(get_project(project["id"])["interpretation_status"], "ready")
+
+        with patch("backend.app.core.background_jobs.wake_background_worker"):
+            refreshed = reindex_project(project["id"], layer="interpretation")
+        self.assertEqual(refreshed["queued_jobs"], 1)
+        self.assertEqual(refreshed["jobs"][0]["job_type"], "project_intelligence_overview")
+        self.assertEqual(refreshed["project"]["interpretation_status"], "ready")
 
     def test_generated_prose_is_rejected_without_authoritative_evidence(self) -> None:
         from backend.app.core.project_intelligence import (
@@ -294,6 +502,39 @@ class ProjectIntelligenceIntegrationTests(unittest.TestCase):
         )
         self.assertTrue(all(job["scope_id"] == project["id"] for job in first["jobs"]))
         self.assertTrue(all(job["cancellable"] for job in first["jobs"]))
+
+    def test_missing_graph_metrics_are_requeued_during_startup_reconciliation(self) -> None:
+        import json
+
+        from backend.app.core.background_jobs import enqueue_startup_reconciliation_jobs
+        from backend.app.core.database import connect
+        from backend.app.core.project_graph_intelligence import GRAPH_METRICS_VERSION
+
+        project = self._project()
+        snapshot_id = project["active_structure_snapshot_id"]
+        with connect() as conn:
+            conn.execute(
+                "DELETE FROM project_graph_metrics WHERE project_id = ? AND snapshot_id = ?",
+                (project["id"], snapshot_id),
+            )
+            conn.execute(
+                "DELETE FROM project_graph_communities WHERE project_id = ? AND snapshot_id = ?",
+                (project["id"], snapshot_id),
+            )
+            conn.execute(
+                "DELETE FROM project_execution_flows WHERE project_id = ? AND snapshot_id = ?",
+                (project["id"], snapshot_id),
+            )
+        enqueue_startup_reconciliation_jobs()
+        with connect() as conn:
+            job = conn.execute(
+                """SELECT * FROM app_jobs
+                   WHERE job_type = 'project_graph_metrics' AND status = 'queued'
+                   ORDER BY created_at DESC LIMIT 1"""
+            ).fetchone()
+        self.assertIsNotNone(job)
+        self.assertEqual(json.loads(job["payload"])["snapshot_id"], snapshot_id)
+        self.assertTrue(str(job["dedupe_key"]).endswith(GRAPH_METRICS_VERSION))
 
     def test_overview_job_runs_to_success_through_the_scheduler(self) -> None:
         import json

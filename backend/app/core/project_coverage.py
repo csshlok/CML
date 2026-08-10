@@ -3,34 +3,71 @@ from __future__ import annotations
 import hashlib
 import json
 from pathlib import Path
+from collections.abc import Iterable
 
 from backend.app.core.database import connect, dict_from_row, utc_now
 
 
 COVERAGE_FORMAT = "lcov"
 COVERAGE_VERSION = "odin-lcov-v1"
+MAX_LCOV_BYTES = 64 * 1024 * 1024
+MAX_LCOV_LINE_BYTES = 1 * 1024 * 1024
+MAX_LCOV_LINES = 2_000_000
+MAX_LCOV_RECORDS = 250_000
+MAX_LCOV_DATA_POINTS = 5_000_000
+DB_WRITE_BATCH = 500
 
 
 def parse_lcov(text: str, *, root_path: str, indexed_paths: set[str] | None = None) -> dict:
     """Parse LCOV records, preserving per-test mappings when TN records are present."""
+    return _parse_lcov_lines(
+        text.replace("\r\n", "\n").splitlines(),
+        root_path=root_path,
+        indexed_paths=indexed_paths,
+    )
+
+
+def _parse_lcov_lines(
+    lines: Iterable[str],
+    *,
+    root_path: str,
+    indexed_paths: set[str] | None = None,
+) -> dict:
     root = Path(root_path).resolve()
     records, current = [], {"test_name": "", "source": "", "lines": {}}
-    for raw in text.replace("\r\n", "\n").splitlines():
+    line_count = 0
+    record_count = 0
+    data_points = 0
+    for raw in lines:
+        line_count += 1
+        if line_count > MAX_LCOV_LINES:
+            raise ValueError("Coverage artifact exceeds the maximum line count.")
         if raw.startswith("TN:"):
             current["test_name"] = raw[3:].strip()
         elif raw.startswith("SF:"):
             if current["source"]:
                 records.append(current)
+                record_count += 1
+                if record_count > MAX_LCOV_RECORDS:
+                    raise ValueError("Coverage artifact exceeds the maximum record count.")
             current = {"test_name": current["test_name"], "source": raw[3:].strip(), "lines": {}}
         elif raw.startswith("DA:") and current["source"]:
             fields = raw[3:].split(",")
             if len(fields) >= 2 and fields[0].isdigit() and fields[1].isdigit():
+                data_points += 1
+                if data_points > MAX_LCOV_DATA_POINTS:
+                    raise ValueError("Coverage artifact contains too many line measurements.")
                 current["lines"][int(fields[0])] = int(fields[1])
         elif raw == "end_of_record" and current["source"]:
             records.append(current)
+            record_count += 1
+            if record_count > MAX_LCOV_RECORDS:
+                raise ValueError("Coverage artifact exceeds the maximum record count.")
             current = {"test_name": "", "source": "", "lines": {}}
     if current["source"]:
         records.append(current)
+        if len(records) > MAX_LCOV_RECORDS:
+            raise ValueError("Coverage artifact exceeds the maximum record count.")
     files: dict[str, dict[str, set[int]]] = {}
     tests = []
     for record in records:
@@ -82,13 +119,18 @@ def import_project_coverage(project_id: str, artifact_path: str) -> dict:
     if artifact.suffix.lower() not in {".info", ".lcov"}:
         raise ValueError("Coverage must be an LCOV .info or .lcov file.")
     try:
-        text = artifact.read_text(encoding="utf-8", errors="replace")
+        if artifact.stat().st_size > MAX_LCOV_BYTES:
+            raise ValueError("Coverage artifact exceeds the maximum allowed size.")
+        parsed = _parse_lcov_lines(
+            _iter_lcov_lines(artifact),
+            root_path=str(project["root_path"]),
+            indexed_paths=indexed_paths,
+        )
+        digest = _file_sha256(artifact)
     except OSError as exc:
         raise ValueError(f"Coverage artifact could not be read: {exc}") from exc
-    parsed = parse_lcov(text, root_path=str(project["root_path"]), indexed_paths=indexed_paths)
     now = utc_now()
     owning = project.get("active_manifest_snapshot_id") or project.get("active_snapshot_id")
-    digest = hashlib.sha256(text.encode()).hexdigest()
     coverage_id = f"coverage-{project_id}-{digest[:24]}"
     with connect() as conn:
         conn.execute("DELETE FROM project_coverage_snapshots WHERE id=?", (coverage_id,))
@@ -107,28 +149,36 @@ def import_project_coverage(project_id: str, artifact_path: str) -> dict:
                 now,
             ),
         )
-        for path, coverage in parsed["files"].items():
-            conn.execute(
-                "INSERT INTO project_coverage_files VALUES (?, ?, ?, ?, ?)",
-                (
+        file_rows = (
+            (
                     coverage_id,
                     project_id,
                     path,
                     _json(coverage["covered_lines"]),
                     _json(coverage["missed_lines"]),
-                ),
             )
-        for item in parsed["tests"]:
-            conn.execute(
-                "INSERT OR REPLACE INTO project_coverage_test_map VALUES (?, ?, ?, ?, ?, ?)",
-                (
+            for path, coverage in parsed["files"].items()
+        )
+        test_rows = (
+            (
                     coverage_id,
                     project_id,
                     item["test_name"],
                     item["test_path"],
                     item["source_path"],
                     _json(item["covered_lines"]),
-                ),
+            )
+            for item in parsed["tests"]
+        )
+        for batch in _batches(file_rows, DB_WRITE_BATCH):
+            conn.executemany(
+                "INSERT INTO project_coverage_files VALUES (?, ?, ?, ?, ?)",
+                batch,
+            )
+        for batch in _batches(test_rows, DB_WRITE_BATCH):
+            conn.executemany(
+                "INSERT OR REPLACE INTO project_coverage_test_map VALUES (?, ?, ?, ?, ?, ?)",
+                batch,
             )
     return get_project_coverage(project_id)
 
@@ -286,3 +336,34 @@ def _loads(value: object):
         return json.loads(str(value))
     except (TypeError, ValueError):
         return []
+
+
+def _iter_lcov_lines(path: Path):
+    total = 0
+    with path.open("rb") as handle:
+        for raw in handle:
+            total += len(raw)
+            if total > MAX_LCOV_BYTES:
+                raise ValueError("Coverage artifact exceeds the maximum allowed size.")
+            if len(raw) > MAX_LCOV_LINE_BYTES:
+                raise ValueError("Coverage artifact contains an oversized line.")
+            yield raw.decode("utf-8", errors="replace").rstrip("\r\n")
+
+
+def _file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        while chunk := handle.read(1024 * 1024):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _batches(rows: Iterable[tuple], size: int):
+    batch: list[tuple] = []
+    for row in rows:
+        batch.append(row)
+        if len(batch) >= size:
+            yield batch
+            batch = []
+    if batch:
+        yield batch

@@ -185,7 +185,8 @@ def index_candidate_structure(*, project_id: str, run_id: str, snapshot_id: str,
         conn.execute(
             """
             UPDATE projects SET active_snapshot_id = ?, active_manifest_snapshot_id = ?,
-                active_structure_snapshot_id = ?, structure_status = ?, brief = ?, languages_json = ?,
+                active_structure_snapshot_id = ?, structure_status = ?, interpretation_status = 'ready',
+                brief = ?, languages_json = ?,
                 workspace_count = ?, entrypoints_json = ?, indexed_commit = ?,
                 changed_file_count = 0, updated_at = ? WHERE id = ?
             """, (
@@ -876,14 +877,19 @@ def activate_candidate(*, project_id: str, run_id: str, snapshot_id: str, job_id
         conn.execute("UPDATE project_snapshot_sources SET stage_status = 'active', updated_at = ? WHERE snapshot_id = ?", (now, snapshot_id))
         conn.execute("UPDATE project_snapshots SET retrieval_status = 'ready', activated_at = ?, manifest_activated_at = COALESCE(manifest_activated_at, ?), retrieval_activated_at = ? WHERE id = ?",
                      (now, now, now, snapshot_id))
+        snapshot = conn.execute(
+            "SELECT interpretation_status FROM project_snapshots WHERE id = ?",
+            (snapshot_id,),
+        ).fetchone()
+        interpretation_status = str(snapshot["interpretation_status"] or "unavailable")
         conn.execute(
             """
             UPDATE projects SET active_snapshot_id = ?, active_manifest_snapshot_id = ?,
                 active_retrieval_snapshot_id = ?, candidate_snapshot_id = NULL, active_run_id = NULL,
                 status = CASE WHEN structure_status = 'partial' THEN 'partial' ELSE 'ready' END,
-                retrieval_status = 'ready', change_fingerprint = ?,
+                retrieval_status = 'ready', interpretation_status = ?, change_fingerprint = ?,
                 last_change_checked_at = ?, changed_file_count = 0, updated_at = ? WHERE id = ?
-            """, (snapshot_id, snapshot_id, snapshot_id, change_fingerprint, now, now, project_id),
+            """, (snapshot_id, snapshot_id, snapshot_id, interpretation_status, change_fingerprint, now, now, project_id),
         )
         conn.execute("UPDATE clusters SET indexed_source_count = ?, index_status = ?, profile_status = 'needs_update', updated_at = ? WHERE id = ?",
                      (count, "ready" if count else "empty", now, project["primary_cluster_id"]))

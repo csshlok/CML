@@ -1441,6 +1441,91 @@ class OdinProjectTests(unittest.TestCase):
         self.assertIn("# Odin Graph Context", packet)
         self.assertIn("authorize", packet)
 
+    def test_graph_question_balances_meaningful_terms_and_accepts_full_relevant_limit(self) -> None:
+        from backend.app.core.code_structure import _insert_node
+        from backend.app.core.database import connect, utc_now
+        from backend.app.core.project_graph import graph_view
+
+        project = _register_project(vault_id="vault-odin", root_path=str(self.repo), name="Sample", sync=True)
+        snapshot_id = project["active_structure_snapshot_id"]
+        now = utc_now()
+        with connect() as conn:
+            for label, path in (
+                ("batchImporter", "src/batch_import.py"),
+                ("sourceImporter", "src/source_import.py"),
+                ("clusteringPipeline", "src/clustering.py"),
+            ):
+                _insert_node(
+                    conn, project_id=project["id"], snapshot_id=snapshot_id,
+                    qualified_id=f"question:{label}", kind="function", language="Python",
+                    label=label, relative_path=path, source_id=None,
+                    signature=f"{label}()", content_hash=label, now=now,
+                )
+
+        view = graph_view(
+            project["id"], mode="graph", query="How does batch upload clustering work?",
+            max_depth=4, max_nodes=2000, direction="balanced",
+        )
+
+        matched_terms = {
+            term.casefold()
+            for node in view["nodes"]
+            for term in node.get("matched_terms", [])
+        }
+        self.assertEqual(matched_terms, {"batch", "upload", "clustering"})
+        self.assertEqual(view["limits"]["max_nodes"], 2000)
+
+    def test_graph_question_fills_capacity_after_balanced_seed_quota(self) -> None:
+        from backend.app.core.code_structure import _insert_node
+        from backend.app.core.database import connect, utc_now
+        from backend.app.core.project_graph import graph_view
+
+        project = _register_project(vault_id="vault-odin", root_path=str(self.repo), name="Capacity", sync=True)
+        snapshot_id = project["active_structure_snapshot_id"]
+        now = utc_now()
+        expected_ids: set[str] = set()
+        with connect() as conn:
+            for index in range(8):
+                node_id = _insert_node(
+                    conn,
+                    project_id=project["id"],
+                    snapshot_id=snapshot_id,
+                    qualified_id=f"capacity:batchHandler{index}",
+                    kind="function",
+                    language="Python",
+                    label=f"batchHandler{index}",
+                    relative_path=f"src/batch_handler_{index}.py",
+                    source_id=None,
+                    signature=f"batchHandler{index}()",
+                    content_hash=f"batch-{index}",
+                    now=now,
+                )
+                expected_ids.add(node_id)
+
+        view = graph_view(
+            project["id"],
+            mode="graph",
+            query="batch",
+            max_depth=1,
+            max_nodes=8,
+            direction="balanced",
+        )
+
+        returned_ids = {node["id"] for node in view["nodes"]}
+        self.assertEqual(returned_ids & expected_ids, expected_ids)
+
+    def test_graph_question_with_no_meaningful_match_does_not_fall_back_to_unrelated_nodes(self) -> None:
+        from backend.app.core.project_graph import graph_view
+
+        project = _register_project(vault_id="vault-odin", root_path=str(self.repo), name="Sample", sync=True)
+        view = graph_view(
+            project["id"], mode="graph",
+            query="How does symbol_that_does_not_exist_anywhere work?",
+        )
+
+        self.assertEqual(view["nodes"], [])
+        self.assertEqual(view["edges"], [])
+
     def test_tree_view_filters_meaningful_terms_without_unrelated_fallback(self) -> None:
         from backend.app.core.project_graph import graph_view
 

@@ -6,11 +6,15 @@ import json
 from pathlib import Path
 import re
 import subprocess
+import threading
 
 from backend.app.core.database import connect, dict_from_row, utc_now
 
 
 GIT_INTELLIGENCE_VERSION = "odin-git-intelligence-v1"
+GIT_DEFAULT_OUTPUT_BYTES = 4 * 1024 * 1024
+GIT_HISTORY_OUTPUT_BYTES = 32 * 1024 * 1024
+GIT_HISTORY_TIMEOUT_SECONDS = 60
 _FIX_WORDS = re.compile(r"\b(fix(?:e[ds])?|bug|regression|hotfix|repair)\b", re.IGNORECASE)
 
 
@@ -62,8 +66,12 @@ def refresh_git_intelligence(
         "--date=iso-strict",
         "--format=%x1e%H%x1f%an%x1f%aI%x1f%s",
         "--numstat",
+        timeout_seconds=GIT_HISTORY_TIMEOUT_SECONDS,
+        max_output_bytes=GIT_HISTORY_OUTPUT_BYTES,
     )
+    output_truncated = "git_output_limit_exceeded" in str(log.stderr)
     commits = _parse_log(log.stdout) if log.returncode == 0 else []
+    history_truncated = history_truncated or output_truncated
     file_signals: dict[str, dict] = {}
     authors: dict[str, Counter] = defaultdict(Counter)
     pair_counts: Counter = Counter()
@@ -393,19 +401,76 @@ def _commit_relation(root: Path, indexed: object, head: str) -> str:
     return "diverged"
 
 
-def _git(root: Path, *args: str) -> subprocess.CompletedProcess:
+def _git(
+    root: Path,
+    *args: str,
+    timeout_seconds: int = 30,
+    max_output_bytes: int = GIT_DEFAULT_OUTPUT_BYTES,
+) -> subprocess.CompletedProcess:
+    command = ["git", "-C", str(root), *args]
     try:
-        return subprocess.run(
-            ["git", "-C", str(root), *args],
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=30,
-            check=False,
+        process = subprocess.Popen(
+            command,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            stdin=subprocess.DEVNULL,
         )
-    except (OSError, subprocess.TimeoutExpired) as exc:
-        return subprocess.CompletedProcess(args, 1, "", str(exc))
+    except OSError as exc:
+        return subprocess.CompletedProcess(command, 1, "", str(exc))
+
+    stdout = bytearray()
+    stderr = bytearray()
+    output_lock = threading.Lock()
+    exceeded = threading.Event()
+    total_bytes = 0
+
+    def drain(stream, target: bytearray) -> None:
+        nonlocal total_bytes
+        while True:
+            chunk = stream.read(64 * 1024)
+            if not chunk:
+                return
+            with output_lock:
+                remaining = max_output_bytes - total_bytes
+                if remaining > 0:
+                    target.extend(chunk[:remaining])
+                    total_bytes += min(len(chunk), remaining)
+                if len(chunk) > remaining:
+                    exceeded.set()
+                    try:
+                        process.kill()
+                    except OSError:
+                        pass
+                    return
+
+    threads = [
+        threading.Thread(target=drain, args=(process.stdout, stdout), daemon=True),
+        threading.Thread(target=drain, args=(process.stderr, stderr), daemon=True),
+    ]
+    for thread in threads:
+        thread.start()
+    timed_out = False
+    try:
+        process.wait(timeout=max(1, int(timeout_seconds)))
+    except subprocess.TimeoutExpired:
+        timed_out = True
+        process.kill()
+        process.wait(timeout=5)
+    for thread in threads:
+        thread.join(timeout=5)
+
+    stdout_text = stdout.decode("utf-8", errors="replace")
+    stderr_text = stderr.decode("utf-8", errors="replace")
+    if exceeded.is_set():
+        stderr_text = (stderr_text + "\ngit_output_limit_exceeded").strip()
+    if timed_out:
+        stderr_text = (stderr_text + "\ngit_command_timed_out").strip()
+    return subprocess.CompletedProcess(
+        command,
+        process.returncode if not (exceeded.is_set() or timed_out) else 1,
+        stdout_text,
+        stderr_text,
+    )
 
 
 def _git_text(root: Path, *args: str) -> str:

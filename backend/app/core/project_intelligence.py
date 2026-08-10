@@ -202,6 +202,13 @@ def build_project_intelligence(
         "DELETE FROM project_intelligence_evidence WHERE intelligence_snapshot_id = ?",
         (intelligence_id,),
     )
+    # Project list/detail responses still expose the legacy snapshot status,
+    # while the actual interpretation payload lives in this versioned record.
+    # Keep both representations synchronized when the interpretation is built.
+    conn.execute(
+        "UPDATE project_snapshots SET interpretation_status = 'ready' WHERE id = ?",
+        (owning_snapshot_id,),
+    )
     for item in evidence:
         conn.execute(
             """

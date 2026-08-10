@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from uuid import uuid4
 
-from backend.app.core.background_jobs import enqueue_job
+from backend.app.core.background_jobs import cancel_jobs_for_scope, enqueue_job
 from backend.app.core.code_structure import STRUCTURE_EXTRACTOR_VERSION
 from backend.app.core.database import connect, dict_from_row, utc_now
 from backend.app.core.extractor_registry import extractor_fingerprint
@@ -23,6 +23,37 @@ EXTRACTOR_VERSION = (
     f"odin-manifest-v2+{STRUCTURE_EXTRACTOR_VERSION}+{extractor_fingerprint()}"
 )
 MAX_FILE_BYTES = 1_000_000
+
+
+def _safe_git_run(command: list[str], **kwargs):
+    """Run Git without user/system command-bearing configuration."""
+    if not command or Path(command[0]).name.casefold() not in {"git", "git.exe"}:
+        raise ValueError("safe Git runner only accepts Git commands")
+    command_tail = list(command[1:])
+    if "diff" in command_tail:
+        diff_index = command_tail.index("diff") + 1
+        command_tail[diff_index:diff_index] = ["--no-ext-diff", "--no-textconv"]
+    hardened = [
+        command[0],
+        "-c", "core.fsmonitor=false",
+        "-c", f"core.hooksPath={os.devnull}",
+        "-c", "diff.external=",
+        "-c", "core.pager=cat",
+        *command_tail,
+    ]
+    env = os.environ.copy()
+    env.update(
+        {
+            "GIT_CONFIG_NOSYSTEM": "1",
+            "GIT_CONFIG_GLOBAL": os.devnull,
+            "GIT_ATTR_NOSYSTEM": "1",
+            "GIT_TERMINAL_PROMPT": "0",
+            "GIT_PAGER": "cat",
+            "GIT_EXTERNAL_DIFF": "",
+        }
+    )
+    kwargs["env"] = env
+    return subprocess.run(hardened, **kwargs)
 DEFAULT_IGNORED_DIRECTORIES = {
     ".git",
     ".hg",
@@ -258,7 +289,7 @@ def project_change_fingerprint(root: Path) -> str:
 
     if (root / ".git").exists():
         try:
-            status = subprocess.run(
+            status = _safe_git_run(
                 ["git", "-C", str(root), "status", "--porcelain=v1", "--untracked-files=all"],
                 capture_output=True,
                 text=True,
@@ -267,7 +298,7 @@ def project_change_fingerprint(root: Path) -> str:
                 timeout=8,
                 check=False,
             )
-            head = subprocess.run(
+            head = _safe_git_run(
                 ["git", "-C", str(root), "rev-parse", "HEAD"],
                 capture_output=True,
                 text=True,
@@ -371,10 +402,10 @@ def _project_changed_paths(
                     ]
                 )
             changed_results = [
-                subprocess.run(command, capture_output=True, timeout=8, check=False)
+                _safe_git_run(command, capture_output=True, timeout=8, check=False)
                 for command in commands
             ]
-            untracked = subprocess.run(
+            untracked = _safe_git_run(
                 [
                     "git",
                     "-C",
@@ -444,13 +475,13 @@ def _project_change_items(
     items: dict[tuple[str, str], dict] = {}
     try:
         for command in commands:
-            result = subprocess.run(command, capture_output=True, timeout=8, check=False)
+            result = _safe_git_run(command, capture_output=True, timeout=8, check=False)
             if result.returncode != 0:
                 continue
             for item in _parse_git_name_status(result.stdout):
                 key = (str(item["kind"]), str(item["path"]).casefold())
                 items[key] = item
-        untracked = subprocess.run(
+        untracked = _safe_git_run(
             [
                 "git",
                 "-C",
@@ -510,7 +541,7 @@ def _coalesce_unstaged_renames(
     deleted_by_oid: dict[str, list[tuple[tuple[str, str], dict]]] = {}
     added_by_oid: dict[str, list[tuple[tuple[str, str], dict]]] = {}
     try:
-        tree = subprocess.run(
+        tree = _safe_git_run(
             ["git", "-C", str(root), "ls-tree", "-r", "-z", "HEAD"],
             capture_output=True,
             timeout=8,
@@ -533,20 +564,22 @@ def _coalesce_unstaged_renames(
             if len(oid) >= 20:
                 deleted_by_oid.setdefault(oid, []).append((key, item))
 
-        added_paths = [str(item["path"]) for _, item in added_items]
-        hashes = subprocess.run(
-            ["git", "-C", str(root), "hash-object", "--stdin-paths"],
-            input=("\n".join(added_paths) + "\n").encode("utf-8"),
-            capture_output=True,
-            timeout=8,
-            check=False,
-        )
-        if hashes.returncode != 0:
-            return
-        added_oids = hashes.stdout.decode("ascii", errors="ignore").splitlines()
-        for (key, item), oid in zip(added_items, added_oids, strict=False):
-            oid = oid.strip()
-            if len(oid) >= 20:
+        oid_length = max((len(value) for value in head_oids.values()), default=40)
+        algorithm = "sha256" if oid_length == 64 else "sha1"
+        resolved_root = root.resolve()
+        for key, item in added_items:
+            candidate = (root / str(item["path"])).resolve()
+            try:
+                candidate.relative_to(resolved_root)
+                if candidate.is_symlink() or not candidate.is_file() or candidate.stat().st_size > MAX_FILE_BYTES:
+                    continue
+                data = candidate.read_bytes()
+            except (OSError, ValueError):
+                continue
+            variants = {data, data.replace(b"\r\n", b"\n")}
+            for variant in variants:
+                header = f"blob {len(variant)}\0".encode("ascii")
+                oid = hashlib.new(algorithm, header + variant).hexdigest()
                 added_by_oid.setdefault(oid, []).append((key, item))
     except (OSError, subprocess.SubprocessError):
         return
@@ -1436,12 +1469,19 @@ def reindex_project(project_id: str, *, layer: str) -> dict:
     if normalized != "interpretation":
         raise ProjectError("Layer must be structure, retrieval, interpretation, or full.")
     if normalized == "interpretation":
-        with connect() as conn:
-            conn.execute(
-                "UPDATE projects SET interpretation_status = 'unavailable', updated_at = ? WHERE id = ?",
-                (utc_now(), project_id),
-            )
-        return {"project": get_project(project_id), "queued_jobs": 0, "layer": normalized}
+        from backend.app.core.project_operations import enqueue_project_intelligence_layers
+
+        queued = enqueue_project_intelligence_layers(
+            project_id,
+            layers=["overview"],
+            user_initiated=True,
+        )
+        return {
+            "project": get_project(project_id),
+            "queued_jobs": len(queued["jobs"]),
+            "jobs": queued["jobs"],
+            "layer": normalized,
+        }
     raise AssertionError("unreachable")
 
 
@@ -1591,11 +1631,24 @@ def remove_project(project_id: str, *, confirmation_name: str) -> None:
             raise KeyError(project_id)
         if confirmation_name.strip() != project["name"]:
             raise ProjectError("Confirmation name does not match the project name.")
+        cancel_jobs_for_scope(
+            conn,
+            write_scope="project",
+            scope_id=project_id,
+            detail="Project was deleted.",
+        )
         source_rows = conn.execute(
             "SELECT source_id FROM project_sources WHERE project_id = ?",
             (project_id,),
         ).fetchall()
         source_ids = [str(row["source_id"]) for row in source_rows]
+        for source_id in source_ids:
+            cancel_jobs_for_scope(
+                conn,
+                write_scope="source",
+                scope_id=source_id,
+                detail="Project source was deleted.",
+            )
         conn.execute("DELETE FROM projects WHERE id = ?", (project_id,))
         for source_id in source_ids:
             conn.execute("DELETE FROM sources WHERE id = ?", (source_id,))
@@ -1802,6 +1855,25 @@ def _project_from_row(conn, row) -> dict:
     result["active_manifest_snapshot_id"] = result.get("active_manifest_snapshot_id") or compatibility_snapshot_id
     result["active_structure_snapshot_id"] = result.get("active_structure_snapshot_id") or compatibility_snapshot_id
     result["active_retrieval_snapshot_id"] = result.get("active_retrieval_snapshot_id") or compatibility_snapshot_id
+    owning_snapshot_id = result.get("active_manifest_snapshot_id") or compatibility_snapshot_id
+    if owning_snapshot_id:
+        intelligence = conn.execute(
+            """
+            SELECT layer_states_json
+            FROM project_intelligence_snapshots
+            WHERE project_id = ? AND owning_snapshot_id = ?
+            """,
+            (result["id"], owning_snapshot_id),
+        ).fetchone()
+        if intelligence is not None:
+            try:
+                layers = json.loads(intelligence["layer_states_json"] or "{}")
+            except (TypeError, ValueError):
+                layers = {}
+            interpretation = layers.get("interpretation") or {}
+            interpretation_status = str(interpretation.get("status") or "").strip()
+            if interpretation_status:
+                result["interpretation_status"] = interpretation_status
     result["languages"] = json.loads(result.pop("languages_json") or "{}")
     result["entrypoints"] = json.loads(result.pop("entrypoints_json") or "[]")
     count = conn.execute(
@@ -1996,7 +2068,7 @@ def _git_worktree_metadata(
     remote_fingerprint = None
     changed_count = 0
     try:
-        status = subprocess.run(
+        status = _safe_git_run(
             ["git", "-C", str(root), "status", "--porcelain=v1", "--untracked-files=normal"],
             capture_output=True,
             text=True,
@@ -2007,7 +2079,7 @@ def _git_worktree_metadata(
         )
         if status.returncode == 0:
             changed_count = sum(1 for line in status.stdout.splitlines() if line.strip())
-        remote = subprocess.run(
+        remote = _safe_git_run(
             ["git", "-C", str(root), "config", "--get", "remote.origin.url"],
             capture_output=True,
             text=True,

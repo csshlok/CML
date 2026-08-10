@@ -8,7 +8,7 @@ import secrets
 import subprocess
 import sys
 import time
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
@@ -49,6 +49,8 @@ DEFAULT_CLI_SCOPES = [
 ]
 BUSY_RETRY_ATTEMPTS = 4
 BUSY_RETRY_SECONDS = 1.0
+MAX_HTTP_RESPONSE_BYTES = 2 * 1024 * 1024
+DEFAULT_RUN_TIMEOUT_SECONDS = 2 * 60 * 60
 
 
 class OdinClient:
@@ -79,7 +81,13 @@ class OdinClient:
         for attempt in range(BUSY_RETRY_ATTEMPTS):
             try:
                 with urlopen(request, timeout=120) as response:
-                    raw = response.read()
+                    raw = _bounded_response_read(response, MAX_HTTP_RESPONSE_BYTES)
+                    if len(raw) > MAX_HTTP_RESPONSE_BYTES:
+                        raise OdinClientError(
+                            "Vault returned more data than Odin can safely process.",
+                            EXIT_INVALID_INPUT,
+                            code="response_too_large",
+                        )
                     return json.loads(raw.decode("utf-8")) if raw else None
             except HTTPError as exc:
                 detail = _http_error_detail(exc)
@@ -554,8 +562,22 @@ def _wait_for_project_run(client: OdinClient, project: dict, run: dict) -> dict:
     project_id = str(project["id"])
     run_id = str(run["id"])
     last_signature: tuple | None = None
+    started_waiting = time.monotonic()
+    timeout_seconds = max(
+        60.0,
+        float(os.getenv("ODIN_RUN_TIMEOUT_SECONDS", str(DEFAULT_RUN_TIMEOUT_SECONDS))),
+    )
     try:
         while True:
+            if time.monotonic() - started_waiting >= timeout_seconds:
+                raise OdinClientError(
+                    "Odin stopped waiting because indexing exceeded the configured time limit. "
+                    "The backend job may still be running; use `odin project status` to check it.",
+                    EXIT_BACKEND_UNAVAILABLE,
+                    code="project_run_wait_timeout",
+                    next_action="check_status",
+                )
+            _renew_cli_session_if_needed(client)
             current = dict(client.request("GET", f"projects/{project_id}/runs/{run_id}"))
             signature = (
                 current.get("status"),
@@ -843,7 +865,10 @@ def _resolved_directory(value: str) -> Path:
 def _health(backend_url: str) -> dict:
     try:
         with urlopen(backend_url.rstrip("/") + "/health", timeout=3) as response:
-            return json.loads(response.read().decode("utf-8"))
+            raw = _bounded_response_read(response, MAX_HTTP_RESPONSE_BYTES)
+            if len(raw) > MAX_HTTP_RESPONSE_BYTES:
+                return None
+            return json.loads(raw.decode("utf-8"))
     except (URLError, HTTPError) as exc:
         raise OdinClientError(
             "CML is not running. Open CML and retry.", EXIT_BACKEND_UNAVAILABLE
@@ -1086,6 +1111,29 @@ def _establish_cli_session(client: OdinClient, descriptor: dict) -> None:
     client.auth_context = me
 
 
+def _renew_cli_session_if_needed(client: OdinClient) -> None:
+    context = getattr(client, "auth_context", None) or {}
+    expires_at = str(context.get("expires_at") or "")
+    backend_instance_id = str(context.get("backend_instance_id") or "")
+    if not expires_at or not backend_instance_id:
+        return
+    try:
+        expiry = datetime.fromisoformat(expires_at.replace("Z", "+00:00"))
+    except ValueError:
+        return
+    if expiry <= datetime.now(UTC) + timedelta(minutes=2):
+        _establish_cli_session(client, {"backend_instance_id": backend_instance_id})
+
+
+def _bounded_response_read(response, limit: int) -> bytes:
+    try:
+        return response.read(limit + 1)
+    except TypeError:
+        # Compatibility for small in-memory response doubles and custom handlers.
+        raw = response.read()
+        return raw[: limit + 1]
+
+
 def _credential_helper(
     command: str, *, client_id: str | None = None, secret: str | None = None
 ) -> dict:
@@ -1127,7 +1175,7 @@ def _executable_fingerprint() -> str:
 
 def _http_error_detail(exc: HTTPError) -> str:
     try:
-        payload = json.loads(exc.read().decode("utf-8"))
+        payload = json.loads(exc.read(64 * 1024 + 1)[:64 * 1024].decode("utf-8"))
         detail = payload.get("detail")
         if isinstance(detail, str) and detail:
             return detail

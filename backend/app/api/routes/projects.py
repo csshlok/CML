@@ -165,9 +165,19 @@ def project_list_page(
 
 
 @router.get("/project-run-summary")
-def project_run_summary(limit: int = 200, active_only: bool = False) -> dict:
+def project_run_summary(request: Request, limit: int = 200, active_only: bool = False) -> dict:
     safe_limit = max(1, min(int(limit), 500))
     status_clause = "AND r.status IN ('queued', 'running')" if active_only else ""
+    context = getattr(request.state, "cli_auth", None)
+    scope_clause = ""
+    params: list[object] = []
+    if context:
+        allowed_vault_ids = sorted(set(context["allowed_vault_ids"]))
+        if not allowed_vault_ids:
+            scope_clause = "AND 1 = 0"
+        else:
+            scope_clause = f"AND p.vault_id IN ({','.join('?' for _ in allowed_vault_ids)})"
+            params.extend(allowed_vault_ids)
     with connect() as conn:
         rows = conn.execute(
             f"""
@@ -178,14 +188,14 @@ def project_run_summary(limit: int = 200, active_only: bool = False) -> dict:
                 r.*
             FROM project_index_runs r
             JOIN projects p ON p.id = r.project_id
-            WHERE p.deleted_at IS NULL {status_clause}
+            WHERE p.deleted_at IS NULL {status_clause} {scope_clause}
             ORDER BY
                 CASE WHEN r.status IN ('queued', 'running') THEN 0 ELSE 1 END,
                 r.updated_at DESC,
                 r.id DESC
             LIMIT ?
             """,
-            (safe_limit,),
+            (*params, safe_limit),
         ).fetchall()
     return {
         "items": [

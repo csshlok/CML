@@ -220,16 +220,22 @@ def enqueue_project_intelligence_layers(
         raise ValueError("Coverage refresh requires an LCOV artifact path.")
     with connect() as conn:
         project = conn.execute(
-            "SELECT active_manifest_snapshot_id, active_snapshot_id FROM projects WHERE id=? AND deleted_at IS NULL",
+            """SELECT active_manifest_snapshot_id, active_structure_snapshot_id,
+                      active_snapshot_id
+               FROM projects WHERE id=? AND deleted_at IS NULL""",
             (project_id,),
         ).fetchone()
         if project is None:
             raise KeyError(project_id)
-        snapshot_id = (
+        owning_snapshot_id = (
             project["active_manifest_snapshot_id"] or project["active_snapshot_id"] or "unindexed"
+        )
+        structure_snapshot_id = (
+            project["active_structure_snapshot_id"] or project["active_snapshot_id"] or "unindexed"
         )
         jobs = []
         for layer in selected:
+            snapshot_id = structure_snapshot_id if layer == "graph" else owning_snapshot_id
             payload = {"project_id": project_id, "snapshot_id": snapshot_id}
             if layer == "coverage":
                 payload["artifact_path"] = artifact_path
@@ -253,7 +259,7 @@ def enqueue_project_intelligence_layers(
     wake_background_worker()
     return {
         "project_id": project_id,
-        "snapshot_id": snapshot_id,
+        "snapshot_id": owning_snapshot_id,
         "jobs": jobs,
         "queued_layers": selected,
     }
