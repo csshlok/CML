@@ -1,9 +1,12 @@
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
+import { useVirtualizer } from "@tanstack/react-virtual";
 import { type DragEvent, useEffect, useRef, useState } from "react";
 import type { ChatMessage, Cluster, Source } from "@/lib/domain";
 import {
+  cancelChatGeneration,
   deleteChatSession,
   getModelRuntimeStatus,
+  getProject,
   getChatSessionMetadata,
   getChatTimeline,
   listClusters,
@@ -13,11 +16,13 @@ import {
   updateChatMessage,
   updateChatSession,
   ChatStreamInterruptedError,
+  countSources,
   type ChatContextResponse,
   type ChatMessageRecord,
   type ChatTimelineItem,
   type ChatSessionRecord,
   type ModelRuntimeStatus,
+  type ProjectRecord,
   type VaultRecord,
 } from "@/lib/backend";
 import {
@@ -77,6 +82,7 @@ function ChatView() {
   const [vault, setVaultRecord] = useState<VaultRecord | null>(null);
   const [backendClusters, setBackendClusters] = useState<Cluster[]>([]);
   const [backendSources, setBackendSources] = useState<Source[]>([]);
+  const [unclusteredSourceCount, setUnclusteredSourceCount] = useState<number | null>(null);
   const [backendReady, setBackendReady] = useState(false);
   const [backendSessionId, setBackendSessionId] = useState<string | null>(null);
   const [backendSession, setBackendSession] = useState<ChatSessionRecord | null>(null);
@@ -92,6 +98,7 @@ function ChatView() {
   const [attachments, setAttachments] = useState<string[]>([]);
   const [attachmentNotice, setAttachmentNotice] = useState<string | null>(null);
   const [runtime, setRuntime] = useState<ModelRuntimeStatus | null>(null);
+  const [scopeProject, setScopeProject] = useState<ProjectRecord | null>(null);
   const [dragActive, setDragActive] = useState(false);
   const [lastUserPrompt, setLastUserPrompt] = useState<string | null>(null);
   const [showJumpToLatest, setShowJumpToLatest] = useState(false);
@@ -102,9 +109,13 @@ function ChatView() {
   const endRef = useRef<HTMLDivElement>(null);
   const messageViewportRef = useRef<HTMLDivElement>(null);
   const autoScrollRef = useRef(true);
+  const programmaticScrollRef = useRef(false);
+  const programmaticScrollFrameRef = useRef<number | null>(null);
   const titleCommitRef = useRef(0);
   const consumedPendingPromptRef = useRef<string | null>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
+  const activeGenerationIdRef = useRef<string | null>(null);
+  const streamSequenceRef = useRef(0);
   const loadSequenceRef = useRef(0);
 
   async function loadBackendContext() {
@@ -113,6 +124,8 @@ function ChatView() {
     setBackendSession(null);
     setBackendSessionId(null);
     setBackendMessages([]);
+    setScopeProject(null);
+    setUnclusteredSourceCount(null);
     setLastError(null);
     setLatestContextMeta(null);
     setEarlierCursor(null);
@@ -124,12 +137,14 @@ function ChatView() {
       const activeVault = vaults[0] ?? null;
       setVaultRecord(activeVault);
       if (!activeVault) return;
+      let loadedSession: ChatSessionRecord;
       try {
         const [session, timeline] = await Promise.all([
           getChatSessionMetadata(chatId),
           getChatTimeline(chatId, { limit: 80 }),
         ]);
         if (loadSequence !== loadSequenceRef.current) return;
+        loadedSession = session;
         setBackendSession(session);
         setBackendSessionId(session.id);
         setBackendMessages(timeline.items.map(messageFromTimelineItem));
@@ -145,6 +160,10 @@ function ChatView() {
         listClusters(activeVault.id, { limit: 500 }),
         listSources(activeVault.id, { limit: 20, order: "newest" }),
         getModelRuntimeStatus(),
+        countSources(activeVault.id, undefined, { unclustered: true, states: ["indexed"] }),
+        loadedSession.scope_project_id
+          ? getProject(loadedSession.scope_project_id)
+          : Promise.resolve(null),
       ]);
       if (loadSequence !== loadSequenceRef.current) return;
       if (optional[0].status === "fulfilled") {
@@ -154,6 +173,8 @@ function ChatView() {
         setBackendSources(optional[1].value.map(sourceFromRecord));
       }
       if (optional[2].status === "fulfilled") setRuntime(optional[2].value);
+      if (optional[3].status === "fulfilled") setUnclusteredSourceCount(optional[3].value.total);
+      if (optional[4].status === "fulfilled") setScopeProject(optional[4].value);
       if (optional.some((result) => result.status === "rejected")) {
         notify({
           title: "Some chat details are still loading",
@@ -170,11 +191,6 @@ function ChatView() {
   }
 
   useEffect(() => {
-    if (!autoScrollRef.current) return;
-    endRef.current?.scrollIntoView({ behavior: streaming ? "auto" : "smooth" });
-  }, [backendMessages.length, streamText, streaming]);
-
-  useEffect(() => {
     if (!attachmentNotice) return;
     const timeout = window.setTimeout(() => setAttachmentNotice(null), 5500);
     return () => window.clearTimeout(timeout);
@@ -189,6 +205,10 @@ function ChatView() {
     void loadBackendContext();
     return () => {
       loadSequenceRef.current += 1;
+      streamSequenceRef.current += 1;
+      abortControllerRef.current?.abort();
+      abortControllerRef.current = null;
+      activeGenerationIdRef.current = null;
     };
   }, [chatId]);
 
@@ -277,16 +297,86 @@ function ChatView() {
 
   useEffect(() => {
     if (loadingSession || streaming || consumedPendingPromptRef.current === chatId) return;
-    const pendingPrompt = window.sessionStorage.getItem(`cml.pendingPrompt.${chatId}`);
-    const pendingAttachments = JSON.parse(
-      window.sessionStorage.getItem(`cml.pendingAttachments.${chatId}`) ?? "[]",
-    ) as string[];
-    if (!pendingPrompt && pendingAttachments.length === 0) return;
-    consumedPendingPromptRef.current = chatId;
+    const pendingKey = `cml.pendingChat.${chatId}`;
+    let pendingPrompt = window.sessionStorage.getItem(`cml.pendingPrompt.${chatId}`);
+    let pendingAttachments: string[] = [];
+    try {
+      pendingAttachments = JSON.parse(
+        window.sessionStorage.getItem(`cml.pendingAttachments.${chatId}`) ?? "[]",
+      ) as string[];
+      const envelope = JSON.parse(window.sessionStorage.getItem(pendingKey) ?? "null") as {
+        version?: number;
+        created_at?: number;
+        prompt?: string;
+        attachments?: string[];
+      } | null;
+      if (
+        envelope?.version === 1
+        && typeof envelope.created_at === "number"
+        && Date.now() - envelope.created_at <= 30 * 60 * 1000
+      ) {
+        pendingPrompt = typeof envelope.prompt === "string" ? envelope.prompt : null;
+        pendingAttachments = Array.isArray(envelope.attachments) ? envelope.attachments : [];
+      }
+    } catch {
+      pendingPrompt = null;
+      pendingAttachments = [];
+    }
+    window.sessionStorage.removeItem(pendingKey);
     window.sessionStorage.removeItem(`cml.pendingPrompt.${chatId}`);
     window.sessionStorage.removeItem(`cml.pendingAttachments.${chatId}`);
+    if (!pendingPrompt && pendingAttachments.length === 0) return;
+    consumedPendingPromptRef.current = chatId;
     void send(pendingPrompt ?? undefined, pendingAttachments);
   }, [chatId, loadingSession, streaming]);
+
+  const messages = backendMessages;
+  const messageVirtualizer = useVirtualizer({
+    count: messages.length,
+    getScrollElement: () => messageViewportRef.current,
+    estimateSize: (index) => (messages[index]?.role === "user" ? 96 : 280),
+    getItemKey: (index) => messages[index]?.id ?? index,
+    overscan: 5,
+    useFlushSync: false,
+  });
+  const virtualMessages = messageVirtualizer.getVirtualItems();
+  const scheduleScrollToLatest = () => {
+    programmaticScrollRef.current = true;
+    autoScrollRef.current = true;
+    if (programmaticScrollFrameRef.current !== null) {
+      window.cancelAnimationFrame(programmaticScrollFrameRef.current);
+    }
+    const scroll = () => {
+      if (messages.length > 0) {
+        messageVirtualizer.scrollToIndex(messages.length - 1, { align: "end" });
+      } else {
+        endRef.current?.scrollIntoView({ behavior: "auto" });
+      }
+    };
+    scroll();
+    const firstFrame = window.requestAnimationFrame(() => {
+      scroll();
+      programmaticScrollFrameRef.current = window.requestAnimationFrame(() => {
+        scroll();
+        programmaticScrollRef.current = false;
+        programmaticScrollFrameRef.current = null;
+        setShowJumpToLatest(false);
+      });
+    });
+    programmaticScrollFrameRef.current = firstFrame;
+    return () => {
+      window.cancelAnimationFrame(firstFrame);
+      if (programmaticScrollFrameRef.current !== null) {
+        window.cancelAnimationFrame(programmaticScrollFrameRef.current);
+      }
+      programmaticScrollFrameRef.current = null;
+      programmaticScrollRef.current = false;
+    };
+  };
+  useEffect(() => {
+    if (!autoScrollRef.current || loadingSession || !messageViewportRef.current) return;
+    return scheduleScrollToLatest();
+  }, [loadingSession, messages.length, streamText, streaming]);
 
   if (loadingSession && !backendSession) {
     return <ChatLoadingSkeleton />;
@@ -312,11 +402,9 @@ function ChatView() {
 
   const activeClusters = backendClusters;
   const activeSources = backendSources;
-  const messages = backendMessages;
   const projectId = backendSession.scope_project_id ?? null;
   const scopeClusterId = backendSession.scope_cluster_id ?? null;
   const scopeUnclustered = backendSession.scope_unclustered;
-  const hasUnclusteredSources = activeSources.some((source) => !source.clusterId);
   const saved = backendSession.saved;
   const chatStatus = !backendReady
     ? { label: "Library unavailable", tone: "var(--status-error)", settings: false }
@@ -327,7 +415,26 @@ function ChatView() {
   const scope = scopeClusterId
     ? (activeClusters.find((c) => c.id === scopeClusterId) ?? null)
     : null;
-  const suggestedPrompts = scope
+  const scopeLabel = scopeUnclustered
+    ? "unclustered sources"
+    : scopeProject
+      ? scopeProject.name
+    : scope
+      ? scope.name
+      : "all vault context";
+  const suggestedPrompts = scopeUnclustered
+    ? [
+        "Summarize my unclustered sources.",
+        "What are the main themes across my unclustered sources?",
+        "Which unclustered sources appear related?",
+      ]
+    : scopeProject
+    ? [
+        `Summarize ${scopeProject.name}.`,
+        `What are the most important components in ${scopeProject.name}?`,
+        `What risks or gaps exist in ${scopeProject.name}?`,
+      ]
+    : scope
     ? [
         `Summarize ${scope.name}.`,
         `What are the most important recent additions in ${scope.name}?`,
@@ -356,13 +463,17 @@ function ChatView() {
     : null;
 
   const setScope = async (val: string) => {
-    const nextScope = val === "global" || val === "unclustered" ? null : val;
+    const nextProjectId = val.startsWith("project:") ? val.slice("project:".length) : null;
+    const nextScope =
+      val === "global" || val === "unclustered" || nextProjectId ? null : val;
     try {
       const updated = await updateChatSession(backendSession.id, {
         scope_cluster_id: nextScope,
+        scope_project_id: nextProjectId,
         scope_unclustered: val === "unclustered",
       });
       setBackendSession(updated);
+      if (!updated.scope_project_id) setScopeProject(null);
     } catch {
       setLastError("Could not update this chat's scope.");
     }
@@ -450,9 +561,12 @@ function ChatView() {
     if (backendReady && vault) {
       const abortController = new AbortController();
       abortControllerRef.current = abortController;
+      const streamSequence = ++streamSequenceRef.current;
+      const isCurrentStream = () => streamSequence === streamSequenceRef.current;
       try {
         let streamedAnswer = "";
-        let streamedMeta: Pick<ChatContextResponse, "clusters_used" | "citations" | "coverage_ledger" | "attachments_stored" | "intent" | "runtime_state" | "warnings"> = {
+        let streamedMeta: Pick<ChatContextResponse, "generation_id" | "clusters_used" | "citations" | "coverage_ledger" | "attachments_stored" | "intent" | "runtime_state" | "warnings"> = {
+          generation_id: null,
           clusters_used: [],
           citations: [],
           coverage_ledger: null,
@@ -483,7 +597,9 @@ function ChatView() {
           },
           {
             onMeta: (meta) => {
+              if (!isCurrentStream()) return;
               streamedMeta = meta;
+              activeGenerationIdRef.current = meta.generation_id ?? activeGenerationIdRef.current;
               setLatestContextMeta(meta);
               const coverage = meta.coverage_ledger;
               setStreamStatus(
@@ -501,6 +617,7 @@ function ChatView() {
               );
             },
             onToken: (text) => {
+              if (!isCurrentStream()) return;
               streamedAnswer += text;
               setStreamStatus(
                 analysisMode === "complete"
@@ -512,6 +629,7 @@ function ChatView() {
               setStreamText(streamedAnswer);
             },
             onDone: (done) => {
+              if (!isCurrentStream()) return;
               streamedDone = done;
               setLatestContextMeta({
                 coverage_ledger: done.coverage_ledger ?? streamedMeta.coverage_ledger ?? null,
@@ -523,6 +641,7 @@ function ChatView() {
           },
           abortController.signal,
         );
+        if (!isCurrentStream()) return;
         const response = {
           session_id: streamedDone.session_id ?? backendSessionId ?? chatId,
           answer: streamedDone.answer ?? streamedAnswer,
@@ -558,9 +677,11 @@ function ChatView() {
           setBackendMessages((current) => [...current, assistantMessage]);
           try {
             const refreshed = await getChatSessionMetadata(response.session_id);
+            if (!isCurrentStream()) return;
             setBackendSession(refreshed);
             setBackendSessionId(refreshed.id);
             const timeline = await getChatTimeline(refreshed.id, { limit: 80 });
+            if (!isCurrentStream()) return;
             setBackendMessages((current) =>
               mergeTimelineMessages(current, timeline.items.map(messageFromTimelineItem)),
             );
@@ -579,11 +700,14 @@ function ChatView() {
           }
         }
       } catch (error) {
+        if (!isCurrentStream()) return;
         if (error instanceof DOMException && error.name === "AbortError") {
-          setStreamStatus("Stopped. Saving the partial answer...");
+          setStreamStatus("Stopped.");
           try {
             const refreshed = await getChatSessionMetadata(backendSession.id);
+            if (!isCurrentStream()) return;
             const timeline = await getChatTimeline(refreshed.id, { limit: 80 });
+            if (!isCurrentStream()) return;
             setBackendSession(refreshed);
             setBackendMessages((current) =>
               mergeTimelineMessages(current, timeline.items.map(messageFromTimelineItem)),
@@ -598,8 +722,11 @@ function ChatView() {
         if (error instanceof ChatStreamInterruptedError) {
           try {
             for (let attempt = 0; attempt < 16; attempt += 1) {
+              if (!isCurrentStream()) return;
               const refreshed = await getChatSessionMetadata(backendSession.id);
+              if (!isCurrentStream()) return;
               const timeline = await getChatTimeline(refreshed.id, { limit: 80 });
+              if (!isCurrentStream()) return;
               let persistedPromptIndex = -1;
               timeline.items.forEach((item, index) => {
                 if (item.message_type === "user_message" && item.content === prompt) {
@@ -640,6 +767,7 @@ function ChatView() {
               if (refreshed.active_generation) {
                 if (attempt < 15) {
                   await new Promise((resolve) => window.setTimeout(resolve, 750));
+                  if (!isCurrentStream()) return;
                   continue;
                 }
                 setBackendSession(refreshed);
@@ -673,17 +801,26 @@ function ChatView() {
         } satisfies ChatMessage;
         setBackendMessages((current) => [...current, errorMessage]);
       } finally {
-        if (abortControllerRef.current === abortController) {
+        if (isCurrentStream() && abortControllerRef.current === abortController) {
           abortControllerRef.current = null;
+          activeGenerationIdRef.current = null;
         }
-        setStreaming(false);
-        setStreamText("");
+        if (isCurrentStream()) {
+          setStreaming(false);
+          setStreamText("");
+        }
       }
       return;
     }
   };
 
   const stopStreaming = () => {
+    const generationId = activeGenerationIdRef.current;
+    if (generationId) {
+      void cancelChatGeneration(generationId).catch((error) => {
+        setLastError(error instanceof Error ? error.message : "Could not stop this answer.");
+      });
+    }
     abortControllerRef.current?.abort();
   };
 
@@ -810,7 +947,13 @@ function ChatView() {
             className="h-8 min-w-0 flex-1 border-transparent bg-transparent px-2 text-sm font-medium disabled:opacity-100 md:max-w-sm"
           />
           <Select
-            value={scopeUnclustered ? "unclustered" : scopeClusterId ?? "global"}
+            value={
+              scopeUnclustered
+                ? "unclustered"
+                : projectId
+                  ? `project:${projectId}`
+                  : scopeClusterId ?? "global"
+            }
             onValueChange={setScope}
           >
             <SelectTrigger className="h-8 w-full gap-2 text-xs sm:w-52">
@@ -819,8 +962,12 @@ function ChatView() {
             </SelectTrigger>
             <SelectContent>
               <SelectItem value="global">All vault context</SelectItem>
-              {hasUnclusteredSources ? (
-                <SelectItem value="unclustered">Unclustered sources</SelectItem>
+              <SelectItem value="unclustered">
+                Unclustered sources
+                {unclusteredSourceCount === null ? "" : ` (${unclusteredSourceCount})`}
+              </SelectItem>
+              {projectId && scopeProject ? (
+                <SelectItem value={`project:${projectId}`}>{scopeProject.name}</SelectItem>
               ) : null}
               {activeClusters.map((c) => (
                 <SelectItem key={c.id} value={c.id}>
@@ -905,6 +1052,7 @@ function ChatView() {
             ref={messageViewportRef}
             className="relative min-w-0 flex-1 overflow-y-auto"
             onScroll={(event) => {
+              if (programmaticScrollRef.current) return;
               const viewport = event.currentTarget;
               const nearBottom =
                 viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight < 120;
@@ -928,9 +1076,21 @@ function ChatView() {
               ) : null}
               {messages.length === 0 && !streaming && (
                 <div className="text-muted-foreground">
-                  <p className="text-lg font-medium text-foreground">Ask across your vault.</p>
+                  <p className="text-lg font-medium text-foreground">
+                    {scopeUnclustered
+                      ? "Ask unclustered sources."
+                      : scopeProject
+                        ? `Ask ${scopeProject.name}.`
+                        : scope
+                          ? `Ask ${scope.name}.`
+                          : "Ask across your vault."}
+                  </p>
                   <p className="mt-2 text-sm">
-                    {scope
+                    {scopeUnclustered
+                      ? "Only indexed sources that are not assigned to a cluster are included."
+                      : scopeProject
+                      ? `Scoped to the ${scopeProject.name} Odin project.`
+                      : scope
                       ? `Scoped to ${scope.name}.`
                       : "Working across all clusters in your vault."}
                   </p>
@@ -948,22 +1108,43 @@ function ChatView() {
                   </div>
                 </div>
               )}
+              <div
+                className="relative"
+                style={{ height: `${messageVirtualizer.getTotalSize()}px` }}
+                data-message-virtualizer
+              >
+                {virtualMessages.map((virtualRow) => {
+                  const message = messages[virtualRow.index];
+                  if (!message) return null;
+                  return (
+                    <div
+                      key={message.id}
+                      ref={messageVirtualizer.measureElement}
+                      data-index={virtualRow.index}
+                      className="absolute left-0 top-0 w-full pb-6 [content-visibility:auto] [contain-intrinsic-size:auto_160px]"
+                      style={{ transform: `translateY(${virtualRow.start}px)` }}
+                    >
+                      <Message
+                        msg={message}
+                        clusters={activeClusters}
+                        sources={activeSources}
+                        onUseful={(value) => {
+                          void setBackendMessageUseful(message.id, value);
+                        }}
+                        onSaved={() =>
+                          void toggleBackendMessageSaved(message.id, Boolean(message.saved))
+                        }
+                        onRegenerate={() => regenerateFromMessage(message.id)}
+                        onOpenSource={(sourceId) =>
+                          navigate({ to: "/sources", search: { source: sourceId } })
+                        }
+                        onAskEvidence={(prompt) => setInput(prompt)}
+                      />
+                    </div>
+                  );
+                })}
+              </div>
               <div className="space-y-6">
-                {messages.map((m) => (
-                  <Message
-                    key={m.id}
-                    msg={m}
-                    clusters={activeClusters}
-                    sources={activeSources}
-                    onUseful={(v) => {
-                      void setBackendMessageUseful(m.id, v);
-                    }}
-                    onSaved={() => void toggleBackendMessageSaved(m.id, Boolean(m.saved))}
-                    onRegenerate={() => regenerateFromMessage(m.id)}
-                    onOpenSources={() => navigate({ to: "/sources" })}
-                    onAskEvidence={(prompt) => setInput(prompt)}
-                  />
-                ))}
                 {streaming && (
                   <div className="rounded-md bg-primary/5 p-4 ring-1 ring-primary/25" aria-live="polite">
                     {streamStatus && (
@@ -991,9 +1172,7 @@ function ChatView() {
                 variant="secondary"
                 className="sticky bottom-4 left-1/2 z-10 -translate-x-1/2 shadow-md"
                 onClick={() => {
-                  autoScrollRef.current = true;
-                  setShowJumpToLatest(false);
-                  endRef.current?.scrollIntoView({ behavior: "smooth" });
+                  scheduleScrollToLatest();
                 }}
               >
                 Jump to latest
@@ -1050,10 +1229,10 @@ function ChatView() {
               <Paperclip className="h-4 w-4" />
             </Button>
             <Textarea
-              aria-label={scope ? `Ask ${scope.name}` : "Ask your vault"}
+              aria-label={scopeUnclustered ? "Ask unclustered sources" : scopeProject ? `Ask ${scopeProject.name}` : scope ? `Ask ${scope.name}` : "Ask your vault"}
               value={input}
               onChange={(e) => setInput(e.target.value)}
-              placeholder={scope ? `Ask ${scope.name}...` : "Ask your vault..."}
+              placeholder={scopeUnclustered ? "Ask unclustered sources..." : scopeProject ? `Ask ${scopeProject.name}...` : scope ? `Ask ${scope.name}...` : "Ask your vault..."}
               rows={2}
               className="resize-none"
               onKeyDown={(e) => {
@@ -1087,7 +1266,7 @@ function ChatView() {
             </div>
           )}
           <p className="mx-auto mt-1.5 max-w-3xl break-words text-[11px] text-muted-foreground">
-            Ctrl/Cmd Enter to send / {scope ? scope.name : "all vault context"} / {latestAnalysisLabel.toLowerCase()}
+            Ctrl/Cmd Enter to send / {scopeLabel} / {latestAnalysisLabel.toLowerCase()}
           </p>
         </div>
       </div>
@@ -1208,7 +1387,7 @@ function Message({
   onUseful,
   onSaved,
   onRegenerate,
-  onOpenSources,
+  onOpenSource,
   onAskEvidence,
 }: {
   msg: ChatMessage;
@@ -1217,7 +1396,7 @@ function Message({
   onUseful: (v: boolean) => void;
   onSaved: () => void;
   onRegenerate: () => void;
-  onOpenSources: () => void;
+  onOpenSource: (sourceId: string) => void;
   onAskEvidence: (prompt: string) => void;
 }) {
   if (msg.role === "user") {
@@ -1349,9 +1528,9 @@ function Message({
                       variant="ghost"
                       size="sm"
                       className="h-7 px-2 text-xs"
-                      onClick={onOpenSources}
+                      onClick={() => onOpenSource(cit.sourceId)}
                     >
-                      View sources
+                      View source
                     </Button>
                   </div>
                 </PopoverContent>

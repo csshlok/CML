@@ -25,11 +25,15 @@ import {
 import { useVisiblePolling } from "@/lib/useVisiblePolling";
 
 export const Route = createFileRoute("/_app/chat")({
+  validateSearch: (search: Record<string, unknown>): { cluster?: string } => ({
+    cluster: typeof search.cluster === "string" ? search.cluster : undefined,
+  }),
   head: () => ({ meta: [{ title: "Chat" }] }),
   component: ChatIndex,
 });
 
 function ChatIndex() {
+  const { cluster: requestedClusterId } = Route.useSearch();
   const pathname = useRouterState({ select: (state) => state.location.pathname });
   const navigate = useNavigate();
   const [vault, setVault] = useState<VaultRecord | null>(null);
@@ -38,13 +42,18 @@ function ChatIndex() {
   const [chatCursor, setChatCursor] = useState<string | null>(null);
   const [clusterCursor, setClusterCursor] = useState<string | null>(null);
   const [loadingMore, setLoadingMore] = useState(false);
+  const [hasLoadedOlderChats, setHasLoadedOlderChats] = useState(false);
   const [backendReady, setBackendReady] = useState(false);
   const [prompt, setPrompt] = useState("");
   const [attachments, setAttachments] = useState<string[]>([]);
   const [attachmentNotice, setAttachmentNotice] = useState<string | null>(null);
   const [dragActive, setDragActive] = useState(false);
-  const [scopeClusterId, setScopeClusterId] = useState<string | null>(null);
+  const [scopeClusterId, setScopeClusterId] = useState<string | null>(requestedClusterId ?? null);
   const [creating, setCreating] = useState(false);
+
+  useEffect(() => {
+    setScopeClusterId(requestedClusterId ?? null);
+  }, [requestedClusterId]);
 
   async function load() {
     try {
@@ -53,12 +62,12 @@ function ChatIndex() {
       setVault(activeVault);
       if (!activeVault) return;
       const [sessionResult, clusterResult] = await Promise.allSettled([
-        listChatSessionsPage(activeVault.id, { limit: 100 }),
+        listChatSessionsPage(activeVault.id, { limit: 100, clusterId: requestedClusterId }),
         listClustersPage(activeVault.id, { limit: 200 }),
       ]);
       if (sessionResult.status === "fulfilled") {
-        setBackendChats(sessionResult.value.items);
-        setChatCursor(sessionResult.value.next_cursor);
+        setBackendChats((current) => mergePolledPage(current, sessionResult.value.items, 100));
+        if (!hasLoadedOlderChats) setChatCursor(sessionResult.value.next_cursor);
         setBackendReady(true);
       } else {
         setBackendReady(false);
@@ -74,6 +83,7 @@ function ChatIndex() {
 
   useEffect(() => {
     let cancelled = false;
+    setHasLoadedOlderChats(false);
 
     async function loadIfMounted() {
       try {
@@ -83,7 +93,7 @@ function ChatIndex() {
         setVault(activeVault);
         if (!activeVault) return;
         const [sessionResult, clusterResult] = await Promise.allSettled([
-          listChatSessionsPage(activeVault.id, { limit: 100 }),
+          listChatSessionsPage(activeVault.id, { limit: 100, clusterId: requestedClusterId }),
           listClustersPage(activeVault.id, { limit: 200 }),
         ]);
         if (cancelled) return;
@@ -108,7 +118,7 @@ function ChatIndex() {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [requestedClusterId]);
 
   useVisiblePolling(load, 4_000, Boolean(vault));
 
@@ -116,7 +126,10 @@ function ChatIndex() {
     try {
       const activeVault = vault ?? (await listVaults())[0] ?? null;
       if (activeVault) {
-        const session = await createChatSession({ vault_id: activeVault.id });
+        const session = await createChatSession({
+          vault_id: activeVault.id,
+          scope_cluster_id: requestedClusterId ?? null,
+        });
         navigate({ to: "/chat/$chatId", params: { chatId: session.id } });
         return;
       }
@@ -138,10 +151,26 @@ function ChatIndex() {
           title: titleFromPrompt(text),
           scope_cluster_id: scopeClusterId,
         });
-        window.sessionStorage.setItem(`cml.pendingPrompt.${session.id}`, text);
-        if (attachments.length > 0) {
-          window.sessionStorage.setItem(`cml.pendingAttachments.${session.id}`, JSON.stringify(attachments));
+        const pendingPrefix = "cml.pendingChat.";
+        const pendingTtlMs = 30 * 60 * 1000;
+        for (let index = window.sessionStorage.length - 1; index >= 0; index -= 1) {
+          const key = window.sessionStorage.key(index);
+          if (!key?.startsWith(pendingPrefix)) continue;
+          try {
+            const saved = JSON.parse(window.sessionStorage.getItem(key) ?? "null") as {
+              created_at?: number;
+            } | null;
+            if (!saved?.created_at || Date.now() - saved.created_at > pendingTtlMs) {
+              window.sessionStorage.removeItem(key);
+            }
+          } catch {
+            window.sessionStorage.removeItem(key);
+          }
         }
+        window.sessionStorage.setItem(
+          `${pendingPrefix}${session.id}`,
+          JSON.stringify({ version: 1, created_at: Date.now(), prompt: text, attachments }),
+        );
         window.dispatchEvent(new Event("vault:chats-changed"));
         navigate({ to: "/chat/$chatId", params: { chatId: session.id } });
         return;
@@ -165,9 +194,14 @@ function ChatIndex() {
     if (!vault || !chatCursor || loadingMore) return;
     setLoadingMore(true);
     try {
-      const page = await listChatSessionsPage(vault.id, { limit: 100, cursor: chatCursor });
+      const page = await listChatSessionsPage(vault.id, {
+        limit: 100,
+        cursor: chatCursor,
+        clusterId: requestedClusterId,
+      });
       setBackendChats((current) => [...current, ...page.items]);
       setChatCursor(page.next_cursor);
+      setHasLoadedOlderChats(true);
     } finally {
       setLoadingMore(false);
     }
@@ -218,7 +252,12 @@ function ChatIndex() {
     addAttachmentPaths(paths);
   }
 
-  const visibleChats = backendReady ? backendChats : [];
+  const activeCluster = backendClusters.find((cluster) => cluster.id === requestedClusterId) ?? null;
+  const visibleChats = backendReady
+    ? requestedClusterId
+      ? backendChats.filter((chat) => chat.scope_cluster_id === requestedClusterId)
+      : backendChats
+    : [];
 
   if (pathname !== "/chat") {
     return (
@@ -303,9 +342,13 @@ function ChatIndex() {
           <div className="flex min-w-0 items-start gap-3">
             <MessageSquare className="h-5 w-5 text-muted-foreground" />
             <div className="min-w-0">
-              <h1 className="text-lg font-semibold tracking-[-0.02em]">Ask your library</h1>
+              <h1 className="text-lg font-semibold tracking-[-0.02em]">
+                {activeCluster ? `Ask ${activeCluster.name}` : "Ask your library"}
+              </h1>
               <p className="break-words text-sm text-muted-foreground">
-                Vault finds the relevant sources first, then your local model writes the answer.
+                {activeCluster
+                  ? "New conversations and retrieval stay scoped to this cluster."
+                  : "Vault finds the relevant sources first, then your local model writes the answer."}
               </p>
             </div>
           </div>
@@ -339,10 +382,10 @@ function ChatIndex() {
             )}
             <div className="rounded-md border border-border bg-card/95 p-4">
               <Textarea
-                aria-label="Ask across your vault"
+                aria-label={activeCluster ? `Ask ${activeCluster.name}` : "Ask across your vault"}
                 value={prompt}
                 onChange={(event) => setPrompt(event.target.value)}
-                placeholder="Ask across your vault..."
+                placeholder={activeCluster ? `Ask ${activeCluster.name}...` : "Ask across your vault..."}
                 rows={5}
                 className="min-h-[150px] resize-none border-0 bg-transparent p-0 text-base shadow-none focus-visible:ring-0"
                 onKeyDown={(event) => {
@@ -420,6 +463,15 @@ function ChatIndex() {
       </div>
     </div>
   );
+}
+
+function mergePolledPage<T extends { id: string }>(
+  current: T[],
+  firstPage: T[],
+  pageSize: number,
+): T[] {
+  const incomingIds = new Set(firstPage.map((item) => item.id));
+  return [...firstPage, ...current.slice(pageSize).filter((item) => !incomingIds.has(item.id))];
 }
 
 function ChatHistory({
