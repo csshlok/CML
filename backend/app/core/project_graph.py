@@ -25,6 +25,15 @@ ALLOWED_TRAVERSAL_EDGES = {
 }
 DEFAULT_PATH_EDGES = ALLOWED_TRAVERSAL_EDGES - {"contains", "depends_on_package"}
 GRAPH_VIEW_EDGES = DEFAULT_PATH_EDGES | {"contains"}
+_PROJECTION_STOPWORDS = {
+    "about", "all", "and", "are", "architecture", "code", "codebase", "could",
+    "dependency", "diagram", "display", "does", "draw", "explain", "file", "files",
+    "find", "for", "from", "generated", "give", "graph", "have", "how", "into", "is", "me",
+    "open", "please", "project", "relationship", "render", "repository", "show", "shown", "source",
+    "sources", "structure", "system", "that", "the", "this", "through", "tree", "using",
+    "visualize", "what", "when", "where", "which", "why", "with", "work", "working", "works",
+}
+_GRAPH_VIEW_MAX_NODES = 2000
 
 
 class GraphQueryError(ValueError):
@@ -287,8 +296,9 @@ def graph_view(
     normalized_direction = direction.strip().casefold()
     if normalized_direction not in {"outbound", "inbound", "balanced"}:
         raise GraphQueryError("Graph direction must be 'outbound', 'inbound', or 'balanced'.")
-    node_limit = max(10, min(int(max_nodes), 300))
-    depth_limit = max(1, min(int(max_depth), 4))
+    node_limit = max(10, min(int(max_nodes), _GRAPH_VIEW_MAX_NODES))
+    depth_ceiling = 2 if _projection_query_terms(query) else 4
+    depth_limit = max(1, min(int(max_depth), depth_ceiling))
     with connect() as conn:
         project = _active_project(conn, project_id)
         snapshot_id = _structure_snapshot_id(project)
@@ -427,6 +437,7 @@ def _graph_projection(
     if not seeds:
         return [], [], False
     selected: dict[str, dict] = {row["id"]: row for row in seeds}
+    seed_ids = set(selected)
     seen_edges: dict[str, dict] = {}
     truncated = False
     frontier = list(selected)
@@ -501,7 +512,7 @@ def _graph_projection(
     }
     nodes = [
         selected[node_id] for node_id in selected
-        if not seen_edges or node_id in connected_ids
+        if not seen_edges or node_id in connected_ids or node_id in seed_ids
     ]
     return nodes, list(seen_edges.values()), truncated
 
@@ -521,15 +532,7 @@ def _tree_projection(
     if scope:
         clauses.append("relative_path LIKE ?")
         params.append(f"{scope}%")
-    stopwords = {
-        "architecture", "codebase", "dependency", "diagram", "directory", "display", "draw",
-        "file", "for", "graph", "hierarchy", "map", "please", "project", "relationship",
-        "render", "repository", "show", "structure", "the", "tree", "visualize",
-    }
-    terms = [
-        term for term in re.findall(r"[A-Za-z_][A-Za-z0-9_]{2,}", query)
-        if term.casefold() not in stopwords
-    ][:6]
+    terms = _projection_query_terms(query)
     if terms:
         matches = []
         for term in terms:
@@ -594,15 +597,7 @@ def _tree_projection(
 
 
 def _projection_seeds(conn, project_id: str, snapshot_id: str, *, query: str, root: str, limit: int) -> list[dict]:
-    stopwords = {
-        "architecture", "codebase", "dependency", "diagram", "display", "draw", "for",
-        "graph", "please", "project", "relationship", "render", "repository", "show",
-        "structure", "the", "tree", "visualize",
-    }
-    terms = [
-        term for term in re.findall(r"[A-Za-z_][A-Za-z0-9_]{2,}", query)
-        if term.casefold() not in stopwords
-    ][:6]
+    terms = _projection_query_terms(query)
     scope = root.strip().replace("\\", "/").strip("/")
     scope_clause = " AND n.relative_path LIKE ?" if scope else ""
     scope_params: list[object] = [f"{scope}%"] if scope else []
@@ -611,9 +606,12 @@ def _projection_seeds(conn, project_id: str, snapshot_id: str, *, query: str, ro
         # Gather candidates for every meaningful query term before ranking. Returning
         # as soon as the first term filled the budget made question word order affect
         # the graph and allowed generic/test symbols to crowd out exact source symbols.
-        per_term_limit = max(12, limit * 2)
+        # Pull enough candidates to let cross-term matches outrank exact but unrelated
+        # single-term symbols (for example source_import_batch over model imports).
+        per_term_limit = max(100, limit * 10)
+        candidates_by_term: dict[str, list[dict]] = {term: [] for term in terms}
         for term in terms:
-            needle = term[:4] if len(term) > 6 else term
+            needle = _projection_term_needle(term)
             wildcard = f"%{needle}%"
             rows = conn.execute(
                 f"""
@@ -646,14 +644,43 @@ def _projection_seeds(conn, project_id: str, snapshot_id: str, *, query: str, ro
             for row in rows:
                 raw = dict_from_row(row)
                 item = {**_view_node(raw), "file_role": raw.get("file_role") or "source"}
+                matched_terms = _matching_projection_terms(item, terms)
+                if not matched_terms:
+                    continue
+                item["matched_terms"] = matched_terms
                 selected.setdefault(item["id"], item)
+                candidates_by_term[term].append(item)
         if selected:
             ranked = sorted(
                 selected.values(),
-                key=lambda item: (_projection_seed_score(item, terms), item["qualified_id"]),
-                reverse=True,
+                key=lambda item: (-_projection_seed_score(item, terms), item["qualified_id"]),
             )
-            return [{key: value for key, value in item.items() if key != "file_role"} for item in ranked[:limit]]
+            balanced: list[dict] = []
+            balanced_ids: set[str] = set()
+            per_term_quota = max(1, min(3, limit // max(1, len(terms))))
+            for term in terms:
+                term_ranked = sorted(
+                    candidates_by_term[term],
+                    key=lambda item: (-_projection_seed_score(item, terms), item["qualified_id"]),
+                )
+                for item in term_ranked[:per_term_quota]:
+                    if item["id"] not in balanced_ids:
+                        balanced.append(item)
+                        balanced_ids.add(item["id"])
+            # Preserve the cross-term balance above, then use the global ranking
+            # to fill the remaining caller-approved capacity. The quota is a
+            # diversity floor, not a hard three-seed ceiling.
+            for item in ranked:
+                if len(balanced) >= limit:
+                    break
+                if item["id"] not in balanced_ids:
+                    balanced.append(item)
+                    balanced_ids.add(item["id"])
+            return [
+                {key: value for key, value in item.items() if key != "file_role"}
+                for item in balanced[:limit]
+            ]
+        return []
     rows = conn.execute(
         f"""
         WITH endpoints AS (
@@ -733,6 +760,7 @@ def _graph_insights(nodes: list[dict], edges: list[dict]) -> dict:
     for node_id in sorted(
         node_by_id,
         key=lambda candidate: (
+            len(node_by_id[candidate].get("matched_terms") or []),
             float(node_by_id[candidate].get("centrality") or 0),
             degree[candidate],
             node_by_id[candidate].get("kind") in {"route", "file", "module", "class"},
@@ -750,7 +778,13 @@ def _graph_insights(nodes: list[dict], edges: list[dict]) -> dict:
                 "connections": degree[node_id],
                 "centrality": float(node.get("centrality") or 0),
                 "community": node.get("community"),
-                "why": "High project-wide centrality" if node.get("centrality") else "Highly connected in this view",
+                "why": (
+                    "Direct question match: " + ", ".join(node.get("matched_terms") or [])
+                    if node.get("matched_terms")
+                    else "High project-wide centrality"
+                    if node.get("centrality")
+                    else "Highly connected in this view"
+                ),
             }
         )
 
@@ -821,6 +855,51 @@ def _graph_insights(nodes: list[dict], edges: list[dict]) -> dict:
     }
 
 
+def _projection_query_terms(query: str) -> list[str]:
+    candidates: list[tuple[int, int, str]] = []
+    seen: set[str] = set()
+    focused_query = re.sub(
+        r"\b(?:project|dependency|relationship)\s+map\b",
+        " ",
+        query,
+        flags=re.IGNORECASE,
+    )
+    for index, term in enumerate(re.findall(r"[A-Za-z_$][A-Za-z0-9_$]*", focused_query)):
+        folded = term.casefold()
+        identifier_like = "_" in term or "$" in term or any(
+            character.isupper() for character in term[1:]
+        )
+        if folded in _PROJECTION_STOPWORDS or (
+            len(term) < 4 and not identifier_like and folded != "map"
+        ):
+            continue
+        if folded in seen:
+            continue
+        seen.add(folded)
+        candidates.append((0 if identifier_like else 1, index, term))
+    candidates.sort()
+    return [term for _priority, _index, term in candidates[:12]]
+
+
+def _matching_projection_terms(node: dict, terms: list[str]) -> list[str]:
+    haystack = " ".join(
+        str(node.get(field) or "")
+        for field in ("label", "display_label", "qualified_id", "relative_path", "signature")
+    ).casefold()
+    return [term for term in terms if _projection_term_needle(term) in haystack]
+
+
+def _projection_term_needle(term: str) -> str:
+    folded = term.casefold()
+    domain_aliases = {
+        "clustering": "cluster",
+        "connections": "connection",
+        "interpretation": "intelligence",
+        "upload": "import",
+    }
+    return domain_aliases.get(folded, folded)
+
+
 def _projection_seed_score(node: dict, terms: list[str]) -> int:
     """Rank exact, authoritative code symbols ahead of incidental text matches."""
     label = str(node.get("label") or node.get("display_label") or "").casefold()
@@ -829,7 +908,7 @@ def _projection_seed_score(node: dict, terms: list[str]) -> int:
     signature = str(node.get("signature") or "").casefold()
     score = 0
     for raw_term in terms:
-        term = raw_term.casefold()
+        term = _projection_term_needle(raw_term)
         if label == term:
             score += 120
         elif label.startswith(term):
@@ -869,6 +948,7 @@ def _view_node(item: dict, *, node_id: str | None = None) -> dict:
         "end_line": item.get("end_line"),
         "signature": item.get("signature") or "",
         "source_id": item.get("source_id"),
+        **({"matched_terms": list(item["matched_terms"])} if item.get("matched_terms") else {}),
     }
 
 

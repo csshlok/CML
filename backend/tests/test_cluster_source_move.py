@@ -1,5 +1,6 @@
 import os
 import re
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -220,6 +221,58 @@ class ClusterSourceMoveTests(unittest.TestCase):
         self.assertNotEqual(moved["cluster_id"], "cluster-chats")
         self.assertEqual(created_cluster["name_origin"], "auto")
 
+    def test_first_auto_cluster_immediately_accepts_related_batch_documents(self) -> None:
+        from backend.app.api.routes.sources import create_source
+        from backend.app.core.background_jobs import _run_source_cluster_reconciliation
+        from backend.app.core.database import connect, utc_now
+        from backend.app.schemas import SourceCreate
+
+        now = utc_now()
+        with connect() as conn:
+            conn.execute(
+                "INSERT INTO vaults (id, name, path, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+                ("vault-batch", "Batch", self.tmp.name, now, now),
+            )
+
+        sources = [
+            create_source(
+                SourceCreate(
+                    vault_id="vault-batch",
+                    title=f"Quarterly revenue forecast {index}",
+                    source_type="note",
+                    raw_text=(
+                        "Quarterly revenue forecast, customer pipeline, renewal targets, "
+                        "and account growth planning."
+                    ),
+                )
+            )
+            for index in range(2)
+        ]
+        with connect() as conn:
+            conn.executemany(
+                "UPDATE sources SET metadata_version = 3 WHERE id = ?",
+                [(source["id"],) for source in sources],
+            )
+
+        _run_source_cluster_reconciliation(
+            {"vault_id": "vault-batch", "source_id": sources[0]["id"]}
+        )
+        _run_source_cluster_reconciliation(
+            {"vault_id": "vault-batch", "source_id": sources[1]["id"]}
+        )
+
+        with connect() as conn:
+            memberships = conn.execute(
+                "SELECT id, cluster_id FROM sources WHERE id IN (?, ?) ORDER BY id",
+                (sources[0]["id"], sources[1]["id"]),
+            ).fetchall()
+            candidate_profiles = conn.execute(
+                "SELECT COUNT(*) AS total FROM cluster_candidate_profiles"
+            ).fetchone()
+        self.assertTrue(all(row["cluster_id"] for row in memberships))
+        self.assertEqual(len({row["cluster_id"] for row in memberships}), 1)
+        self.assertEqual(candidate_profiles["total"], 1)
+
     def test_accepting_a_suggested_move_updates_membership_and_records_the_decision(self) -> None:
         from backend.app.api.routes.clusters import decide_cluster_suggestion
         from backend.app.core.database import connect
@@ -311,6 +364,84 @@ class ClusterSourceMoveTests(unittest.TestCase):
             }
         self.assertEqual(restored_source["cluster_id"], "cluster-a")
         self.assertEqual(restored_chunks, {"cluster-a"})
+
+    def test_cluster_merge_resumes_after_a_committed_batch(self) -> None:
+        import backend.app.api.routes.clusters as clusters_route
+        from backend.app.core.database import connect
+        from backend.app.schemas import ClusterMergeRequest
+
+        self.seed_clusters()
+        sources = [self.create_clustered_source() for _ in range(3)]
+        original_move = clusters_route.move_source_cluster_membership
+        calls = 0
+
+        def interrupt_third(*args, **kwargs):
+            nonlocal calls
+            calls += 1
+            if calls == 3:
+                raise RuntimeError("injected merge interruption")
+            return original_move(*args, **kwargs)
+
+        with patch.object(clusters_route, "CLUSTER_MERGE_BATCH_SIZE", 2), patch.object(
+            clusters_route, "move_source_cluster_membership", side_effect=interrupt_third
+        ):
+            with self.assertRaisesRegex(RuntimeError, "injected merge interruption"):
+                clusters_route.merge_cluster(
+                    "cluster-a", ClusterMergeRequest(target_cluster_id="cluster-b")
+                )
+
+        with connect() as conn:
+            interrupted = conn.execute(
+                "SELECT source_cursor, status FROM cluster_merge_artifacts"
+            ).fetchone()
+        self.assertEqual(interrupted["source_cursor"], 2)
+        self.assertEqual(interrupted["status"], "running")
+
+        with patch.object(clusters_route, "CLUSTER_MERGE_BATCH_SIZE", 2):
+            clusters_route.merge_cluster(
+                "cluster-a", ClusterMergeRequest(target_cluster_id="cluster-b")
+            )
+        with connect() as conn:
+            artifact = conn.execute("SELECT * FROM cluster_merge_artifacts").fetchone()
+            memberships = conn.execute(
+                "SELECT id, cluster_id FROM sources WHERE id IN (?, ?, ?)",
+                tuple(source["id"] for source in sources),
+            ).fetchall()
+        self.assertEqual(artifact["status"], "completed")
+        self.assertEqual(artifact["source_cursor"], 3)
+        self.assertEqual(len(set(json.loads(artifact["moved_source_ids"]))), 3)
+        self.assertEqual({row["cluster_id"] for row in memberships}, {"cluster-b"})
+
+    def test_cluster_merge_rollback_does_not_overwrite_a_later_user_move(self) -> None:
+        from backend.app.api.routes.clusters import merge_cluster, rollback_cluster_merge_artifact
+        from backend.app.core.database import connect, utc_now
+        from backend.app.schemas import ClusterMergeRequest
+
+        self.seed_clusters()
+        source = self.create_clustered_source()
+        merge_cluster("cluster-a", ClusterMergeRequest(target_cluster_id="cluster-b"))
+        with connect() as conn:
+            now = utc_now()
+            conn.execute(
+                "INSERT INTO clusters (id, vault_id, name, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+                ("cluster-c", "vault-1", "Gamma", now, now),
+            )
+            conn.execute("UPDATE sources SET cluster_id = 'cluster-c' WHERE id = ?", (source["id"],))
+            conn.execute("UPDATE source_chunks SET cluster_id = 'cluster-c' WHERE source_id = ?", (source["id"],))
+            artifact_id = conn.execute("SELECT id FROM cluster_merge_artifacts").fetchone()["id"]
+
+        rollback_cluster_merge_artifact(str(artifact_id))
+        with connect() as conn:
+            membership = conn.execute(
+                "SELECT cluster_id FROM sources WHERE id = ?", (source["id"],)
+            ).fetchone()
+            artifact = conn.execute(
+                "SELECT reversible, conflict_count FROM cluster_merge_artifacts WHERE id = ?",
+                (artifact_id,),
+            ).fetchone()
+        self.assertEqual(membership["cluster_id"], "cluster-c")
+        self.assertEqual(artifact["reversible"], 0)
+        self.assertGreaterEqual(artifact["conflict_count"], 1)
 
     def test_deleting_cluster_unclusters_sources_and_chunks_together(self) -> None:
         from backend.app.api.routes.clusters import delete_cluster

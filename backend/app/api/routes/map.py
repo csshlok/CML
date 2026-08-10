@@ -11,7 +11,8 @@ from backend.app.core.database import connect, dict_from_row
 router = APIRouter(prefix="/map", tags=["map"])
 UNCLUSTERED_PREFIX = "unclustered:"
 MapConnectionMode = Literal["current", "similar"]
-MIN_CLUSTER_SIMILARITY = 0.72
+MIN_CLUSTER_SIMILARITY = 0.58
+HIGH_CONFIDENCE_CLUSTER_SIMILARITY = 0.72
 MAX_SIMILAR_NEIGHBORS = 3
 MAX_SIMILARITY_EDGES = 240
 
@@ -540,6 +541,9 @@ def _semantic_cluster_edges(
                 continue
             score = float(scores[first_index, second_index])
             if score < MIN_CLUSTER_SIMILARITY:
+                continue
+            shared_terms = set(first["terms"]).intersection(second["terms"])
+            if score < HIGH_CONFIDENCE_CLUSTER_SIMILARITY and not shared_terms:
                 continue
             candidates.append((score, pair[0], pair[1], first, second))
 

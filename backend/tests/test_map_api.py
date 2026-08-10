@@ -260,3 +260,53 @@ def test_semantic_cluster_connections_are_degree_bounded_for_dense_profiles(
         assert max(degrees.values()) <= 3
     finally:
         get_settings.cache_clear()
+
+
+def test_moderate_similarity_requires_shared_profile_terms(tmp_path, monkeypatch):
+    database_path = tmp_path / "map-moderate-similarity.sqlite3"
+    monkeypatch.setenv("CML_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("CML_DATABASE_PATH", str(database_path))
+    get_settings.cache_clear()
+    init_db()
+    try:
+        with connect() as conn:
+            conn.execute(
+                "INSERT INTO vaults (id, name, path, created_at, updated_at) VALUES ('vault-moderate', 'Moderate', ?, '2026-01-01', '2026-01-03')",
+                (str(tmp_path),),
+            )
+            profiles = [
+                ("cluster-ethics", "Ethics", "[1.0,0.0]", '{"privacy":1.0,"ethics":0.8}'),
+                ("cluster-privacy", "Privacy", "[0.64,0.768]", '{"privacy":0.9,"policy":0.7}'),
+                ("cluster-unrelated", "Unrelated", "[0.62,0.785]", '{"travel":1.0}'),
+            ]
+            for cluster_id, name, centroid, terms in profiles:
+                conn.execute(
+                    """
+                    INSERT INTO clusters (
+                        id, vault_id, name, description, color, index_status, profile_status,
+                        cluster_summary, cluster_glossary, created_at, updated_at
+                    ) VALUES (?, 'vault-moderate', ?, '', 'sage', 'ready', 'ready', '', '[]', '2026-01-01', '2026-01-03')
+                    """,
+                    (cluster_id, name),
+                )
+                conn.execute(
+                    """
+                    INSERT INTO cluster_candidate_profiles (
+                        cluster_id, vault_id, profile_version, source_hash,
+                        derived_state_tuple, centroid, lexical_terms,
+                        source_type_distribution, representative_source_ids,
+                        cohesion, status, created_at, updated_at
+                    ) VALUES (?, 'vault-moderate', 1, ?, '{}', ?, ?, '{}', '[]', 0.8, 'ready', '2026-01-02', '2026-01-03')
+                    """,
+                    (cluster_id, f"hash:{cluster_id}", centroid, terms),
+                )
+
+        connected = map_overview("vault-moderate", 120, 0, connections="similar")
+        pairs = {
+            frozenset((edge["source"], edge["target"]))
+            for edge in connected["edges"]
+        }
+        assert frozenset(("cluster-ethics", "cluster-privacy")) in pairs
+        assert frozenset(("cluster-ethics", "cluster-unrelated")) not in pairs
+    finally:
+        get_settings.cache_clear()

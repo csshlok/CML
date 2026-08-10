@@ -3,7 +3,7 @@ import json
 
 from fastapi import APIRouter, HTTPException
 
-from backend.app.core.background_jobs import enqueue_job
+from backend.app.core.background_jobs import cancel_jobs_for_scope, enqueue_job
 from backend.app.core.cluster_suggestions import (
     list_or_create_source_cluster_move_batch,
     record_source_cluster_move_batch_decision,
@@ -19,6 +19,7 @@ from backend.app.core.cluster_lifecycle import (
     mark_cluster_needs_update,
     refresh_cluster_profile,
 )
+from backend.app.core.context_memory import refresh_bootstrap_memory_map, refresh_working_memory
 from backend.app.core.sql import build_update_assignments
 from backend.app.schemas import (
     ClusterCreate,
@@ -31,6 +32,7 @@ from backend.app.schemas import (
 )
 
 router = APIRouter(prefix="/clusters", tags=["clusters"])
+CLUSTER_MERGE_BATCH_SIZE = 100
 
 
 @router.get("", response_model=list[ClusterRead])
@@ -151,6 +153,9 @@ def list_cluster_suggestions(vault_id: str, limit: int = 12, refresh: bool = Fal
 def decide_cluster_suggestion(payload: ClusterSuggestionDecision) -> dict:
     now = utc_now()
     with connect() as conn:
+        # Serialize only the short planning/journal reservation. Source movement
+        # itself commits in bounded batches below.
+        conn.execute("BEGIN IMMEDIATE")
         source = conn.execute(
             """
             SELECT id, vault_id, cluster_id, updated_at, checksum, metadata_version
@@ -352,54 +357,202 @@ def merge_cluster(cluster_id: str, payload: ClusterMergeRequest) -> dict:
             raise HTTPException(status_code=404, detail="Cluster not found")
         if source["vault_id"] != target["vault_id"]:
             raise HTTPException(status_code=400, detail="Clusters must be in the same vault.")
-        moved_sources = [
+        existing_artifact = conn.execute(
+            """
+            SELECT id FROM cluster_merge_artifacts
+            WHERE source_cluster_id = ? AND target_cluster_id = ? AND status != 'completed'
+            ORDER BY created_at DESC LIMIT 1
+            """,
+            (cluster_id, payload.target_cluster_id),
+        ).fetchone()
+        if existing_artifact is not None:
+            artifact_id = str(existing_artifact["id"])
+        else:
+            planned_sources = [
             row["id"]
             for row in conn.execute("SELECT id FROM sources WHERE cluster_id = ?", (cluster_id,)).fetchall()
-        ]
-        moved_chats = [
-            row["id"]
-            for row in conn.execute("SELECT id FROM chat_sessions WHERE scope_cluster_id = ?", (cluster_id,)).fetchall()
-        ]
-        conn.execute(
-            """
-            INSERT INTO cluster_merge_artifacts (
-                id, vault_id, source_cluster_id, target_cluster_id, source_cluster_snapshot,
-                target_cluster_snapshot, moved_source_ids, moved_chat_session_ids, reversible,
-                rolled_back_at, created_at
+            ]
+            planned_chats = [
+                row["id"]
+                for row in conn.execute(
+                    "SELECT id FROM chat_sessions WHERE scope_cluster_id = ?", (cluster_id,)
+                ).fetchall()
+            ]
+            artifact_id = f"cluster-merge-{uuid4()}"
+            conn.execute(
+                """
+                INSERT INTO cluster_merge_artifacts (
+                    id, vault_id, source_cluster_id, target_cluster_id, source_cluster_snapshot,
+                    target_cluster_snapshot, moved_source_ids, moved_chat_session_ids,
+                    planned_source_ids, planned_chat_session_ids, source_cursor, chat_cursor,
+                    status, conflict_count, reversible, rolled_back_at, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, '[]', '[]', ?, ?, 0, 0, 'running', 0, 1, NULL, ?, ?)
+                """,
+                (
+                    artifact_id,
+                    source["vault_id"],
+                    cluster_id,
+                    payload.target_cluster_id,
+                    json.dumps(dict_from_row(source), separators=(",", ":")),
+                    json.dumps(dict_from_row(target), separators=(",", ":")),
+                    json.dumps(planned_sources, separators=(",", ":")),
+                    json.dumps(planned_chats, separators=(",", ":")),
+                    now,
+                    now,
+                ),
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, NULL, ?)
-            """,
-            (
-                f"cluster-merge-{uuid4()}",
-                source["vault_id"],
-                cluster_id,
-                payload.target_cluster_id,
-                json.dumps(dict_from_row(source), separators=(",", ":")),
-                json.dumps(dict_from_row(target), separators=(",", ":")),
-                json.dumps(moved_sources, separators=(",", ":")),
-                json.dumps(moved_chats, separators=(",", ":")),
-                now,
-            ),
-        )
+    return _resume_cluster_merge(artifact_id)
 
-        for source_id in moved_sources:
-            move_source_cluster_membership(
-                conn,
-                source_id=source_id,
-                target_cluster_id=payload.target_cluster_id,
-                reason="Clusters were merged.",
-                actor="user_cluster_merge",
-                expected_vault_id=str(source["vault_id"]),
-                prune_empty_cluster=False,
+
+def _resume_cluster_merge(artifact_id: str) -> dict:
+    while True:
+        with connect() as conn:
+            artifact = conn.execute(
+                "SELECT * FROM cluster_merge_artifacts WHERE id = ?", (artifact_id,)
+            ).fetchone()
+            if artifact is None:
+                raise HTTPException(status_code=404, detail="Merge artifact not found")
+            target = conn.execute(
+                "SELECT * FROM clusters WHERE id = ?", (artifact["target_cluster_id"],)
+            ).fetchone()
+            if target is None:
+                raise HTTPException(status_code=409, detail="Merge target no longer exists")
+            if artifact["status"] == "completed":
+                return dict_from_row(target)
+            planned_sources = _json_list(artifact["planned_source_ids"])
+            source_cursor = int(artifact["source_cursor"] or 0)
+            moved_sources = _json_list(artifact["moved_source_ids"])
+            if source_cursor < len(planned_sources):
+                batch = planned_sources[source_cursor : source_cursor + CLUSTER_MERGE_BATCH_SIZE]
+                conflicts = 0
+                for source_id in batch:
+                    current = conn.execute(
+                        "SELECT cluster_id FROM sources WHERE id = ? AND deleted_at IS NULL",
+                        (source_id,),
+                    ).fetchone()
+                    if current is None or current["cluster_id"] != artifact["source_cluster_id"]:
+                        conflicts += 1
+                        continue
+                    move_source_cluster_membership(
+                        conn,
+                        source_id=source_id,
+                        target_cluster_id=str(artifact["target_cluster_id"]),
+                        reason="Clusters were merged.",
+                        actor="user_cluster_merge",
+                        expected_vault_id=str(artifact["vault_id"]),
+                        prune_empty_cluster=False,
+                        refresh_derived_memory=False,
+                    )
+                    conn.execute(
+                        "UPDATE memory_items SET cluster_id = ?, updated_at = ? "
+                        "WHERE source_id = ? AND status = 'active'",
+                        (artifact["target_cluster_id"], utc_now(), source_id),
+                    )
+                    moved_sources.append(source_id)
+                conn.execute(
+                    """
+                    UPDATE cluster_merge_artifacts
+                    SET source_cursor = ?, moved_source_ids = ?, conflict_count = conflict_count + ?,
+                        updated_at = ? WHERE id = ? AND status = 'running'
+                    """,
+                    (
+                        source_cursor + len(batch),
+                        json.dumps(moved_sources, separators=(",", ":")),
+                        conflicts,
+                        utc_now(),
+                        artifact_id,
+                    ),
+                )
+                continue
+
+            planned_chats = _json_list(artifact["planned_chat_session_ids"])
+            chat_cursor = int(artifact["chat_cursor"] or 0)
+            moved_chats = _json_list(artifact["moved_chat_session_ids"])
+            if chat_cursor < len(planned_chats):
+                batch = planned_chats[chat_cursor : chat_cursor + CLUSTER_MERGE_BATCH_SIZE]
+                conflicts = 0
+                for chat_id in batch:
+                    changed = conn.execute(
+                        """
+                        UPDATE chat_sessions SET scope_cluster_id = ?, updated_at = ?
+                        WHERE id = ? AND vault_id = ? AND scope_cluster_id = ?
+                        """,
+                        (
+                            artifact["target_cluster_id"], utc_now(), chat_id,
+                            artifact["vault_id"], artifact["source_cluster_id"],
+                        ),
+                    ).rowcount
+                    if changed:
+                        moved_chats.append(chat_id)
+                    else:
+                        conflicts += 1
+                conn.execute(
+                    """
+                    UPDATE cluster_merge_artifacts
+                    SET chat_cursor = ?, moved_chat_session_ids = ?, conflict_count = conflict_count + ?,
+                        updated_at = ? WHERE id = ? AND status = 'running'
+                    """,
+                    (
+                        chat_cursor + len(batch),
+                        json.dumps(moved_chats, separators=(",", ":")),
+                        conflicts,
+                        utc_now(),
+                        artifact_id,
+                    ),
+                )
+                continue
+
+            late_sources = [
+                str(row["id"])
+                for row in conn.execute(
+                    "SELECT id FROM sources WHERE cluster_id = ? AND deleted_at IS NULL LIMIT ?",
+                    (artifact["source_cluster_id"], CLUSTER_MERGE_BATCH_SIZE),
+                ).fetchall()
+            ]
+            late_chats = [
+                str(row["id"])
+                for row in conn.execute(
+                    "SELECT id FROM chat_sessions WHERE scope_cluster_id = ? LIMIT ?",
+                    (artifact["source_cluster_id"], CLUSTER_MERGE_BATCH_SIZE),
+                ).fetchall()
+            ]
+            if late_sources or late_chats:
+                planned_sources.extend(value for value in late_sources if value not in planned_sources)
+                planned_chats.extend(value for value in late_chats if value not in planned_chats)
+                conn.execute(
+                    """
+                    UPDATE cluster_merge_artifacts
+                    SET planned_source_ids = ?, planned_chat_session_ids = ?, updated_at = ?
+                    WHERE id = ? AND status = 'running'
+                    """,
+                    (
+                        json.dumps(planned_sources, separators=(",", ":")),
+                        json.dumps(planned_chats, separators=(",", ":")),
+                        utc_now(),
+                        artifact_id,
+                    ),
+                )
+                continue
+
+            refresh_working_memory(
+                conn, vault_id=str(artifact["vault_id"]), cluster_id=str(artifact["target_cluster_id"])
             )
-        conn.execute(
-            "UPDATE chat_sessions SET scope_cluster_id = ?, updated_at = ? WHERE scope_cluster_id = ?",
-            (payload.target_cluster_id, now, cluster_id),
-        )
-        mark_cluster_needs_update(conn, payload.target_cluster_id, "Cluster sources changed after a merge.")
-        conn.execute("DELETE FROM clusters WHERE id = ?", (cluster_id,))
-        row = conn.execute("SELECT * FROM clusters WHERE id = ?", (payload.target_cluster_id,)).fetchone()
-    return dict_from_row(row)
+            refresh_bootstrap_memory_map(
+                conn, vault_id=str(artifact["vault_id"]), cluster_id=str(artifact["target_cluster_id"])
+            )
+            mark_cluster_needs_update(
+                conn, str(artifact["target_cluster_id"]), "Cluster sources changed after a merge."
+            )
+            conn.execute("DELETE FROM clusters WHERE id = ?", (artifact["source_cluster_id"],))
+            conn.execute(
+                "UPDATE cluster_merge_artifacts SET status = 'completed', updated_at = ? WHERE id = ?",
+                (utc_now(), artifact_id),
+            )
+            row = conn.execute(
+                "SELECT * FROM clusters WHERE id = ?", (artifact["target_cluster_id"],)
+            ).fetchone()
+            assert row is not None
+            return dict_from_row(row)
 
 
 @router.post("/{cluster_id}/refresh-profile", response_model=ClusterRead)
@@ -448,7 +601,9 @@ def list_cluster_merge_artifacts(cluster_id: str) -> dict:
                 "target_cluster_id": row["target_cluster_id"],
                 "moved_source_ids": json.loads(row["moved_source_ids"] or "[]"),
                 "moved_chat_session_ids": json.loads(row["moved_chat_session_ids"] or "[]"),
-                "reversible": bool(row["reversible"]),
+                "status": row["status"],
+                "conflict_count": int(row["conflict_count"] or 0),
+                "reversible": bool(row["reversible"]) and row["status"] == "completed",
                 "rolled_back_at": row["rolled_back_at"],
                 "created_at": row["created_at"],
             }
@@ -466,6 +621,8 @@ def rollback_cluster_merge_artifact(artifact_id: str) -> dict:
             raise HTTPException(status_code=404, detail="Merge artifact not found")
         if artifact["rolled_back_at"]:
             raise HTTPException(status_code=409, detail="Merge artifact was already rolled back")
+        if artifact["status"] != "completed":
+            raise HTTPException(status_code=409, detail="Merge artifact is still in progress")
         if int(artifact["reversible"] or 0) != 1:
             raise HTTPException(status_code=409, detail="Merge artifact is not reversible")
 
@@ -502,7 +659,15 @@ def rollback_cluster_merge_artifact(artifact_id: str) -> dict:
 
         moved_source_ids = _json_list(artifact["moved_source_ids"])
         moved_chat_ids = _json_list(artifact["moved_chat_session_ids"])
+        rollback_conflicts = 0
         for source_id in moved_source_ids:
+            current = conn.execute(
+                "SELECT cluster_id FROM sources WHERE id = ? AND deleted_at IS NULL",
+                (source_id,),
+            ).fetchone()
+            if current is None or current["cluster_id"] != artifact["target_cluster_id"]:
+                rollback_conflicts += 1
+                continue
             move_source_cluster_membership(
                 conn,
                 source_id=source_id,
@@ -513,20 +678,30 @@ def rollback_cluster_merge_artifact(artifact_id: str) -> dict:
                 prune_empty_cluster=False,
             )
         for chat_id in moved_chat_ids:
-            conn.execute(
+            changed = conn.execute(
                 """
                 UPDATE chat_sessions
                 SET scope_cluster_id = ?, updated_at = ?
-                WHERE id = ? AND vault_id = ?
+                WHERE id = ? AND vault_id = ? AND scope_cluster_id = ?
                 """,
-                (source_cluster_id, now, chat_id, artifact["vault_id"]),
-            )
+                (
+                    source_cluster_id, now, chat_id, artifact["vault_id"],
+                    artifact["target_cluster_id"],
+                ),
+            ).rowcount
+            if not changed:
+                rollback_conflicts += 1
         mark_cluster_needs_update(conn, source_cluster_id, "Cluster merge rollback restored sources.")
         mark_cluster_needs_update(conn, artifact["target_cluster_id"], "Cluster merge rollback removed sources.")
         refresh_cluster_profile(conn, source_cluster_id)
         conn.execute(
-            "UPDATE cluster_merge_artifacts SET rolled_back_at = ? WHERE id = ?",
-            (now, artifact_id),
+            """
+            UPDATE cluster_merge_artifacts
+            SET rolled_back_at = ?, reversible = CASE WHEN ? > 0 THEN 0 ELSE reversible END,
+                conflict_count = conflict_count + ?, updated_at = ?
+            WHERE id = ?
+            """,
+            (now, rollback_conflicts, rollback_conflicts, now, artifact_id),
         )
         row = conn.execute("SELECT * FROM clusters WHERE id = ?", (source_cluster_id,)).fetchone()
     return dict_from_row(row)
@@ -559,6 +734,12 @@ def delete_cluster(cluster_id: str) -> None:
                 status_code=409,
                 detail="Remove this cluster from its project before deleting it.",
             )
+        cancel_jobs_for_scope(
+            conn,
+            write_scope="cluster",
+            scope_id=cluster_id,
+            detail="Cluster was deleted.",
+        )
         source_ids = [
             str(row["id"])
             for row in conn.execute(
