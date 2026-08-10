@@ -171,6 +171,49 @@ class BridgePhase10Tests(unittest.TestCase):
         self.assertFalse(redelivered["token_available"])
         self.assertIsNone(redelivered["token"])
 
+    def test_bridge_approval_poll_accepts_header_and_deprecated_query_parameter(self) -> None:
+        from backend.app.api.routes.bridge import create_bridge_approval_request, update_bridge_settings
+        from backend.app.schemas import BridgeApprovalRequestCreate, BridgeSettingsUpdate
+
+        update_bridge_settings(BridgeSettingsUpdate(enabled=True))
+        request_row = create_bridge_approval_request(
+            BridgeApprovalRequestCreate(
+                claimed_name="Compatibility client",
+                requested_vault_ids=["vault-1"],
+            ),
+            request=self._request_stub(),
+        )
+        client = self._client()
+        try:
+            via_header = client.get(
+                f"/api/v1/bridge/approval-requests/{request_row['request_id']}/status",
+                headers={"x-cml-bridge-approval-code": request_row["poll_code"]},
+            )
+            via_query = client.get(
+                f"/api/v1/bridge/approval-requests/{request_row['request_id']}/status",
+                params={"approval_code": request_row["poll_code"]},
+            )
+        finally:
+            client.close()
+
+        self.assertEqual(via_header.status_code, 200)
+        self.assertEqual(via_query.status_code, 200)
+        self.assertEqual(via_header.json()["status"], "pending")
+        self.assertEqual(via_query.json()["status"], "pending")
+
+    def test_bridge_request_without_vault_never_substitutes_mode_for_query(self) -> None:
+        from backend.app.api.routes.bridge import _insert_bridge_request
+        from backend.app.core.database import connect
+
+        with connect() as conn:
+            _insert_bridge_request(conn, "client", "sensitive query", "context")
+            row = conn.execute(
+                "SELECT query, mode FROM bridge_requests ORDER BY created_at DESC LIMIT 1"
+            ).fetchone()
+
+        self.assertEqual(row["query"], "")
+        self.assertEqual(row["mode"], "context")
+
     def test_bridge_approval_request_expiry_and_rate_limit_are_enforced(self) -> None:
         from backend.app.api.routes.bridge import (
             create_bridge_approval_request,
@@ -386,6 +429,33 @@ class BridgePhase10Tests(unittest.TestCase):
 
         self.assertEqual(len(response["clusters"]), 1)
         self.assertEqual(response["clusters"][0]["id"], "cluster-1")
+
+    def test_bridge_client_with_both_scope_dimensions_requires_their_intersection(self) -> None:
+        from fastapi import HTTPException
+
+        from backend.app.api.routes.bridge import _enforce_bridge_scope_values
+
+        permissions = {
+            "allowed_vault_ids": ["vault-1"],
+            "allowed_cluster_ids": ["cluster-1"],
+        }
+
+        _enforce_bridge_scope_values(permissions, vault_id="vault-1", cluster_id="cluster-1")
+        with self.assertRaises(HTTPException) as wrong_vault:
+            _enforce_bridge_scope_values(
+                permissions,
+                vault_id="vault-out-of-scope",
+                cluster_id="cluster-1",
+            )
+        with self.assertRaises(HTTPException) as wrong_cluster:
+            _enforce_bridge_scope_values(
+                permissions,
+                vault_id="vault-1",
+                cluster_id="cluster-out-of-scope",
+            )
+
+        self.assertEqual(wrong_vault.exception.detail, "vault_not_allowed")
+        self.assertEqual(wrong_cluster.exception.detail, "cluster_not_allowed")
 
     def test_read_only_bridge_client_can_read_but_backend_rejects_write_tools(self) -> None:
         from backend.app.api.routes.bridge import create_bridge_client, update_bridge_settings
@@ -666,6 +736,36 @@ class BridgePhase10Tests(unittest.TestCase):
         self.assertEqual(row["enabled"], 1)
         self.assertIsNone(row["revoked_at"])
 
+    def test_bridge_client_update_rejects_stale_expected_timestamp(self) -> None:
+        from fastapi import HTTPException
+
+        from backend.app.api.routes.bridge import create_bridge_client, update_bridge_client
+        from backend.app.core.database import connect
+        from backend.app.schemas import BridgeClientCreate, BridgeClientUpdate
+
+        client = create_bridge_client(
+            BridgeClientCreate(name="Concurrent client", allowed_vault_ids=["vault-1"])
+        )
+        updated = update_bridge_client(
+            client["id"],
+            BridgeClientUpdate(name="First window", expected_updated_at=client["updated_at"]),
+        )
+
+        with self.assertRaises(HTTPException) as raised:
+            update_bridge_client(
+                client["id"],
+                BridgeClientUpdate(name="Stale second window", expected_updated_at=client["updated_at"]),
+            )
+
+        self.assertEqual(raised.exception.status_code, 409)
+        self.assertEqual(raised.exception.detail, "bridge_client_update_conflict")
+        with connect() as conn:
+            stored = conn.execute(
+                "SELECT name, updated_at FROM bridge_clients WHERE id = ?", (client["id"],)
+            ).fetchone()
+        self.assertEqual(stored["name"], "First window")
+        self.assertEqual(stored["updated_at"], updated["updated_at"])
+
     def test_updating_approved_client_scope_keeps_anchor_and_identity_metadata(self) -> None:
         from fastapi import HTTPException
 
@@ -711,10 +811,11 @@ class BridgePhase10Tests(unittest.TestCase):
                 BridgeContextRequest(vault_id="vault-1", query="old token"),
                 x_cml_bridge_token=approved["token"],
             )
-        refreshed = build_context(
-            BridgeContextRequest(vault_id="vault-1", query="new token"),
-            x_cml_bridge_token=updated["token"],
-        )
+        with self.assertRaises(HTTPException) as empty_scope:
+            build_context(
+                BridgeContextRequest(vault_id="vault-1", query="new token"),
+                x_cml_bridge_token=updated["token"],
+            )
         with connect() as conn:
             rotation = conn.execute(
                 """
@@ -724,7 +825,7 @@ class BridgePhase10Tests(unittest.TestCase):
                 (approved["id"],),
             ).fetchone()
         self.assertEqual(old_token.exception.detail, "bridge_token_invalid")
-        self.assertEqual(refreshed["query"], "new token")
+        self.assertEqual(empty_scope.exception.detail, "vault_not_allowed")
         self.assertEqual(rotation["reason"], "permissions_changed")
 
     def test_revoked_approved_client_token_is_blocked_and_shared_token_is_disabled_for_secured_vaults(self) -> None:

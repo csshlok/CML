@@ -23,6 +23,8 @@ APPROVAL_RATE_LIMIT_GLOBAL = 20
 CLIENT_RATE_WINDOW_SECONDS = 5 * 60
 CLIENT_RATE_LIMIT = 60
 GLOBAL_RATE_LIMIT = 240
+CLIENT_RESPONSE_BYTE_LIMIT = 20 * 1024 * 1024
+GLOBAL_RESPONSE_BYTE_LIMIT = 80 * 1024 * 1024
 
 
 class BridgeRateLimitError(RuntimeError):
@@ -150,6 +152,7 @@ def enforce_rate_limit(
     limit: int,
     window_seconds: int,
     byte_count: int = 0,
+    byte_limit: int = 0,
 ) -> dict[str, Any]:
     row = conn.execute(
         """
@@ -173,6 +176,8 @@ def enforce_rate_limit(
         raise BridgeRateLimitError("bridge_rate_limited")
     next_count = current_count + 1
     next_bytes = current_bytes + max(0, int(byte_count))
+    if byte_limit > 0 and next_bytes > byte_limit:
+        raise BridgeRateLimitError("bridge_byte_limit_exceeded")
     conn.execute(
         """
         INSERT INTO bridge_rate_limits (

@@ -15,7 +15,9 @@ from backend.app.core.bridge_security import (
     APPROVAL_RATE_WINDOW_SECONDS,
     CLIENT_RATE_LIMIT,
     CLIENT_RATE_WINDOW_SECONDS,
+    CLIENT_RESPONSE_BYTE_LIMIT,
     GLOBAL_RATE_LIMIT,
+    GLOBAL_RESPONSE_BYTE_LIMIT,
     BridgeRateLimitError,
     compact_bridge_tables,
     enforce_rate_limit,
@@ -39,6 +41,7 @@ from backend.app.core.encrypted_storage import (
     is_vault_secured,
     page_from_encrypted_row,
     plaintext_column_for_text,
+    put_encrypted_text,
     source_from_encrypted_row,
     store_source_content_fields,
 )
@@ -261,8 +264,25 @@ def create_bridge_approval_request(payload: BridgeApprovalRequestCreate, request
 @router.get("/approval-requests/{request_id}/status", response_model=BridgeApprovalRequestPollResponse)
 def poll_bridge_approval_request(
     request_id: str,
-    approval_code: str = Query(min_length=8, max_length=512),
+    approval_code: str | None = Query(
+        default=None,
+        min_length=8,
+        max_length=512,
+        deprecated=True,
+        description="Deprecated: send the approval code in x-cml-bridge-approval-code instead.",
+    ),
+    x_cml_bridge_approval_code: str | None = Header(
+        default=None,
+        min_length=8,
+        max_length=512,
+        alias="x-cml-bridge-approval-code",
+    ),
 ) -> dict:
+    header_code = x_cml_bridge_approval_code if isinstance(x_cml_bridge_approval_code, str) else None
+    query_code = approval_code if isinstance(approval_code, str) else None
+    effective_approval_code = header_code or query_code
+    if not effective_approval_code:
+        raise HTTPException(status_code=422, detail="bridge_approval_code_required")
     with connect() as conn:
         row = conn.execute(
             "SELECT * FROM bridge_approval_requests WHERE id = ?",
@@ -270,9 +290,11 @@ def poll_bridge_approval_request(
         ).fetchone()
         if row is None:
             raise HTTPException(status_code=404, detail="bridge_approval_request_not_found")
-        if not _token_hash_matches(str(row["approval_code_hash"]), approval_code):
+        if not _token_hash_matches(str(row["approval_code_hash"]), effective_approval_code):
             raise HTTPException(status_code=401, detail="bridge_approval_code_invalid")
-        if row["status"] == "pending" and is_expired(row["expires_at"]):
+        if row["status"] in {"pending", "approved"} and is_expired(row["expires_at"]):
+            if row["status"] == "approved" and row["delivered_at"] is None:
+                _pop_approval_delivery_token(conn, row)
             conn.execute(
                 """
                 UPDATE bridge_approval_requests
@@ -565,9 +587,19 @@ def build_context(payload: BridgeContextRequest, x_cml_bridge_token: str | None 
                 _log_bridge_request(payload, mode_suffix=str(exc.detail), client_id=client_permissions["id"] if client_permissions else None)
             raise
 
-        if permissions["allowed_vault_ids"] and vault_id not in permissions["allowed_vault_ids"]:
-            _log_bridge_request(payload, mode_suffix="vault_not_allowed", client_id=client_permissions["id"] if client_permissions else None)
-            raise HTTPException(status_code=403, detail="vault_not_allowed")
+        try:
+            _enforce_bridge_scope_values(
+                permissions,
+                vault_id=vault_id,
+                cluster_id=payload.cluster_id,
+            )
+        except HTTPException:
+            _log_bridge_request(
+                payload,
+                mode_suffix="scope_denied",
+                client_id=client_permissions["id"] if client_permissions else None,
+            )
+            raise
         if payload.unclustered_only and vault_id not in permissions["allowed_vault_ids"]:
             _log_bridge_request(
                 payload,
@@ -683,7 +715,7 @@ def build_context(payload: BridgeContextRequest, x_cml_bridge_token: str | None 
                 cluster_id = excluded.cluster_id,
                 client_name = excluded.client_name,
                 query = excluded.query,
-                packet_text = excluded.packet_text,
+        packet_text = excluded.packet_text,
                 evidence_handles_json = excluded.evidence_handles_json,
                 source_titles_json = excluded.source_titles_json,
                 created_at = excluded.created_at
@@ -693,8 +725,22 @@ def build_context(payload: BridgeContextRequest, x_cml_bridge_token: str | None 
                 vault_id,
                 payload.cluster_id,
                 payload.client_name,
-                payload.query,
-                packet_text,
+                _secure_bridge_text_for_storage(
+                    conn,
+                    vault_id=vault_id,
+                    entity_type="bridge_context_packet",
+                    entity_id=context_request_id,
+                    field_name="query",
+                    text=payload.query,
+                ),
+                _secure_bridge_text_for_storage(
+                    conn,
+                    vault_id=vault_id,
+                    entity_type="bridge_context_packet",
+                    entity_id=context_request_id,
+                    field_name="packet_text",
+                    text=packet_text,
+                ),
                 json.dumps(response["expansion_handles"], separators=(",", ":")),
                 json.dumps([item["title"] for item in packet["evidence"]], separators=(",", ":")),
                 utc_now(),
@@ -706,6 +752,7 @@ def build_context(payload: BridgeContextRequest, x_cml_bridge_token: str | None 
             payload.query,
             payload.mode,
             client_id=client_permissions["id"] if client_permissions else None,
+            vault_id=vault_id,
             decision="allowed",
             source_count=len(ordered_sources),
             response_bytes=response_bytes,
@@ -794,10 +841,11 @@ def expand_context_item(
             handle=payload.handle,
             allow_raw_snippets=bool(permissions["allow_raw_snippets"]),
         )
-        if permissions["allowed_cluster_ids"] and expanded.get("cluster_id") and expanded["cluster_id"] not in permissions["allowed_cluster_ids"]:
-            raise HTTPException(status_code=403, detail="cluster_not_allowed")
-        if permissions["allowed_vault_ids"] and vault_id not in permissions["allowed_vault_ids"]:
-            raise HTTPException(status_code=403, detail="vault_not_allowed")
+        _enforce_bridge_scope_values(
+            permissions,
+            vault_id=vault_id,
+            cluster_id=expanded.get("cluster_id"),
+        )
         compact_bridge_tables(conn)
     return expanded
 
@@ -1187,7 +1235,20 @@ def list_bridge_requests(limit: int = 50, offset: int = 0) -> list[dict]:
             ,
             (bounded_limit, bounded_offset),
         ).fetchall()
-    return [dict_from_row(row) for row in rows]
+        response = []
+        for row in rows:
+            item = dict_from_row(row)
+            if item.get("vault_id"):
+                item["query"] = _load_secure_bridge_text(
+                    conn,
+                    vault_id=item["vault_id"],
+                    entity_type="bridge_request",
+                    entity_id=item["id"],
+                    field_name="query",
+                    fallback=item.get("query") or "",
+                )
+            response.append(item)
+    return response
 
 
 @router.get("/token-rotations", response_model=list[BridgeTokenRotationRead])
@@ -1284,6 +1345,7 @@ def create_bridge_client(payload: BridgeClientCreate) -> dict:
 @router.patch("/clients/{client_id}", response_model=BridgeClientCreateResponse | BridgeClientRead)
 def update_bridge_client(client_id: str, payload: BridgeClientUpdate) -> dict:
     updates = payload.model_dump(exclude_unset=True)
+    expected_updated_at = updates.pop("expected_updated_at", None)
     permission_fields = {
         "capability_profile",
         "allowed_vault_ids",
@@ -1294,9 +1356,12 @@ def update_bridge_client(client_id: str, payload: BridgeClientUpdate) -> dict:
     permissions_changed = any(field in updates for field in permission_fields)
     now = utc_now()
     with connect() as conn:
+        conn.execute("BEGIN IMMEDIATE")
         row = conn.execute("SELECT * FROM bridge_clients WHERE id = ?", (client_id,)).fetchone()
         if row is None:
             raise HTTPException(status_code=404, detail="bridge_client_not_found")
+        if expected_updated_at and str(row["updated_at"]) != expected_updated_at:
+            raise HTTPException(status_code=409, detail="bridge_client_update_conflict")
         current = dict_from_row(row)
         token = None
         if updates.get("rotate_token") or permissions_changed:
@@ -1470,6 +1535,12 @@ def list_bridge_clusters(
         requested_limit=safe_limit,
         sort_field="updated_at",
     )
+    if not permissions["allow_cluster_profile"]:
+        for item in page["items"]:
+            item["cluster_summary"] = ""
+            item["cluster_glossary"] = "[]"
+            item["profile_updated_at"] = None
+            item["profile_source_hash"] = ""
     response = {**page, "clusters": page["items"]}
     response_bytes = len(json.dumps(response, ensure_ascii=False).encode("utf-8"))
     with connect() as conn:
@@ -1900,7 +1971,10 @@ def _append_bridge_scope_clauses(
         params.extend(allowed_cluster_ids)
     if not scope_parts:
         raise HTTPException(status_code=409, detail="no_active_vault")
-    clauses.append(f"({' OR '.join(scope_parts)})")
+    # A client configured with both dimensions is constrained by both. Clients
+    # configured with only one dimension retain the supported vault-only or
+    # cluster-only behavior.
+    clauses.append(f"({' AND '.join(scope_parts)})")
 
 
 def _enforce_bridge_scope_values(
@@ -1911,10 +1985,14 @@ def _enforce_bridge_scope_values(
 ) -> None:
     allowed_vault_ids = permissions.get("allowed_vault_ids") or []
     allowed_cluster_ids = permissions.get("allowed_cluster_ids") or []
-    vault_allowed = vault_id in allowed_vault_ids
-    cluster_allowed = bool(cluster_id and cluster_id in allowed_cluster_ids)
-    if not vault_allowed and not cluster_allowed:
-        raise HTTPException(status_code=403, detail="scope_denied")
+    if not allowed_vault_ids and not allowed_cluster_ids:
+        # Preserve the established client-facing contract for an explicitly
+        # empty scope while still denying access.
+        raise HTTPException(status_code=403, detail="vault_not_allowed")
+    if allowed_vault_ids and vault_id not in allowed_vault_ids:
+        raise HTTPException(status_code=403, detail="vault_not_allowed")
+    if allowed_cluster_ids and (not cluster_id or cluster_id not in allowed_cluster_ids):
+        raise HTTPException(status_code=403, detail="cluster_not_allowed")
 
 
 def _bridge_payload_hash(payload) -> str:
@@ -2053,16 +2131,17 @@ def _authorize_bridge_write_scope(
         raise HTTPException(status_code=403, detail="capability_denied")
     permissions = client_permissions or settings
     with connect() as conn:
-        if cluster_id and permissions["allowed_cluster_ids"] and cluster_id not in permissions["allowed_cluster_ids"]:
-            raise HTTPException(status_code=403, detail="cluster_not_allowed")
         resolved_vault_id = _resolve_bridge_vault_id(
             conn,
             requested_vault_id=vault_id,
             requested_cluster_id=cluster_id,
             permissions=permissions,
         )
-        if permissions["allowed_vault_ids"] and resolved_vault_id not in permissions["allowed_vault_ids"]:
-            raise HTTPException(status_code=403, detail="vault_not_allowed")
+        _enforce_bridge_scope_values(
+            permissions,
+            vault_id=resolved_vault_id,
+            cluster_id=cluster_id,
+        )
         vault = conn.execute("SELECT id FROM vaults WHERE id = ?", (resolved_vault_id,)).fetchone()
         if vault is None:
             raise HTTPException(status_code=404, detail="vault_not_found")
@@ -2096,6 +2175,16 @@ def _capture_bridge_source(
     clean_text = text.strip()
     with connect() as conn:
         principal_id = client_id or "bridge-settings"
+        enforce_rate_limit(
+            conn,
+            scope_type="bridge_storage",
+            scope_id=principal_id,
+            bucket="stored_bytes",
+            limit=10_000,
+            window_seconds=24 * 60 * 60,
+            byte_count=len(clean_text.encode("utf-8")),
+            byte_limit=500 * 1024 * 1024,
+        )
         replay = _reserve_bridge_idempotency(
             conn,
             principal_id=principal_id,
@@ -2201,6 +2290,7 @@ def _capture_bridge_source(
             client_name,
             title,
             mode,
+            vault_id=vault_id,
             client_id=client_id,
             decision="captured",
             source_count=1,
@@ -2299,7 +2389,10 @@ def _expand_bridge_handle(conn, *, vault_id: str, handle: str, allow_raw_snippet
         if row is None:
             raise HTTPException(status_code=404, detail="context_handle_not_found")
         chunk = chunk_from_encrypted_row(conn, row)
-        text = str(chunk.get("text") or "").strip()
+        text = str(chunk.get("text") or "").strip() if allow_raw_snippets else ""
+        warnings = [] if allow_raw_snippets else [
+            "Expansion returned redacted source text because raw snippet permission is disabled."
+        ]
         return {
             "handle": normalized,
             "source_id": chunk["source_id"],
@@ -2310,7 +2403,7 @@ def _expand_bridge_handle(conn, *, vault_id: str, handle: str, allow_raw_snippet
             "source_type": chunk.get("source_type") or "",
             "trust_tier": chunk.get("trust_tier") or "trusted_local",
             "text": text,
-            "warnings": [],
+            "warnings": warnings,
         }
     if kind == "page":
         row = conn.execute(
@@ -2325,6 +2418,10 @@ def _expand_bridge_handle(conn, *, vault_id: str, handle: str, allow_raw_snippet
         if row is None:
             raise HTTPException(status_code=404, detail="context_handle_not_found")
         page = page_from_encrypted_row(conn, row)
+        text = str(page.get("raw_text") or "").strip() if allow_raw_snippets else ""
+        warnings = [] if allow_raw_snippets else [
+            "Expansion returned redacted source text because raw snippet permission is disabled."
+        ]
         return {
             "handle": normalized,
             "source_id": page["source_id"],
@@ -2334,8 +2431,8 @@ def _expand_bridge_handle(conn, *, vault_id: str, handle: str, allow_raw_snippet
             "title": page.get("source_title") or "",
             "source_type": page.get("source_type") or "",
             "trust_tier": page.get("trust_tier") or "trusted_local",
-            "text": str(page.get("raw_text") or "").strip(),
-            "warnings": [],
+            "text": text,
+            "warnings": warnings,
         }
     raise HTTPException(status_code=400, detail="unsupported_context_handle")
 
@@ -2353,29 +2450,91 @@ def _insert_bridge_request(
     query: str,
     mode: str,
     *,
+    vault_id: str | None = None,
     client_id: str | None = None,
     decision: str = "allowed",
     source_count: int = 0,
     response_bytes: int = 0,
 ) -> None:
+    request_id = f"bridge-{uuid4()}"
+    # Requests without a vault cannot be encrypted under vault-bound AAD. Keep
+    # the audit metadata but do not place either the query or the mode into the
+    # query column; mode already has its own non-sensitive field.
+    stored_query = ""
+    if vault_id:
+        stored_query = _secure_bridge_text_for_storage(
+            conn,
+            vault_id=vault_id,
+            entity_type="bridge_request",
+            entity_id=request_id,
+            field_name="query",
+            text=query,
+        )
     conn.execute(
         """
         INSERT INTO bridge_requests (
-            id, client_id, client_name, query, mode, decision, source_count, response_bytes, created_at
+            id, vault_id, client_id, client_name, query, mode, decision, source_count, response_bytes, created_at
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
-            f"bridge-{uuid4()}",
+            request_id,
+            vault_id,
             client_id,
             client_name,
-            query,
+            stored_query,
             mode,
             decision,
             source_count,
             response_bytes,
             utc_now(),
         ),
+    )
+
+
+def _secure_bridge_text_for_storage(
+    conn,
+    *,
+    vault_id: str,
+    entity_type: str,
+    entity_id: str,
+    field_name: str,
+    text: str,
+) -> str:
+    if not is_vault_secured(conn, vault_id):
+        return text
+    put_encrypted_text(
+        conn,
+        vault_id=vault_id,
+        entity_type=entity_type,
+        entity_id=entity_id,
+        field_name=field_name,
+        text=text,
+    )
+    return ""
+
+
+def _load_secure_bridge_text(
+    conn,
+    *,
+    vault_id: str,
+    entity_type: str,
+    entity_id: str,
+    field_name: str,
+    fallback: str,
+) -> str:
+    if not is_vault_secured(conn, vault_id):
+        return fallback
+    from backend.app.core.vault_crypto import is_vault_unlocked
+
+    if not is_vault_unlocked(vault_id):
+        return ""
+    return get_encrypted_text(
+        conn,
+        vault_id=vault_id,
+        entity_type=entity_type,
+        entity_id=entity_id,
+        field_name=field_name,
     )
 
 
@@ -2552,6 +2711,17 @@ def _enforce_runtime_rate_limits(conn, client_permissions: dict | None, auth_mod
 
 
 def _record_bridge_client_usage(conn, client_permissions: dict | None, *, response_bytes: int) -> None:
+    principal_id = str(client_permissions.get("id")) if client_permissions else "bridge-settings"
+    enforce_rate_limit(
+        conn,
+        scope_type="bridge_client" if client_permissions else "bridge_global",
+        scope_id=principal_id,
+        bucket="response_bytes",
+        limit=10_000,
+        window_seconds=CLIENT_RATE_WINDOW_SECONDS,
+        byte_count=response_bytes,
+        byte_limit=CLIENT_RESPONSE_BYTE_LIMIT if client_permissions else GLOBAL_RESPONSE_BYTE_LIMIT,
+    )
     if not client_permissions:
         return
     conn.execute(

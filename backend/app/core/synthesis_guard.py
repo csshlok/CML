@@ -134,7 +134,11 @@ def _detect_hostile_instruction_evidence(citations: list[dict]) -> bool:
         "override this prompt",
         "act as system",
     )
-    for citation in citations[:6]:
+    # Safety checks must cover every citation admitted to the synthesis packet.
+    # The presentation-oriented claim and contradiction summaries above are
+    # intentionally bounded, but applying that display bound here lets a later
+    # citation bypass the model-input gate.
+    for citation in citations:
         snippet = " ".join(str(citation.get("snippet") or "").lower().split())
         if not snippet:
             continue

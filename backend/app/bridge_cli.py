@@ -5,6 +5,8 @@ import sys
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
+MAX_HTTP_RESPONSE_BYTES = 2 * 1024 * 1024
+
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Request context from the local CML Bridge.")
@@ -45,7 +47,10 @@ def bridge_request(backend_url: str, token: str, payload: dict) -> dict:
     )
     try:
         with urlopen(request, timeout=20) as response:
-            return json.loads(response.read().decode("utf-8"))
+            raw = _bounded_response_read(response, MAX_HTTP_RESPONSE_BYTES)
+            if len(raw) > MAX_HTTP_RESPONSE_BYTES:
+                raise SystemExit("Bridge response exceeded the 2 MB safety limit.")
+            return json.loads(raw.decode("utf-8"))
     except HTTPError as exc:
         raise SystemExit(f"Bridge request failed: HTTP {exc.code}") from exc
     except URLError as exc:
@@ -55,6 +60,13 @@ def bridge_request(backend_url: str, token: str, payload: dict) -> dict:
 def api_path(suffix: str) -> str:
     api_prefix = _normalize_api_prefix(os.getenv("CML_API_PREFIX", "/api/v1"))
     return f"{api_prefix.rstrip('/')}/{suffix.lstrip('/')}"
+
+
+def _bounded_response_read(response, limit: int) -> bytes:
+    try:
+        return response.read(limit + 1)
+    except TypeError:
+        return response.read()[: limit + 1]
 
 
 def _normalize_api_prefix(value: str) -> str:
