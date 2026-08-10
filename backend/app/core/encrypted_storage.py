@@ -3,6 +3,7 @@ import hashlib
 import json
 import secrets
 import struct
+from collections.abc import Callable
 from pathlib import Path
 from uuid import uuid4
 
@@ -61,7 +62,12 @@ def store_source_content_fields(conn, source: dict, *, now: str | None = None) -
     return sanitized
 
 
-def migrate_existing_plaintext_content(conn, vault_id: str) -> dict[str, int]:
+def migrate_existing_plaintext_content(
+    conn,
+    vault_id: str,
+    *,
+    should_continue: Callable[[], bool] | None = None,
+) -> dict[str, int | bool]:
     """Resume bounded plaintext migration before a vault is reported secured."""
     counts = {"sources": 0, "pages": 0, "chunks": 0, "chat_messages": 0, "chat_generations": 0}
     conn.execute(
@@ -111,6 +117,8 @@ def migrate_existing_plaintext_content(conn, vault_id: str) -> dict[str, int]:
             )
         counts["sources"] += len(rows)
         _commit_migration_batch(conn, vault_id)
+        if not _continue_content_migration(conn, vault_id, should_continue):
+            return {**counts, "complete": False}
 
     for table, entity_type, text_column, count_key, extra_update in (
         ("source_pages", "source_page", "raw_text", "pages", ", updated_at = :now"),
@@ -140,6 +148,8 @@ def migrate_existing_plaintext_content(conn, vault_id: str) -> dict[str, int]:
                 )
             counts[count_key] += len(rows)
             _commit_migration_batch(conn, vault_id)
+            if not _continue_content_migration(conn, vault_id, should_continue):
+                return {**counts, "complete": False}
 
     while True:
         rows = conn.execute(
@@ -176,6 +186,8 @@ def migrate_existing_plaintext_content(conn, vault_id: str) -> dict[str, int]:
             )
         counts["chat_messages"] += len(rows)
         _commit_migration_batch(conn, vault_id)
+        if not _continue_content_migration(conn, vault_id, should_continue):
+            return {**counts, "complete": False}
 
     while True:
         rows = conn.execute(
@@ -198,6 +210,8 @@ def migrate_existing_plaintext_content(conn, vault_id: str) -> dict[str, int]:
             conn.execute("UPDATE chat_generations SET prompt = '' WHERE id = ?", (row["id"],))
         counts["chat_generations"] += len(rows)
         _commit_migration_batch(conn, vault_id)
+        if not _continue_content_migration(conn, vault_id, should_continue):
+            return {**counts, "complete": False}
 
     conn.execute("DELETE FROM retrieval_snapshots WHERE vault_id = ?", (vault_id,))
     conn.execute("DELETE FROM query_evidence_cache WHERE vault_id = ?", (vault_id,))
@@ -212,7 +226,69 @@ def migrate_existing_plaintext_content(conn, vault_id: str) -> dict[str, int]:
         (utc_now(), vault_id),
     )
     conn.commit()
-    return counts
+    return {**counts, "complete": True}
+
+
+def plaintext_content_work_count(conn, vault_id: str, *, limit: int = 26) -> int:
+    """Return a capped count of rows that still contain protected plaintext."""
+    remaining = max(1, int(limit))
+    total = 0
+    queries = (
+        (
+            "SELECT COUNT(*) AS count FROM (SELECT 1 FROM sources WHERE vault_id = ? "
+            "AND (raw_text <> '' OR extracted_text <> '' OR summary <> '' OR tags NOT IN ('', '[]')) LIMIT ?)",
+            (vault_id, remaining),
+        ),
+        (
+            "SELECT COUNT(*) AS count FROM (SELECT 1 FROM source_pages WHERE vault_id = ? AND raw_text <> '' LIMIT ?)",
+            (vault_id, remaining),
+        ),
+        (
+            "SELECT COUNT(*) AS count FROM (SELECT 1 FROM source_chunks WHERE vault_id = ? AND text <> '' LIMIT ?)",
+            (vault_id, remaining),
+        ),
+        (
+            """
+            SELECT COUNT(*) AS count FROM (
+                SELECT 1 FROM chat_messages messages
+                JOIN chat_sessions sessions ON sessions.id = messages.session_id
+                WHERE sessions.vault_id = ? AND (
+                    messages.content <> '' OR messages.clusters_used NOT IN ('', '[]')
+                    OR messages.citations NOT IN ('', '[]') OR messages.warnings NOT IN ('', '[]')
+                ) LIMIT ?
+            )
+            """,
+            (vault_id, remaining),
+        ),
+        (
+            "SELECT COUNT(*) AS count FROM (SELECT 1 FROM chat_generations WHERE vault_id = ? AND prompt <> '' LIMIT ?)",
+            (vault_id, remaining),
+        ),
+    )
+    for sql, params in queries:
+        count = int(conn.execute(sql, params).fetchone()["count"] or 0)
+        total += count
+        remaining = max(0, int(limit) - total)
+        if remaining == 0:
+            return int(limit)
+    return total
+
+
+def _continue_content_migration(conn, vault_id: str, callback: Callable[[], bool] | None) -> bool:
+    if callback is None or callback():
+        return True
+    conn.execute(
+        """
+        UPDATE vault_security_metadata
+        SET content_migration_status = 'pending',
+            content_migration_updated_at = ?,
+            content_migration_error = ''
+        WHERE vault_id = ?
+        """,
+        (utc_now(), vault_id),
+    )
+    conn.commit()
+    return False
 
 
 def _commit_migration_batch(conn, vault_id: str) -> None:
@@ -724,6 +800,21 @@ def encrypted_blob_store_size(vault_id: str | None = None) -> int:
         except OSError:
             continue
     return total
+
+
+def delete_encrypted_blob_file(*, vault_id: str, blob_id: str) -> bool:
+    """Delete one canonical encrypted blob without trusting a stored filesystem path."""
+    path = encrypted_blob_path(vault_id, blob_id)
+    try:
+        path.unlink()
+    except FileNotFoundError:
+        return False
+    parent = path.parent
+    try:
+        parent.rmdir()
+    except OSError:
+        pass
+    return True
 
 
 def _encrypt_bytes(vault_id: str, aad: bytes, plaintext: bytes) -> tuple[bytes, bytes]:

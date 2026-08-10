@@ -6,7 +6,7 @@ from uuid import uuid4
 
 from backend.app.core.config import get_settings
 from backend.app.core.database import connect, utc_now
-from backend.app.core.encrypted_storage import migrate_existing_plaintext_content
+from backend.app.core.encrypted_storage import migrate_existing_plaintext_content, plaintext_content_work_count
 from backend.app.core.vault_crypto import (
     InvalidVaultSecretError,
     VaultCryptoError,
@@ -22,7 +22,7 @@ from backend.app.core.vault_crypto import (
     verify_sensitive_action as verify_vault_sensitive_action,
 )
 
-UnlockState = Literal["locked", "unlocking", "verifying", "repair_required", "ready"]
+UnlockState = Literal["locked", "unlocking", "verifying", "migrating", "repair_required", "ready"]
 
 LOCKED_SAFE_PATHS = (
     "/health",
@@ -85,6 +85,10 @@ class RepairRequiredError(UnlockStateError):
 
 
 _STATE_LOCK = threading.RLock()
+_MIGRATION_LOCK = threading.RLock()
+_MIGRATION_GENERATIONS: dict[str, int] = {}
+_MIGRATION_THREADS: dict[str, threading.Thread] = {}
+INLINE_CONTENT_MIGRATION_ROWS = 25
 _STATE = UnlockStateSnapshot(
     state="locked",
     vault_id=None,
@@ -116,6 +120,15 @@ def current_unlock_state() -> dict:
     result["secured_vault_count"] = len(secured)
     result["secured_vault_ids"] = secured
     result["has_vendor_recovery"] = no_vendor_recovery_available() is False
+    vault_id = result.get("vault_id")
+    if vault_id:
+        try:
+            metadata = get_vault_security_metadata(str(vault_id))
+            result["content_migration_status"] = metadata.get("content_migration_status", "complete")
+            result["content_migration_updated_at"] = metadata.get("content_migration_updated_at")
+            result["content_migration_error"] = metadata.get("content_migration_error", "")
+        except VaultCryptoError:
+            pass
     return result
 
 
@@ -199,9 +212,23 @@ def initialize_security_and_unlock(vault_id: str, passphrase: str, unlock_mode: 
     if unlock_mode != "strict":
         raise ValueError("Only full-passphrase protection is currently available.")
     result = initialize_vault_security(vault_id, passphrase, unlock_mode="strict")
+    migration: dict[str, int | bool] = {
+        "sources": 0,
+        "pages": 0,
+        "chunks": 0,
+        "chat_messages": 0,
+        "chat_generations": 0,
+        "complete": False,
+    }
     try:
         with connect() as conn:
-            migration = migrate_existing_plaintext_content(conn, vault_id)
+            remaining = plaintext_content_work_count(
+                conn,
+                vault_id,
+                limit=INLINE_CONTENT_MIGRATION_ROWS + 1,
+            )
+            if remaining <= INLINE_CONTENT_MIGRATION_ROWS:
+                migration = migrate_existing_plaintext_content(conn, vault_id)
     except Exception as exc:
         with connect() as conn:
             conn.execute(
@@ -234,6 +261,7 @@ def reset_passphrase(vault_id: str, recovery_key: str, new_passphrase: str) -> d
 
 
 def lock(vault_id: str | None = None) -> dict:
+    _cancel_content_migrations(vault_id)
     if vault_id:
         lock_vault(vault_id)
     else:
@@ -287,7 +315,7 @@ def should_pause_vault_job(write_scope: str | None) -> bool:
     return current_unlock_state()["state"] != "ready"
 
 
-def _verify_after_unlock(vault_id: str) -> dict:
+def _verify_after_unlock(vault_id: str, *, allow_background_migration: bool = True) -> dict:
     try:
         metadata = get_vault_security_metadata(vault_id)
         if not is_vault_unlocked(vault_id):
@@ -295,6 +323,20 @@ def _verify_after_unlock(vault_id: str) -> dict:
         if metadata.get("content_migration_status", "complete") != "complete":
             _audit("content_migration_resumed", vault_id)
             with connect() as conn:
+                remaining = plaintext_content_work_count(
+                    conn,
+                    vault_id,
+                    limit=INLINE_CONTENT_MIGRATION_ROWS + 1,
+                )
+                if allow_background_migration and remaining > INLINE_CONTENT_MIGRATION_ROWS:
+                    _set_state(
+                        "migrating",
+                        vault_id=vault_id,
+                        message="Encrypting existing Vault content in the background.",
+                    )
+                    migration_state = current_unlock_state()
+                    _start_content_migration(vault_id)
+                    return migration_state
                 migrate_existing_plaintext_content(conn, vault_id)
             metadata = get_vault_security_metadata(vault_id)
         if metadata.get("content_migration_status", "complete") != "complete":
@@ -318,6 +360,71 @@ def _verify_after_unlock(vault_id: str) -> dict:
     )
     _audit("unlock_ready", vault_id)
     return current_unlock_state()
+
+
+def _start_content_migration(vault_id: str) -> None:
+    with _MIGRATION_LOCK:
+        existing = _MIGRATION_THREADS.get(vault_id)
+        if existing is not None and existing.is_alive():
+            return
+        generation = _MIGRATION_GENERATIONS.get(vault_id, 0) + 1
+        _MIGRATION_GENERATIONS[vault_id] = generation
+        worker = threading.Thread(
+            target=_run_content_migration,
+            args=(vault_id, generation),
+            name=f"cml-content-migration-{vault_id[:12]}",
+            daemon=True,
+        )
+        _MIGRATION_THREADS[vault_id] = worker
+        worker.start()
+
+
+def _run_content_migration(vault_id: str, generation: int) -> None:
+    def owns_migration() -> bool:
+        with _MIGRATION_LOCK:
+            owns = _MIGRATION_GENERATIONS.get(vault_id) == generation
+        return owns and is_vault_unlocked(vault_id)
+
+    try:
+        with connect() as conn:
+            result = migrate_existing_plaintext_content(conn, vault_id, should_continue=owns_migration)
+        if not bool(result.get("complete")) or not owns_migration():
+            return
+        _verify_after_unlock(vault_id, allow_background_migration=False)
+        _audit("content_migration_completed", vault_id)
+    except Exception as exc:
+        with connect() as conn:
+            conn.execute(
+                """
+                UPDATE vault_security_metadata
+                SET content_migration_status = 'pending',
+                    content_migration_updated_at = ?,
+                    content_migration_error = ?
+                WHERE vault_id = ? AND content_migration_status <> 'complete'
+                """,
+                (utc_now(), str(exc)[:300], vault_id),
+            )
+        if owns_migration():
+            _set_state(
+                "repair_required",
+                vault_id=vault_id,
+                message="Content encryption was interrupted. Unlock again to resume it.",
+                verification_error=str(exc)[:300],
+            )
+            _audit("content_migration_failed", vault_id, str(exc)[:300])
+    finally:
+        with _MIGRATION_LOCK:
+            current = _MIGRATION_THREADS.get(vault_id)
+            if current is threading.current_thread():
+                _MIGRATION_THREADS.pop(vault_id, None)
+
+
+def _cancel_content_migrations(vault_id: str | None) -> None:
+    with _MIGRATION_LOCK:
+        targets = [vault_id] if vault_id else list(_MIGRATION_GENERATIONS)
+        for target in targets:
+            if target:
+                _MIGRATION_GENERATIONS[target] = _MIGRATION_GENERATIONS.get(target, 0) + 1
 
 
 def _validate_compact_tuple(raw: object) -> None:

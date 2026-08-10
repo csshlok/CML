@@ -1,6 +1,7 @@
 import importlib
 import os
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -217,6 +218,100 @@ class UnlockPhase2Tests(unittest.TestCase):
         self.assertEqual(generation["prompt"], "")
         self.assertEqual(chat_encrypted_fields, {"content", "clusters_used", "citations", "warnings"})
 
+    def test_large_security_migration_returns_migrating_and_keeps_api_gated(self) -> None:
+        from backend.app.core.database import connect, utc_now
+        from backend.app.core.unlock_state import current_unlock_state, initialize_security_and_unlock
+
+        now = utc_now()
+        with connect() as conn:
+            conn.executemany(
+                """
+                INSERT INTO sources (
+                    id, vault_id, title, source_type, state, raw_text, extracted_text,
+                    summary, tags, created_at, updated_at
+                ) VALUES (?, 'vault-phase2', ?, 'note', 'indexed', ?, '', '', '[]', ?, ?)
+                """,
+                [
+                    (f"large-migration-{index}", f"Private {index}", f"secret-{index}", now, now)
+                    for index in range(40)
+                ],
+            )
+
+        started_at = time.monotonic()
+        result = initialize_security_and_unlock("vault-phase2", "CorrectHorseBatteryStaple1!")
+        elapsed = time.monotonic() - started_at
+
+        self.assertEqual(result["state"], "migrating")
+        self.assertFalse(result["ready"])
+        self.assertLess(elapsed, 2.0)
+
+        client = self._client()
+        try:
+            while time.monotonic() - started_at < 10:
+                if current_unlock_state()["state"] == "ready":
+                    break
+                time.sleep(0.02)
+            self.assertEqual(current_unlock_state()["state"], "ready")
+            self.assertEqual(client.get("/api/v1/sources").status_code, 200)
+        finally:
+            client.close()
+
+        with connect() as conn:
+            plaintext = conn.execute(
+                "SELECT COUNT(*) AS count FROM sources WHERE vault_id = ? AND raw_text <> ''",
+                ("vault-phase2",),
+            ).fetchone()
+            encrypted = conn.execute(
+                "SELECT COUNT(*) AS count FROM encrypted_content WHERE vault_id = ? AND entity_type = 'source'",
+                ("vault-phase2",),
+            ).fetchone()
+        self.assertEqual(int(plaintext["count"]), 0)
+        self.assertEqual(int(encrypted["count"]), 40 * 2)
+
+    def test_content_migration_pauses_only_between_committed_batches(self) -> None:
+        from backend.app.core import vault_crypto
+        from backend.app.core.database import connect, utc_now
+        from backend.app.core.encrypted_storage import migrate_existing_plaintext_content
+
+        vault_crypto.initialize_vault_security(
+            "vault-phase2",
+            "phase2-passphrase",
+            kdf_params=vault_crypto.TEST_KDF_PARAMS,
+        )
+        now = utc_now()
+        with connect() as conn:
+            conn.executemany(
+                """
+                INSERT INTO sources (
+                    id, vault_id, title, source_type, state, raw_text, extracted_text,
+                    summary, tags, created_at, updated_at
+                ) VALUES (?, 'vault-phase2', ?, 'note', 'indexed', ?, '', '', '[]', ?, ?)
+                """,
+                [
+                    (f"pause-migration-{index}", f"Private {index}", f"secret-{index}", now, now)
+                    for index in range(140)
+                ],
+            )
+            result = migrate_existing_plaintext_content(
+                conn,
+                "vault-phase2",
+                should_continue=lambda: False,
+            )
+
+        self.assertFalse(result["complete"])
+        self.assertEqual(result["sources"], 100)
+        with connect() as conn:
+            metadata = conn.execute(
+                "SELECT content_migration_status FROM vault_security_metadata WHERE vault_id = ?",
+                ("vault-phase2",),
+            ).fetchone()
+            remaining = conn.execute(
+                "SELECT COUNT(*) AS count FROM sources WHERE vault_id = ? AND raw_text <> ''",
+                ("vault-phase2",),
+            ).fetchone()
+        self.assertEqual(metadata["content_migration_status"], "pending")
+        self.assertEqual(int(remaining["count"]), 40)
+
     def test_unlock_resumes_interrupted_content_migration_before_ready(self) -> None:
         from backend.app.core import vault_crypto
         from backend.app.core.database import connect, utc_now
@@ -322,8 +417,12 @@ class UnlockPhase2Tests(unittest.TestCase):
             client.close()
 
         for response in checks:
-            self.assertEqual(response.status_code, 423)
-            self.assertEqual(response.json()["detail"], "vault_unlock_required")
+            if response.request.url.path == "/api/v1/bridge/context":
+                self.assertEqual(response.status_code, 401, response.request.url.path)
+                self.assertEqual(response.json()["detail"], "Missing or invalid bridge token")
+            else:
+                self.assertEqual(response.status_code, 423, response.request.url.path)
+                self.assertEqual(response.json()["detail"], "vault_unlock_required")
         self.assertEqual(vaults.status_code, 200)
         self.assertEqual(vaults.json()[0]["path"], "")
 

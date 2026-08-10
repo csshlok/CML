@@ -1297,6 +1297,11 @@ class SystemVaultLockAndEmbeddingTests(unittest.TestCase):
         self.assertIn("analysis_evidence_packets", accounting)
         self.assertIn("external_captures", accounting)
         self.assertNotIn("expert_artifacts", accounting)
+        self.assertEqual(accounting["database_bytes_scope"], "shared_all_vaults")
+        self.assertEqual(accounting["vector_index_bytes_scope"], "vault_attributable")
+        self.assertEqual(accounting["encrypted_blob_bytes_scope"], "vault_attributable")
+        self.assertIsNotNone(accounting["vault_attributable_storage"])
+        self.assertIn("SQLite allocation is shared", accounting["shared_storage"]["note"])
 
     def test_diagnostic_bundle_includes_policy_and_storage_accounting(self) -> None:
         from zipfile import ZipFile
@@ -1405,7 +1410,7 @@ class SystemVaultLockAndEmbeddingTests(unittest.TestCase):
             conn.execute("UPDATE app_jobs SET status = 'running' WHERE id = ?", (job["id"],))
 
         with patch(
-            "backend.app.core.extraction.extract_pages_from_path",
+            "backend.app.core.extraction.extract_pages_from_validated_path",
             return_value=("Scan", ["page one ocr text " * 30, "page two ocr text " * 30]),
         ):
             _run_ocr_source({"source_id": "source-ocr"}, job["id"])
@@ -1813,6 +1818,41 @@ class SystemVaultLockAndEmbeddingTests(unittest.TestCase):
         self.assertEqual(client["name"], "Browser")
         self.assertTrue(any(row["event_type"] == "pairing_approved" for row in audit))
 
+    def test_extension_pairing_approval_is_single_use_under_concurrency(self) -> None:
+        from concurrent.futures import ThreadPoolExecutor
+
+        from fastapi import HTTPException
+
+        from backend.app.api.routes.extension import approve_extension_pairing, start_extension_pairing
+        from backend.app.core.database import connect
+        from backend.app.schemas import ExtensionPairingStartRequest
+
+        pairing = start_extension_pairing(
+            ExtensionPairingStartRequest(name="Concurrent Browser", allowed_vault_ids=["vault-1"])
+        )
+
+        def approve() -> tuple[str, str]:
+            try:
+                return "created", approve_extension_pairing(pairing["id"])["id"]
+            except HTTPException as exc:
+                return "rejected", str(exc.detail)
+
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            outcomes = list(executor.map(lambda _: approve(), range(2)))
+
+        self.assertEqual([kind for kind, _ in outcomes].count("created"), 1)
+        self.assertEqual([kind for kind, _ in outcomes].count("rejected"), 1)
+        with connect() as conn:
+            clients = conn.execute(
+                "SELECT COUNT(*) FROM extension_clients WHERE name = 'Concurrent Browser'"
+            ).fetchone()[0]
+            status = conn.execute(
+                "SELECT status FROM extension_pairing_sessions WHERE id = ?",
+                (pairing["id"],),
+            ).fetchone()[0]
+        self.assertEqual(clients, 1)
+        self.assertEqual(status, "approved")
+
     def test_new_smoke_scripts_are_codex_dynamic_and_second_embedding_aware(self) -> None:
         repo_root = Path(__file__).resolve().parents[2]
         codex = (repo_root / "scripts" / "backend" / "smoke-codex-mcp.ps1").read_text(encoding="utf-8")
@@ -2130,6 +2170,7 @@ class SystemVaultLockAndEmbeddingTests(unittest.TestCase):
         from backend.app.core.recovery_drills import startup_recovery_drills
 
         now = utc_now()
+        stale = "2000-01-01T00:00:00+00:00"
         with connect() as conn:
             conn.execute(
                 "INSERT INTO vaults (id, name, path, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
@@ -2146,18 +2187,69 @@ class SystemVaultLockAndEmbeddingTests(unittest.TestCase):
                     state, runtime_provider, runtime_model, error, heartbeat_at, created_at, updated_at, completed_at
                 )
                 VALUES ('gen-1', 'chat-1', NULL, NULL, 'vault-1', 'recover me', 'in_flight',
-                    '', '', '', NULL, ?, ?, NULL)
+                    '', '', '', ?, ?, ?, NULL)
                 """,
-                (now, now),
+                (stale, stale, stale),
             )
 
         dry_run = startup_recovery_drills(apply_recovery=False)
-        applied = startup_recovery_drills(apply_recovery=True)
+        applied = startup_recovery_drills(apply_recovery=True, stale_timeout_seconds=30)
 
         self.assertEqual(dry_run["generation_counts_before"]["in_flight"], 1)
         self.assertEqual(applied["generations_recovered"], 1)
         self.assertEqual(applied["generation_counts_after"].get("in_flight", 0), 0)
         self.assertEqual(applied["generation_counts_after"]["retriable"], 1)
+
+    def test_recovery_get_is_read_only_and_post_respects_generation_staleness(self) -> None:
+        from fastapi import FastAPI
+
+        from backend.app.api.routes.system import router as system_router
+        from backend.app.core.database import connect, utc_now
+
+        now = utc_now()
+        with connect() as conn:
+            conn.execute(
+                "INSERT INTO vaults (id, name, path, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+                ("vault-fresh", "Fresh", str(self.data_dir), now, now),
+            )
+            conn.execute(
+                "INSERT INTO chat_sessions (id, vault_id, title, saved, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
+                ("chat-fresh", "vault-fresh", "Fresh", 1, now, now),
+            )
+            conn.execute(
+                """
+                INSERT INTO chat_generations (
+                    id, session_id, vault_id, prompt, state, heartbeat_at, created_at, updated_at
+                ) VALUES ('gen-fresh', 'chat-fresh', 'vault-fresh', 'fresh', 'in_flight', ?, ?, ?)
+                """,
+                (now, now, now),
+            )
+
+        app = FastAPI()
+        app.include_router(system_router, prefix="/api/v1")
+        client = TestClient(app)
+        inspected = client.get("/api/v1/system/recovery-drills?apply_recovery=true")
+        fresh_apply = client.post("/api/v1/system/recovery-drills/apply?stale_timeout_seconds=30")
+
+        with connect() as conn:
+            fresh_state = conn.execute(
+                "SELECT state FROM chat_generations WHERE id = 'gen-fresh'"
+            ).fetchone()["state"]
+            conn.execute(
+                """
+                UPDATE chat_generations
+                SET heartbeat_at = '2000-01-01T00:00:00+00:00',
+                    updated_at = '2000-01-01T00:00:00+00:00'
+                WHERE id = 'gen-fresh'
+                """
+            )
+        stale_apply = client.post("/api/v1/system/recovery-drills/apply?stale_timeout_seconds=30")
+
+        self.assertEqual(inspected.status_code, 200)
+        self.assertFalse(inspected.json()["apply_recovery"])
+        self.assertEqual(fresh_apply.json()["generations_recovered"], 0)
+        self.assertEqual(fresh_state, "in_flight")
+        self.assertEqual(stale_apply.json()["generations_recovered"], 1)
 
     def test_chat_evidence_retention_tombstones_deleted_sources_and_trims_excerpts(self) -> None:
         from backend.app.core.chat_retention import chat_evidence_retention_policy, enforce_chat_evidence_retention

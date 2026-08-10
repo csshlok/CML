@@ -100,9 +100,17 @@ def get_startup_repair_summary(apply_recovery: bool = False) -> dict:
 
 
 @router.get("/recovery-drills")
-def get_startup_recovery_drills(apply_recovery: bool = False, stale_timeout_seconds: int = 30) -> dict:
+def get_startup_recovery_drills(stale_timeout_seconds: int = 30) -> dict:
     return startup_recovery_drills(
-        apply_recovery=apply_recovery,
+        apply_recovery=False,
+        stale_timeout_seconds=stale_timeout_seconds,
+    )
+
+
+@router.post("/recovery-drills/apply")
+def apply_startup_recovery_drills(stale_timeout_seconds: int = 30) -> dict:
+    return startup_recovery_drills(
+        apply_recovery=True,
         stale_timeout_seconds=stale_timeout_seconds,
     )
 
