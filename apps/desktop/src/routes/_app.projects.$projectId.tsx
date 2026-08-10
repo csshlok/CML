@@ -282,7 +282,7 @@ function ProjectWorkspace() {
               onReindex={(layer) =>
                 void runAction(
                   () => reindexProject(project.id, layer),
-                  `${layer === "structure" ? "Structure" : "Search"} reindex queued.`,
+                  `${layer === "structure" ? "Structure" : layer === "retrieval" ? "Search" : "Interpretation"} refresh queued.`,
                 )
               }
               onRemove={() =>
@@ -733,7 +733,7 @@ function ProjectSettings({
   onUnlink: (clusterId: string) => void;
   onSave: () => void;
   onReconnect: () => void;
-  onReindex: (layer: "structure" | "retrieval") => void;
+  onReindex: (layer: "structure" | "retrieval" | "interpretation") => void;
   onRemove: () => void;
 }) {
   const available = clusters.filter(
@@ -829,8 +829,9 @@ function ProjectSettings({
         <div>
           <h3 className="text-sm font-semibold">Reindex one layer</h3>
           <p className="mt-2 text-xs leading-5 text-muted-foreground">
-            Structure rebuilds symbols and relationships. Search rebuilds retrievable text. The
-            active layer remains usable until its replacement is ready.
+            Structure rebuilds symbols and relationships. Search rebuilds retrievable text.
+            Interpretation refreshes the local-model project synopsis. The active layer remains
+            usable until its replacement is ready.
           </p>
           <div className="mt-3 flex flex-wrap gap-2">
             <Button
@@ -848,6 +849,14 @@ function ProjectSettings({
               onClick={() => onReindex("retrieval")}
             >
               Reindex search
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={busy}
+              onClick={() => onReindex("interpretation")}
+            >
+              Refresh interpretation
             </Button>
           </div>
           <div className="mt-6 border-t border-border pt-5">

@@ -113,7 +113,7 @@ function ClusterDetail() {
 
         const [sourceResult, chatResult, clusterResult, artifactResult, projectResult, mapResult] = await Promise.allSettled([
           listSources(clusterRow.vault_id, { clusterId: clusterRow.id, limit: 1000 }),
-          listChatSessions(clusterRow.vault_id),
+          listChatSessions(clusterRow.vault_id, { clusterId: clusterRow.id }),
           listClusterDestinations(clusterRow.vault_id),
           listClusterMergeArtifacts(clusterRow.id),
           listProjects(clusterRow.vault_id, { clusterId: clusterRow.id, limit: 200 }),
@@ -385,7 +385,7 @@ function ClusterDetail() {
               Chat with cluster
             </Button>
             <Button variant="outline" className="gap-2" asChild>
-              <Link to="/sources">
+              <Link to="/sources" search={{ cluster: clusterIdForActions }}>
                 <Plus className="h-4 w-4" />
                 Add source
               </Link>
@@ -460,8 +460,11 @@ function ClusterDetail() {
             {linkedProjects.length > 0 && <section className="mt-8"><h3 className="text-xs font-medium uppercase tracking-[0.14em] text-muted-foreground">Linked projects</h3><div className="mt-3 divide-y divide-border rounded-md border border-border bg-card">{linkedProjects.map((project) => <div key={project.id} className="flex flex-col gap-3 px-4 py-3 sm:flex-row sm:items-center sm:justify-between"><div className="min-w-0"><div className="font-medium">{project.name}</div><p className="mt-1 line-clamp-2 text-xs text-muted-foreground">{project.brief || `${project.source_count.toLocaleString()} indexed project files.`}</p><div className="mt-1 text-xs text-muted-foreground">{project.changed_file_count ? `${project.changed_file_count} newer changes` : "Index current with registered folder"}</div></div><div className="flex shrink-0 gap-2"><Button variant="outline" size="sm" onClick={() => void createChatSession({ vault_id: project.vault_id, title: `${project.name} chat`, scope_cluster_id: project.primary_cluster_id, scope_project_id: project.id }).then((session) => navigate({ to: "/chat/$chatId", params: { chatId: session.id } }))}>Ask with project</Button><Button size="sm" asChild><Link to="/projects/$projectId" params={{ projectId: project.id }}>Open project</Link></Button></div></div>)}</div></section>}
 
             <div className="mt-8 grid gap-5 xl:grid-cols-2">
-              <RecentSources sources={clusterSources.slice(0, 5)} />
-              <RecentChats chats={clusterChats} />
+              <RecentSources
+                sources={clusterSources.slice(0, 5)}
+                clusterId={clusterIdForActions}
+              />
+              <RecentChats chats={clusterChats} clusterId={clusterIdForActions} />
             </div>
           </section>
         )}
@@ -470,6 +473,7 @@ function ClusterDetail() {
           <ClusterSourcesPanel
             sources={clusterSources}
             peerClusters={peerClusters}
+            clusterId={clusterIdForActions}
             onMove={openMoveSource}
           />
         )}
@@ -685,7 +689,7 @@ function ClusterDetail() {
   );
 }
 
-function RecentSources({ sources }: { sources: Source[] }) {
+function RecentSources({ sources, clusterId }: { sources: Source[]; clusterId: string }) {
   return (
     <section className="rounded-md border border-border bg-card">
       <h3 className="px-4 pt-4 text-xs font-medium uppercase tracking-[0.14em] text-muted-foreground">Recent sources</h3>
@@ -711,14 +715,24 @@ function RecentSources({ sources }: { sources: Source[] }) {
             <div className="px-4 py-10 text-sm text-muted-foreground">No recent sources yet.</div>
           )}
       </div>
-      <Link to="/sources" className="flex items-center gap-2 px-4 py-4 text-sm text-primary">
+      <Link
+        to="/sources"
+        search={{ cluster: clusterId }}
+        className="flex items-center gap-2 px-4 py-4 text-sm text-primary"
+      >
         View all sources <ArrowRight className="h-4 w-4" />
       </Link>
     </section>
   );
 }
 
-function RecentChats({ chats }: { chats: Array<ChatSessionRecord | { id: string; title: string }> }) {
+function RecentChats({
+  chats,
+  clusterId,
+}: {
+  chats: Array<ChatSessionRecord | { id: string; title: string }>;
+  clusterId: string;
+}) {
   const rows = chats;
   return (
     <section className="rounded-md border border-border bg-card">
@@ -747,7 +761,11 @@ function RecentChats({ chats }: { chats: Array<ChatSessionRecord | { id: string;
           )}
         </div>
       </div>
-      <Link to="/chat" className="flex items-center gap-2 px-4 py-4 text-sm text-primary">
+      <Link
+        to="/chat"
+        search={{ cluster: clusterId }}
+        className="flex items-center gap-2 px-4 py-4 text-sm text-primary"
+      >
         View all chats <ArrowRight className="h-4 w-4" />
       </Link>
     </section>
@@ -757,28 +775,50 @@ function RecentChats({ chats }: { chats: Array<ChatSessionRecord | { id: string;
 function ClusterSourcesPanel({
   sources,
   peerClusters,
+  clusterId,
   onMove,
 }: {
   sources: Source[];
   peerClusters: Cluster[];
+  clusterId: string;
   onMove: (source: Source) => void;
 }) {
+  const [query, setQuery] = useState("");
+  const normalizedQuery = query.trim().toLocaleLowerCase();
+  const visibleSources = normalizedQuery
+    ? sources.filter((source) =>
+        [source.title, source.summary, source.preview, source.type]
+          .filter(Boolean)
+          .some((value) => value!.toLocaleLowerCase().includes(normalizedQuery)),
+      )
+    : sources;
+
   return (
     <section className="mt-7">
       <div className="flex flex-col gap-3 border-b border-border pb-4 sm:flex-row sm:items-center sm:justify-between">
         <h2 className="text-xs font-medium uppercase tracking-[0.14em] text-muted-foreground">Sources</h2>
-        <div className="flex h-9 w-full items-center gap-2 rounded-md border border-border bg-card px-3 text-sm text-muted-foreground sm:w-60">
-          <Search className="h-4 w-4" />
-          Search sources
+        <div className="relative w-full sm:w-60">
+          <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+          <Input
+            aria-label="Search sources in this cluster"
+            className="h-9 pl-9"
+            placeholder="Search sources"
+            value={query}
+            onChange={(event) => setQuery(event.target.value)}
+          />
         </div>
       </div>
       <div className="mt-5 grid gap-3">
-        {sources.map((source) => (
+        {visibleSources.map((source) => (
           <div
             key={source.id}
             className="grid min-h-[74px] grid-cols-1 gap-3 rounded-md border border-border bg-card px-4 py-3 text-sm sm:grid-cols-[minmax(0,1fr)_90px_100px_auto] sm:items-center sm:gap-4"
           >
-            <Link to="/sources" className="flex min-w-0 items-start gap-3 hover:text-primary">
+            <Link
+              to="/sources"
+              search={{ cluster: clusterId, source: source.id }}
+              className="flex min-w-0 items-start gap-3 hover:text-primary"
+            >
               <FileText className="mt-1 h-4 w-4 shrink-0 text-[var(--cluster-sky)]" />
               <span className="min-w-0">
                 <span className="block break-words font-medium">{source.title}</span>
@@ -809,6 +849,9 @@ function ClusterSourcesPanel({
         ))}
         {sources.length === 0 && (
           <div className="py-10 text-sm text-muted-foreground">No sources are linked to this cluster yet.</div>
+        )}
+        {sources.length > 0 && visibleSources.length === 0 && (
+          <div className="py-10 text-sm text-muted-foreground">No cluster sources match this search.</div>
         )}
       </div>
     </section>

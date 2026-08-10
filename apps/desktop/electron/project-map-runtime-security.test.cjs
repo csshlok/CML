@@ -41,3 +41,17 @@ test("knowledge map expands dense views and hides details until selection", () =
   assert.match(map, /selected \? \(\s*<MapInspector/);
   assert.match(map, /aria-label="Close map details"/);
 });
+
+test("long chat and graph surfaces virtualize rows and dispose graph simulations", () => {
+  const chat = read("routes/_app.chat.$chatId.tsx");
+  const graph = read("components/ProjectGraphArtifact.tsx");
+  const map = read("components/KnowledgeMap.tsx");
+
+  assert.match(chat, /useVirtualizer/);
+  assert.match(chat, /data-message-virtualizer/);
+  assert.match(chat, /measureElement/);
+  assert.match(graph, /rowVirtualizer\.getVirtualItems\(\)/);
+  assert.match(graph, /pauseAnimation/);
+  assert.match(graph, /_destructor/);
+  assert.match(map, /rowVirtualizer\.getVirtualItems\(\)/);
+});

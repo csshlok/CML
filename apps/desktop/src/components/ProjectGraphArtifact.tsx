@@ -1,5 +1,6 @@
 import { type ComponentType, useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "@tanstack/react-router";
+import { useVirtualizer } from "@tanstack/react-virtual";
 import {
   ArrowLeft,
   ChevronDown,
@@ -29,6 +30,9 @@ import { displayPath } from "@/lib/displayPath";
 type GraphNode = ProjectGraphNode & { x?: number; y?: number; color?: string };
 type GraphLink = ProjectGraphEdge & { source: string | GraphNode; target: string | GraphNode };
 const MAX_QUERY_LENGTH = 500;
+const STANDARD_GRAPH_LIMIT = 300;
+const ALL_RELEVANT_GRAPH_LIMIT = 2000;
+const QUESTION_GRAPH_MAX_DEPTH = 2;
 
 export type ProjectVisualizationRequest = {
   mode: "graph" | "tree";
@@ -105,6 +109,10 @@ export function ProjectGraphWorkspace({
   const [ForceGraph, setForceGraph] = useState<ComponentType<any> | null>(null);
 
   useEffect(() => {
+    if (mode !== "graph") {
+      setForceGraph(null);
+      return;
+    }
     let cancelled = false;
     void import("react-force-graph-2d").then((module) => {
       if (!cancelled) setForceGraph(() => module.default as ComponentType<any>);
@@ -112,7 +120,7 @@ export function ProjectGraphWorkspace({
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [mode]);
 
   useEffect(() => {
     if (!containerElement) return;
@@ -195,13 +203,29 @@ export function ProjectGraphWorkspace({
     };
   }, [ForceGraph, mode, spread, view]);
 
+  useEffect(
+    () => () => {
+      const graph = graphRef.current;
+      graph?.pauseAnimation?.();
+      graph?._destructor?.();
+      graphRef.current = null;
+    },
+    [],
+  );
+
   function expandView() {
-    setMaxDepth((current) => Math.min(4, current + 1));
-    setMaxNodes((current) => Math.min(300, Math.max(current + 70, Math.round(current * 1.5))));
+    setMaxDepth((current) => Math.min(submittedQuery ? QUESTION_GRAPH_MAX_DEPTH : 4, current + 1));
+    setMaxNodes((current) =>
+      current < STANDARD_GRAPH_LIMIT
+        ? Math.min(STANDARD_GRAPH_LIMIT, Math.max(current + 70, Math.round(current * 1.5)))
+        : ALL_RELEVANT_GRAPH_LIMIT,
+    );
     setSpread("wide");
   }
 
-  const canExpand = maxDepth < 4 || maxNodes < 300;
+  const depthLimit = submittedQuery ? QUESTION_GRAPH_MAX_DEPTH : 4;
+  const canExpand = Boolean(view?.truncated) && (maxDepth < depthLimit || maxNodes < ALL_RELEVANT_GRAPH_LIMIT);
+  const showAllRelevant = maxDepth >= depthLimit && maxNodes >= STANDARD_GRAPH_LIMIT;
 
   async function findPath() {
     if (!pathSource.trim() || !pathTarget.trim()) return;
@@ -254,6 +278,8 @@ export function ProjectGraphWorkspace({
           onSubmit={(event) => {
             event.preventDefault();
             setSubmittedQuery(query.trim());
+            setMaxDepth(2);
+            setMaxNodes(mode === "tree" ? 180 : 90);
           }}
         >
           <div className="relative min-w-[240px] flex-1">
@@ -270,7 +296,7 @@ export function ProjectGraphWorkspace({
           <Button type="submit">Show</Button>
           {mode === "graph" ? (
             <Button type="button" variant="outline" disabled={!canExpand || loading} onClick={expandView}>
-              <Maximize2 className="h-4 w-4" /> Show more
+              <Maximize2 className="h-4 w-4" /> {showAllRelevant ? "Show all relevant" : "Show more"}
             </Button>
           ) : null}
           <Button
@@ -359,8 +385,14 @@ export function ProjectGraphWorkspace({
                 {` · ${mode === "graph" ? humanize(direction) : "File hierarchy"}`}
               </span>
               <span>
-                Showing {view.nodes.length.toLocaleString()} of {view.project_totals.nodes.toLocaleString()} indexed items
-                {view.truncated ? " · expand to see more of this slice" : ""}
+                {submittedQuery
+                  ? `Showing ${view.nodes.length.toLocaleString()} question-focused ${view.nodes.length === 1 ? "item" : "items"} · ${view.project_totals.nodes.toLocaleString()} indexed in project`
+                  : `Showing ${view.nodes.length.toLocaleString()} of ${view.project_totals.nodes.toLocaleString()} indexed items`}
+                {view.truncated
+                  ? maxNodes >= ALL_RELEVANT_GRAPH_LIMIT
+                    ? " · safe rendering limit reached"
+                    : " · more relevant relationships are available"
+                  : ""}
               </span>
             </div>
           ) : null}
@@ -452,6 +484,11 @@ export function ProjectGraphWorkspace({
                   {selected.signature}
                 </div>
               ) : null}
+              {selected.matched_terms?.length ? (
+                <div className="mt-4 border-t border-border pt-4 text-xs text-muted-foreground">
+                  Direct question match: {selected.matched_terms.join(", ")}
+                </div>
+              ) : null}
               <p className="mt-5 border-t border-border pt-4 text-xs leading-5 text-muted-foreground">
                 {submittedQuery
                   ? `This item appears because it is connected to the “${submittedQuery}” slice.`
@@ -466,9 +503,10 @@ export function ProjectGraphWorkspace({
                 variant="outline"
                 onClick={() => {
                   setQuery(selected.label);
-                  setSubmittedQuery(selected.label);
-                  setMaxDepth(Math.max(2, maxDepth));
-                }}
+                   setSubmittedQuery(selected.label);
+                   setMaxDepth(2);
+                   setMaxNodes(90);
+                 }}
               >
                 Focus here
               </Button>
@@ -543,8 +581,10 @@ function GraphExplanation({
         </section>
       ) : null}
       <div className="mt-6 border-t border-border pt-3 text-xs text-muted-foreground">
-        Showing {view.nodes.length.toLocaleString()} items and {view.edges.length.toLocaleString()} relationships
-        {view.truncated ? ` · bounded at ${view.limits.max_nodes.toLocaleString()} items` : ""}
+        Showing {view.nodes.length.toLocaleString()} {view.nodes.length === 1 ? "item" : "items"} and {view.edges.length.toLocaleString()} {view.edges.length === 1 ? "relationship" : "relationships"}
+        {view.truncated
+          ? ` · more relevant relationships remain beyond these ${view.limits.max_nodes.toLocaleString()} items`
+          : " · complete relevant slice"}
       </div>
     </aside>
   );
@@ -599,32 +639,58 @@ function ProjectTree({
   selectedId: string | null;
   onSelect: (id: string) => void;
 }) {
-  const parentByTarget = new Map(view.edges.map((edge) => [String(edge.target), String(edge.source)]));
-  const depthFor = (node: ProjectGraphNode) => {
-    let depth = 0;
-    let cursor = parentByTarget.get(node.id);
-    const seen = new Set<string>();
-    while (cursor && !seen.has(cursor) && depth < 12) {
-      seen.add(cursor);
-      depth += 1;
-      cursor = parentByTarget.get(cursor);
-    }
-    return depth;
-  };
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const depthById = useMemo(() => {
+    const parentByTarget = new Map(
+      view.edges.map((edge) => [String(edge.target), String(edge.source)]),
+    );
+    return new Map(
+      view.nodes.map((node) => {
+        let depth = 0;
+        let cursor = parentByTarget.get(node.id);
+        const seen = new Set<string>();
+        while (cursor && !seen.has(cursor) && depth < 12) {
+          seen.add(cursor);
+          depth += 1;
+          cursor = parentByTarget.get(cursor);
+        }
+        return [node.id, depth] as const;
+      }),
+    );
+  }, [view.edges, view.nodes]);
+  const rowVirtualizer = useVirtualizer({
+    count: view.nodes.length,
+    getScrollElement: () => scrollRef.current,
+    estimateSize: () => 32,
+    getItemKey: (index) => view.nodes[index]?.id ?? index,
+    overscan: 8,
+    useFlushSync: false,
+  });
   return (
-    <div className="h-full min-h-[560px] overflow-auto py-3 font-mono text-xs">
-      {view.nodes.map((node) => (
-        <button
-          key={node.id}
-          type="button"
-          className={`flex w-full items-center gap-2 px-3 py-2 text-left ${selectedId === node.id ? "bg-accent text-foreground" : "text-muted-foreground hover:bg-muted/60 hover:text-foreground"}`}
-          style={{ paddingLeft: `${12 + depthFor(node) * 16}px` }}
-          onClick={() => onSelect(node.id)}
-        >
-          <span className="w-16 shrink-0 text-[10px] text-muted-foreground">{node.kind}</span>
-          <span className="truncate">{node.label}</span>
-        </button>
-      ))}
+    <div ref={scrollRef} className="h-full min-h-[560px] overflow-auto py-3 font-mono text-xs">
+      <div className="relative" style={{ height: `${rowVirtualizer.getTotalSize()}px` }}>
+        {rowVirtualizer.getVirtualItems().map((virtualRow) => {
+          const node = view.nodes[virtualRow.index];
+          if (!node) return null;
+          return (
+            <button
+              key={node.id}
+              ref={rowVirtualizer.measureElement}
+              data-index={virtualRow.index}
+              type="button"
+              className={`absolute left-0 top-0 flex w-full items-center gap-2 px-3 py-2 text-left ${selectedId === node.id ? "bg-accent text-foreground" : "text-muted-foreground hover:bg-muted/60 hover:text-foreground"}`}
+              style={{
+                paddingLeft: `${12 + (depthById.get(node.id) ?? 0) * 16}px`,
+                transform: `translateY(${virtualRow.start}px)`,
+              }}
+              onClick={() => onSelect(node.id)}
+            >
+              <span className="w-16 shrink-0 text-[10px] text-muted-foreground">{node.kind}</span>
+              <span className="truncate">{node.label}</span>
+            </button>
+          );
+        })}
+      </div>
     </div>
   );
 }

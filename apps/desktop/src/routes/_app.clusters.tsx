@@ -123,6 +123,28 @@ function ClustersList() {
     }
     return counts;
   }, [sourceCountRows]);
+  const unclusteredCounts = useMemo(
+    () => sourceCountRows.reduce(
+      (counts, row) => {
+        if (row.cluster_id === null) {
+          counts.total += row.total;
+          if (row.state === "indexed") counts.indexed += row.total;
+        }
+        return counts;
+      },
+      { total: 0, indexed: 0 },
+    ),
+    [sourceCountRows],
+  );
+  const unclusteredCount = unclusteredCounts.total;
+  const indexedUnclusteredCount = unclusteredCounts.indexed;
+  const showUnclustered = useMemo(() => {
+    if (unclusteredCount === 0 || clusterFilter === "projects") return false;
+    const query = deferredClusterQuery.trim().toLocaleLowerCase();
+    if (query && !"unclustered sources not assigned needs organization".includes(query)) return false;
+    if (clusterFilter === "attention" || clusterFilter === "active") return true;
+    return clusterFilter === "all";
+  }, [clusterFilter, deferredClusterQuery, unclusteredCount]);
   const filteredClusters = useMemo(() => {
     const query = deferredClusterQuery.trim().toLocaleLowerCase();
     return clusters.filter((cluster) => {
@@ -269,7 +291,7 @@ function ClustersList() {
             <h1 className="page-title flex flex-wrap items-center gap-3">
               Clusters
               <span className="rounded bg-muted px-2 py-1 font-sans text-sm text-muted-foreground">
-                {clusters.length}
+                {clusters.length + (unclusteredCount > 0 ? 1 : 0)}
               </span>
             </h1>
             <p className="mt-3 text-sm text-muted-foreground">
@@ -394,6 +416,36 @@ function ClustersList() {
                   <span />
                 </div>
                 <div>
+                  {showUnclustered ? (
+                    <Link
+                      to="/sources"
+                      search={{ filter: "unclustered" }}
+                      aria-label={`Open Unclustered sources, ${unclusteredCount} sources`}
+                      className="grid w-full grid-cols-[minmax(0,1fr)_64px_48px] items-center border-b border-border px-2 py-4 text-left transition-colors hover:bg-card/65 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring md:grid-cols-[minmax(0,1fr)_64px_112px_48px] xl:grid-cols-[minmax(0,1fr)_64px_64px_112px_48px]"
+                    >
+                      <div className="flex min-w-0 items-center gap-4">
+                        <span className="flex h-10 w-9 shrink-0 items-center justify-center rounded-md border border-dashed border-border bg-muted/40 text-muted-foreground">
+                          <FileText className="h-4 w-4" />
+                        </span>
+                        <div className="min-w-0">
+                          <div className="break-words text-sm font-semibold">Unclustered sources</div>
+                          <p className="mt-1 line-clamp-2 break-words text-sm text-muted-foreground">
+                            Sources not assigned to a cluster yet.
+                          </p>
+                        </div>
+                      </div>
+                      <span className="text-sm tabular-nums text-muted-foreground">
+                        {unclusteredCount.toLocaleString()}
+                      </span>
+                      <span className="hidden text-sm tabular-nums text-muted-foreground xl:block">
+                        {indexedUnclusteredCount.toLocaleString()}
+                      </span>
+                      <span className="hidden break-words text-sm text-muted-foreground md:block">
+                        Needs organization
+                      </span>
+                      <span />
+                    </Link>
+                  ) : null}
                   {filteredClusters.map((cluster) => {
                     const count = sourceCounts.get(cluster.id) ?? 0;
                     return (
@@ -455,7 +507,7 @@ function ClustersList() {
                       </Button>
                     </div>
                   ) : null}
-                  {filteredClusters.length === 0 && (
+                  {filteredClusters.length === 0 && !showUnclustered && (
                     <div className="px-5 py-10 text-center text-sm text-muted-foreground">
                       {clusters.length === 0
                         ? "No clusters yet. Add a source or create a cluster."

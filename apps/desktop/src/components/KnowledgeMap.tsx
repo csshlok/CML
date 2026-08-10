@@ -1,5 +1,6 @@
 import { type ComponentType, useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "@tanstack/react-router";
+import { useVirtualizer } from "@tanstack/react-virtual";
 import { ArrowLeft, ExternalLink, List, Maximize2, Network, RotateCcw, Search, X, ZoomIn, ZoomOut } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -70,6 +71,10 @@ export function KnowledgeMap({
   const deferredQuery = useDeferredValue(query.trim().toLowerCase());
 
   useEffect(() => {
+    if (listMode) {
+      setForceGraph(null);
+      return;
+    }
     let cancelled = false;
     void import("react-force-graph-2d").then((module) => {
       if (!cancelled) setForceGraph(() => module.default as ComponentType<any>);
@@ -77,7 +82,17 @@ export function KnowledgeMap({
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [listMode]);
+
+  useEffect(
+    () => () => {
+      const instance = graphRef.current;
+      instance?.pauseAnimation?.();
+      instance?._destructor?.();
+      graphRef.current = null;
+    },
+    [],
+  );
 
   useEffect(() => {
     setGraph(overview);
@@ -433,7 +448,9 @@ export function KnowledgeMap({
             {root
               ? "This view shows what the selected item contains."
               : connectionMode === "similar"
-                ? "Dashed lines show strong local similarity. Hover any line for details."
+                ? visibleEdges.length > 0
+                  ? `${visibleEdges.length} strong local connection${visibleEdges.length === 1 ? "" : "s"}. Hover any dashed line for details.`
+                  : "No strong local connections meet the current evidence threshold yet."
                 : "Solid lines show shared facts or explicit project membership."}
           </span>
           {graph.truncated ? (
@@ -516,23 +533,62 @@ function MapList({
   onInspect: (node: MapNodeRecord) => void;
   onFocus: (node: MapNodeRecord) => void;
 }) {
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const rowVirtualizer = useVirtualizer({
+    count: nodes.length,
+    getScrollElement: () => scrollRef.current,
+    estimateSize: () => 60,
+    getItemKey: (index) => nodes[index]?.id ?? index,
+    overscan: 8,
+    useFlushSync: false,
+  });
   if (nodes.length === 0) {
     return <EmptyState title="No matching map items" description="Clear the filter to see this map again." />;
   }
   return (
-    <div className="max-h-[620px] overflow-y-auto divide-y divide-border" role="list">
-      {nodes.map((node) => (
-        <div key={node.id} role="listitem" className={`flex items-center gap-3 px-4 py-3 ${selectedId === node.id ? "bg-accent" : ""}`}>
-          <span className="h-2.5 w-2.5 shrink-0 rounded-full" style={{ background: nodeColor(node) }} aria-hidden="true" />
-          <button type="button" className="min-w-0 flex-1 text-left" onClick={() => void onInspect(node)}>
-            <span className="block truncate text-sm font-medium">{node.label}</span>
-            <span className="mt-0.5 block text-xs text-muted-foreground">
-              {kindLabel(node.kind)} · {relationshipSummary(node.id, edges)}
-            </span>
-          </button>
-          {node.kind !== "fact" ? <Button variant="ghost" size="sm" onClick={() => void onFocus(node)}>Expand</Button> : null}
-        </div>
-      ))}
+    <div
+      ref={scrollRef}
+      className="overflow-y-auto"
+      style={{ height: `${Math.min(nodes.length * 60, 620)}px` }}
+      role="list"
+    >
+      <div className="relative" style={{ height: `${rowVirtualizer.getTotalSize()}px` }}>
+        {rowVirtualizer.getVirtualItems().map((virtualRow) => {
+          const node = nodes[virtualRow.index];
+          if (!node) return null;
+          return (
+            <div
+              key={node.id}
+              ref={rowVirtualizer.measureElement}
+              data-index={virtualRow.index}
+              role="listitem"
+              className={`absolute left-0 top-0 flex w-full items-center gap-3 border-b border-border px-4 py-3 ${selectedId === node.id ? "bg-accent" : ""}`}
+              style={{ transform: `translateY(${virtualRow.start}px)` }}
+            >
+              <span
+                className="h-2.5 w-2.5 shrink-0 rounded-full"
+                style={{ background: nodeColor(node) }}
+                aria-hidden="true"
+              />
+              <button
+                type="button"
+                className="min-w-0 flex-1 text-left"
+                onClick={() => void onInspect(node)}
+              >
+                <span className="block truncate text-sm font-medium">{node.label}</span>
+                <span className="mt-0.5 block text-xs text-muted-foreground">
+                  {kindLabel(node.kind)} · {relationshipSummary(node.id, edges)}
+                </span>
+              </button>
+              {node.kind !== "fact" ? (
+                <Button variant="ghost" size="sm" onClick={() => void onFocus(node)}>
+                  Expand
+                </Button>
+              ) : null}
+            </div>
+          );
+        })}
+      </div>
     </div>
   );
 }
