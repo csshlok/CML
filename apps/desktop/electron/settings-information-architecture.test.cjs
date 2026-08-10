@@ -11,6 +11,10 @@ const settingsControllerSource = fs.readFileSync(
   path.join(__dirname, "..", "src", "lib", "settingsController.ts"),
   "utf8",
 );
+const backendSource = fs.readFileSync(
+  path.join(__dirname, "..", "src", "lib", "backend.ts"),
+  "utf8",
+);
 
 test("each Settings card belongs to one navigation section", () => {
   assert.doesNotMatch(settingsSource, /showSection\([^)]*,/);
@@ -39,6 +43,22 @@ test("successful library deletion stays inside the desktop router", () => {
     /finalizeActiveVaultDeletion\?\.\(\)[\s\S]{0,250}await navigate\(\{ to: "\/onboarding" \}\)/,
   );
   assert.doesNotMatch(settingsSource, /window\.location\.assign\("\/onboarding"\)/);
+});
+
+test("library deletion authorization is not limited by the generic 12 second request timeout", () => {
+  assert.match(
+    backendSource,
+    /authorizeVaultDeletion[\s\S]{0,900}timeoutMs:\s*120_000/,
+  );
+});
+
+test("Library security exposes manual scans and a changeable 30-day full-check schedule", () => {
+  assert.match(settingsSource, /title="Security scans"/);
+  assert.match(settingsSource, /Run antivirus scan/);
+  assert.match(settingsSource, /Run full security check/);
+  assert.match(settingsSource, /The default is every 30 days/);
+  assert.match(backendSource, /diagnostics\/security-scans/);
+  assert.match(backendSource, /waitForAppJob\(queued\.id\)/);
 });
 
 test("the URL is the single owner of the active Settings section", () => {

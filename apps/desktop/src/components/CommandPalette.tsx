@@ -9,8 +9,8 @@ import {
   CommandSeparator,
 } from "@/components/ui/command";
 import { useNavigate } from "@tanstack/react-router";
-import { useEffect, useState } from "react";
-import { createChatSession, listClusters, listSources, listVaults, type ClusterRecord, type SourceRecord } from "@/lib/backend";
+import { useEffect, useRef, useState } from "react";
+import { createChatSession, listClustersPage, listSourcesPage, listVaults, useBackendGeneration, type ClusterRecord, type SourceRecord } from "@/lib/backend";
 import { MessageSquare, Layers, Files, Globe2, Settings, Plus, FolderOpen, Cable, HeartPulse, LockKeyhole } from "lucide-react";
 
 interface PaletteState {
@@ -38,12 +38,20 @@ export function CommandPalette({
   lockAvailable: boolean;
 }) {
   const navigate = useNavigate();
+  const backendGeneration = useBackendGeneration();
   const [clusters, setClusters] = useState<ClusterRecord[]>([]);
   const [sources, setSources] = useState<SourceRecord[]>([]);
+  const [query, setQuery] = useState("");
+  const requestSequence = useRef(0);
 
   useEffect(() => {
-    if (!open) return;
+    if (!open) {
+      setQuery("");
+      return;
+    }
     let cancelled = false;
+    const sequence = ++requestSequence.current;
+    const controller = new AbortController();
     async function load() {
       try {
         const vault = (await listVaults())[0] ?? null;
@@ -55,12 +63,12 @@ export function CommandPalette({
           return;
         }
         const [clusterResult, sourceResult] = await Promise.allSettled([
-          listClusters(vault.id),
-          listSources(vault.id),
+          listClustersPage(vault.id, { limit: 20, query, signal: controller.signal }),
+          listSourcesPage(vault.id, { limit: 20, query, signal: controller.signal }),
         ]);
-        if (!cancelled) {
-          setClusters(clusterResult.status === "fulfilled" ? clusterResult.value : []);
-          setSources(sourceResult.status === "fulfilled" ? sourceResult.value : []);
+        if (!cancelled && sequence === requestSequence.current) {
+          setClusters(clusterResult.status === "fulfilled" ? clusterResult.value.items : []);
+          setSources(sourceResult.status === "fulfilled" ? sourceResult.value.items : []);
         }
       } catch {
         if (!cancelled) {
@@ -69,11 +77,13 @@ export function CommandPalette({
         }
       }
     }
-    void load();
+    const timer = window.setTimeout(() => void load(), query ? 180 : 0);
     return () => {
       cancelled = true;
+      controller.abort();
+      window.clearTimeout(timer);
     };
-  }, [open]);
+  }, [backendGeneration, open, query]);
 
   const go = (fn: () => void | Promise<void>) => {
     void fn();
@@ -82,7 +92,11 @@ export function CommandPalette({
 
   return (
     <CommandDialog open={open} onOpenChange={onOpenChange}>
-      <CommandInput placeholder="Type a command or search..." />
+      <CommandInput
+        value={query}
+        onValueChange={setQuery}
+        placeholder="Type a command or search..."
+      />
       <CommandList>
         <CommandEmpty>No results.</CommandEmpty>
         <CommandGroup heading="Actions">
@@ -175,7 +189,7 @@ export function CommandPalette({
           <>
             <CommandSeparator />
             <CommandGroup heading="Sources">
-              {sources.slice(0, 6).map((s) => (
+              {sources.map((s) => (
                 <CommandItem
                   key={s.id}
                   onSelect={() => go(() => navigate({ to: "/sources", search: { source: s.id } }))}

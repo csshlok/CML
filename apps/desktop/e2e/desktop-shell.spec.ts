@@ -6,15 +6,19 @@ async function installDesktopBridge(page: Page) {
   await page.addInitScript(
     ({ origin }) => {
       const state = { maximized: false, fullScreen: false };
+      let vaultDeleted = false;
       Object.defineProperty(window, "cmlDesktop", {
         configurable: true,
         value: {
           getBackendUrl: async () => origin,
           getBackendToken: async () => "rendered-shell-test-token",
-          getSetupState: async () => ({
-            phase: "complete",
-            profile: { display_name: "Shlok", avatar_path: "" },
-          }),
+          getSetupState: async () =>
+            vaultDeleted
+              ? null
+              : {
+                  phase: "complete",
+                  profile: { display_name: "Shlok", avatar_path: "" },
+                },
           getMcpFeatureFlags: async () => ({
             chatgpt_mcp_setup: true,
             secure_mcp_tunnel: true,
@@ -25,6 +29,12 @@ async function installDesktopBridge(page: Page) {
           getMcpLauncher: async () => null,
           getTunnelStatus: async () => null,
           onTunnelStatusChanged: () => () => undefined,
+          finalizeActiveVaultDeletion: async () => {
+            vaultDeleted = true;
+            (window as typeof window & { __vaultDeletionFinalized?: boolean })
+              .__vaultDeletionFinalized = true;
+            return { deleted: true, path: "T:\\test" };
+          },
           notifyRendererReady: async () => undefined,
           windowControls: {
             getState: async () => state,
@@ -182,6 +192,84 @@ test("default Home places Quick actions in the second section", async ({ page })
       path: process.env.CML_QA_HOME_SCREENSHOT,
       fullPage: false,
     });
+  }
+});
+
+test("Settings opens the searchable visual Help and FAQ workspace", async ({ page }) => {
+  await page.context().grantPermissions(["clipboard-read", "clipboard-write"], {
+    origin: "http://127.0.0.1:5173",
+  });
+  const consoleProblems: string[] = [];
+  page.on("console", (message) => {
+    if (message.type() === "error" || message.type() === "warning") {
+      consoleProblems.push(`${message.type()}: ${message.text()}`);
+    }
+  });
+  page.on("pageerror", (error) => consoleProblems.push(`pageerror: ${error.message}`));
+
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.goto("/settings?section=profile");
+  await expect(page).toHaveTitle("Settings");
+  const helpLink = page.getByRole("link", { name: "Open Help & FAQ" });
+  await expect(helpLink).toBeVisible();
+  await helpLink.click();
+
+  await expect(page).toHaveURL(/\/help/);
+  await expect(page).toHaveTitle("Help & FAQ");
+  await expect(page.getByRole("heading", { name: "Help & FAQ" })).toBeVisible();
+  await expect(page.getByText("74 practical answers across 13 categories", { exact: true })).toBeVisible();
+  await expect(
+    page.getByRole("heading", { name: "What should I do in my first ten minutes?" }),
+  ).toBeVisible();
+  await expect(page.getByText("Visual guide", { exact: true })).toBeVisible();
+  await expect(page.getByText("Add files", { exact: true })).toBeVisible();
+  expect(consoleProblems).toEqual([]);
+
+  const search = page.getByLabel("Search help");
+  await expect.poll(() =>
+    search.evaluate((element) => Object.keys(element).some((key) => key.startsWith("__reactProps"))),
+  ).toBe(true);
+  await page.getByRole("button", { name: /Models & OCR/ }).click();
+  await expect(
+    page.getByRole("heading", { name: "Why does Vault need chat, embedding, and OCR models?" }),
+  ).toBeVisible();
+  await expect(
+    page
+      .getByLabel("Help categories")
+      .getByRole("button", { name: "What should I do when Chat says the model is unavailable?" }),
+  ).toBeVisible();
+  if (process.env.CML_QA_HELP_CATEGORIES_SCREENSHOT) {
+    await page.screenshot({
+      path: process.env.CML_QA_HELP_CATEGORIES_SCREENSHOT,
+      fullPage: false,
+    });
+  }
+  await search.click();
+  await search.pressSequentially("TurboVec");
+  await expect(page.getByText("1 result", { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: /When should TurboVec activate/ }).click();
+  await expect(page).toHaveURL(/article=odin-turbovec/);
+  await expect(page.getByRole("heading", { name: "When should TurboVec activate?" })).toBeVisible();
+  await expect(page.getByText("odin doctor", { exact: true })).toBeVisible();
+  await expect(page.locator("summary").filter({ hasText: "What Vault does next" })).toBeVisible();
+  await page.getByRole("button", { name: "Copy terminal command" }).first().click();
+  await expect(page.getByRole("button", { name: "Copy terminal command" }).first()).toContainText("Copied");
+
+  if (process.env.CML_QA_HELP_SCREENSHOT) {
+    await page.screenshot({ path: process.env.CML_QA_HELP_SCREENSHOT, fullPage: false });
+  }
+
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto("/help?article=map-no-connections");
+  await expect(page.getByLabel("Choose a help article")).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Why does the map show no connections?" })).toBeVisible();
+  await expect.poll(() =>
+    page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth),
+  ).toBe(true);
+  expect(consoleProblems).toEqual([]);
+
+  if (process.env.CML_QA_HELP_MOBILE_SCREENSHOT) {
+    await page.screenshot({ path: process.env.CML_QA_HELP_MOBILE_SCREENSHOT, fullPage: false });
   }
 });
 
@@ -512,6 +600,33 @@ test("assistant messages render structured Markdown without visible delimiters",
   page.on("pageerror", (error) => consoleProblems.push(`pageerror: ${error.message}`));
   const sessionId = "chat-markdown";
   const now = "2026-07-30T10:00:00Z";
+  const citationSource = {
+    id: "source-citation",
+    vault_id: "vault-rendered",
+    cluster_id: null,
+    title: "Database architecture.md",
+    source_type: "file",
+    state: "indexed",
+    ingestion_stage: "ready",
+    ingestion_generation: 1,
+    ingestion_error_code: null,
+    ingestion_status_detail: "Ready",
+    ingestion_updated_at: now,
+    original_path: "T:\\rendered\\Database architecture.md",
+    import_root_path: null,
+    import_relative_path: null,
+    url: null,
+    raw_text: "",
+    extracted_text: "Database architecture has external and conceptual levels.",
+    summary: "Database architecture reference",
+    tags: [],
+    metadata_quality: "semantic",
+    semantic_metadata_version: 2,
+    semantic_metadata_updated_at: now,
+    cover_image_url: null,
+    created_at: now,
+    updated_at: now,
+  };
   const session = {
     id: sessionId,
     vault_id: "vault-rendered",
@@ -548,6 +663,24 @@ test("assistant messages render structured Markdown without visible delimiters",
       json: {
         session_id: sessionId,
         items: [
+          ...Array.from({ length: 240 }, (_, index) => ({
+            message_type: "user_message",
+            sort_key: `${now}:message-user-${String(index).padStart(3, "0")}`,
+            id: `message-user-${index}`,
+            session_id: sessionId,
+            role: "user",
+            content: `Earlier message ${index}`,
+            clusters_used: [],
+            citations: [],
+            warnings: [],
+            useful: null,
+            saved: false,
+            created_at: now,
+            generation_id: null,
+            reply_to_message_id: null,
+            generation_state: null,
+            attachments: [],
+          })),
           {
             message_type: "assistant_message",
             sort_key: `${now}:message-assistant`,
@@ -557,7 +690,21 @@ test("assistant messages render structured Markdown without visible delimiters",
             content:
               "### Database fundamentals\n\n- *External level*: users' views\n  - **Conceptual level**: shared schema\n\nThis is a **bold assessment** with safe <script>text</script>.",
             clusters_used: [],
-            citations: [],
+            citations: [
+              {
+                source_id: citationSource.id,
+                source_title: citationSource.title,
+                snippet: "External and conceptual database levels.",
+                page_number: 1,
+                state: "current",
+                relative_path: null,
+                line_start: null,
+                line_end: null,
+                symbol: null,
+                project_snapshot_id: null,
+                indexed_commit: null,
+              },
+            ],
             warnings: [],
             useful: null,
             saved: false,
@@ -577,6 +724,36 @@ test("assistant messages render structured Markdown without visible delimiters",
   await page.route(`${backendOrigin}/api/v1/models/runtime`, (route) =>
     route.fulfill({ json: { state: "ready", available: true } }),
   );
+  await page.route(
+    (url) => url.origin === backendOrigin && url.pathname === "/api/v1/sources/count",
+    (route) => route.fulfill({ json: { total: 9 } }),
+  );
+  await page.route(
+    (url) => url.origin === backendOrigin && url.pathname === "/api/v1/sources",
+    (route) => route.fulfill({ json: [citationSource] }),
+  );
+  await page.route(`${backendOrigin}/api/v1/sources/${citationSource.id}`, (route) =>
+    route.fulfill({ json: citationSource }),
+  );
+  await page.route(`${backendOrigin}/api/v1/sources/${citationSource.id}/stats`, (route) =>
+    route.fulfill({
+      json: { source_id: citationSource.id, page_count: 1, chunk_count: 1, size_bytes: 128, last_error: null },
+    }),
+  );
+  await page.route(
+    (url) => url.origin === backendOrigin && url.pathname === "/api/v1/clusters",
+    (route) => route.fulfill({ json: [] }),
+  );
+  let selectedUnclusteredScope = false;
+  await page.route(`${backendOrigin}/api/v1/chat/sessions/${sessionId}`, async (route) => {
+    if (route.request().method() !== "PATCH") {
+      await route.continue();
+      return;
+    }
+    const update = route.request().postDataJSON();
+    selectedUnclusteredScope = update.scope_unclustered === true;
+    await route.fulfill({ json: { ...session, ...update } });
+  });
 
   await page.goto(`/chat/${sessionId}`);
   await expect(page).toHaveTitle("Chat");
@@ -591,10 +768,193 @@ test("assistant messages render structured Markdown without visible delimiters",
   await expect(page.getByText("### Database fundamentals", { exact: true })).toHaveCount(0);
   await expect(page.getByText("*External level*", { exact: true })).toHaveCount(0);
   await expect(answer.locator("script")).toHaveCount(0);
+  const virtualizedTranscript = page.locator("[data-message-virtualizer]");
+  await expect(virtualizedTranscript).toBeVisible();
+  expect(await virtualizedTranscript.locator(":scope > div").count()).toBeLessThan(30);
+  await virtualizedTranscript.evaluate((element) => {
+    element.parentElement?.parentElement?.scrollTo({ top: 0 });
+  });
+  await expect(page.getByText("Earlier message 0", { exact: true })).toBeVisible();
+  if (process.env.CML_QA_VIRTUALIZED_CHAT_SCREENSHOT) {
+    await page.screenshot({
+      path: process.env.CML_QA_VIRTUALIZED_CHAT_SCREENSHOT,
+      fullPage: false,
+    });
+  }
+  await page.getByRole("button", { name: "Jump to latest" }).click();
+  await expect(page.getByRole("heading", { name: "Database fundamentals" })).toBeVisible();
+  await page.getByRole("combobox").click();
+  await page.getByRole("option", { name: "Unclustered sources (9)" }).click();
+  await expect.poll(() => selectedUnclusteredScope).toBe(true);
+  await expect(page.getByPlaceholder("Ask unclustered sources...")).toBeVisible();
+  await expect(page.getByText(/send \/ unclustered sources \/ vault retrieval/i)).toBeVisible();
+  await page.getByRole("button", { name: /Database architecture\.md/ }).click();
+  await page.getByRole("button", { name: "View source" }).click();
+  await expect(page).toHaveURL(/\/sources\?source=source-citation/);
+  await expect(page.getByRole("heading", { name: "Database architecture.md" })).toBeVisible();
   expect(consoleProblems).toEqual([]);
 
   if (process.env.CML_QA_SCREENSHOT) {
     await page.screenshot({ path: process.env.CML_QA_SCREENSHOT, fullPage: false });
+  }
+});
+
+test("project chat displays its real retrieval scope and clears it explicitly", async ({ page }) => {
+  const consoleProblems: string[] = [];
+  page.on("console", (message) => {
+    if (message.type() === "error" || message.type() === "warning") {
+      consoleProblems.push(`${message.type()}: ${message.text()}`);
+    }
+  });
+  page.on("pageerror", (error) => consoleProblems.push(`pageerror: ${error.message}`));
+
+  const now = "2026-08-10T10:00:00Z";
+  const sessionId = "chat-project-scope";
+  const projectId = "project-odin-analyzer";
+  const clusterId = "cluster-odin-analyzer";
+  const session = {
+    id: sessionId,
+    vault_id: "vault-project-scope",
+    title: "Odin Analyzer questions",
+    scope_cluster_id: clusterId,
+    scope_project_id: projectId,
+    scope_unclustered: false,
+    saved: false,
+    memory_status: "ready",
+    memory_updated_at: now,
+    active_generation: false,
+    created_at: now,
+    updated_at: now,
+    messages: [],
+  };
+  const project = {
+    id: projectId,
+    vault_id: session.vault_id,
+    name: "Odin Analyzer",
+    root_path: "T:\\odin-analyzer",
+    root_fingerprint: "root-fingerprint",
+    discovery_scope: "code",
+    primary_cluster_id: clusterId,
+    repository_kind: "git",
+    git_remote_fingerprint: null,
+    default_branch: "main",
+    indexed_commit: "abcdef1234567890",
+    working_tree_dirty: false,
+    changed_file_count: 0,
+    auto_sync_enabled: true,
+    sync_mode: "automatic",
+    change_fingerprint: "change-fingerprint",
+    last_change_checked_at: now,
+    status: "ready",
+    structure_status: "ready",
+    retrieval_status: "ready",
+    interpretation_status: "ready",
+    active_snapshot_id: "snapshot-active",
+    active_manifest_snapshot_id: "snapshot-active",
+    active_structure_snapshot_id: "snapshot-active",
+    active_retrieval_snapshot_id: "snapshot-active",
+    candidate_snapshot_id: null,
+    active_run_id: null,
+    active_snapshot: null,
+    brief: "Analyzes Odin projects.",
+    languages: { TypeScript: 1 },
+    workspace_count: 1,
+    entrypoints: ["src/index.ts"],
+    source_count: 42,
+    created_at: now,
+    updated_at: now,
+  };
+  const cluster = {
+    id: clusterId,
+    vault_id: session.vault_id,
+    name: "Odin Analyzer sources",
+    description: "Project source cluster.",
+    color: "blue",
+    index_status: "ready",
+    profile_status: "ready",
+    cluster_summary: "Project source cluster.",
+    cluster_glossary: "[]",
+    created_at: now,
+    updated_at: now,
+  };
+
+  await page.route(`${backendOrigin}/api/v1/vaults`, (route) =>
+    route.fulfill({
+      json: [
+        {
+          id: session.vault_id,
+          name: "Project scope vault",
+          path: "T:\\project-scope",
+          created_at: now,
+          updated_at: now,
+        },
+      ],
+    }),
+  );
+  await page.route(`${backendOrigin}/api/v1/chat/sessions/${sessionId}/metadata`, (route) =>
+    route.fulfill({ json: session }),
+  );
+  await page.route(`${backendOrigin}/api/v1/chat/sessions/${sessionId}/timeline*`, (route) =>
+    route.fulfill({
+      json: {
+        session_id: sessionId,
+        items: [],
+        next_cursor: null,
+        latest_cursor: null,
+        has_more: false,
+      },
+    }),
+  );
+  await page.route(`${backendOrigin}/api/v1/projects/${projectId}`, (route) =>
+    route.fulfill({ json: project }),
+  );
+  await page.route(
+    (url) => url.origin === backendOrigin && url.pathname === "/api/v1/clusters",
+    (route) => route.fulfill({ json: [cluster] }),
+  );
+  await page.route(
+    (url) => url.origin === backendOrigin && url.pathname === "/api/v1/sources",
+    (route) => route.fulfill({ json: [] }),
+  );
+  await page.route(`${backendOrigin}/api/v1/models/runtime`, (route) =>
+    route.fulfill({ json: { state: "ready", available: true } }),
+  );
+  await page.route(
+    (url) => url.origin === backendOrigin && url.pathname === "/api/v1/sources/count",
+    (route) => route.fulfill({ json: { total: 0 } }),
+  );
+  let scopeUpdate: Record<string, unknown> | null = null;
+  await page.route(`${backendOrigin}/api/v1/chat/sessions/${sessionId}`, async (route) => {
+    if (route.request().method() !== "PATCH") {
+      await route.continue();
+      return;
+    }
+    scopeUpdate = route.request().postDataJSON() as Record<string, unknown>;
+    await route.fulfill({ json: { ...session, ...scopeUpdate } });
+  });
+
+  await page.goto(`/chat/${sessionId}`);
+  await expect(page.getByText("Ask Odin Analyzer.", { exact: true })).toBeVisible();
+  await expect(page.getByText("Scoped to the Odin Analyzer Odin project.")).toBeVisible();
+  await expect(page.getByRole("combobox")).toContainText("Odin Analyzer");
+  await expect(page.getByPlaceholder("Ask Odin Analyzer...")).toBeVisible();
+
+  await page.getByRole("combobox").click();
+  await page.getByRole("option", { name: "All vault context" }).click();
+  await expect.poll(() => scopeUpdate).toEqual({
+    scope_cluster_id: null,
+    scope_project_id: null,
+    scope_unclustered: false,
+  });
+  await expect(page.getByText("Ask across your vault.", { exact: true })).toBeVisible();
+  await expect(page.getByPlaceholder("Ask your vault...")).toBeVisible();
+  expect(consoleProblems).toEqual([]);
+
+  if (process.env.CML_QA_PROJECT_CHAT_SCOPE_SCREENSHOT) {
+    await page.screenshot({
+      path: process.env.CML_QA_PROJECT_CHAT_SCOPE_SCREENSHOT,
+      fullPage: false,
+    });
   }
 });
 
@@ -752,6 +1112,217 @@ test("Sources preserves nested folders inside a grouped folder import", async ({
   }
 });
 
+test("cluster detail keeps View all sources scoped to that cluster", async ({ page }) => {
+  const consoleProblems: string[] = [];
+  page.on("console", (message) => {
+    if (message.type() === "error" || message.type() === "warning") {
+      consoleProblems.push(`${message.type()}: ${message.text()}`);
+    }
+  });
+  page.on("pageerror", (error) => consoleProblems.push(`pageerror: ${error.message}`));
+
+  const now = "2026-08-10T09:00:00Z";
+  const vaultId = "vault-browser-issues";
+  const clusterId = "cluster-548963ac-f09f-4504-b091-6391f3a7416e";
+  const cluster = {
+    id: clusterId,
+    vault_id: vaultId,
+    name: "Browser Start Issues",
+    description: "Browser startup diagnostics and fixes.",
+    color: "terracotta",
+    index_status: "ready",
+    profile_status: "ready",
+    cluster_summary: "Tracks browser startup failures.",
+    cluster_glossary: "[]",
+    created_at: now,
+    updated_at: now,
+  };
+  const source = (id: string, title: string, sourceClusterId: string) => ({
+    id,
+    vault_id: vaultId,
+    cluster_id: sourceClusterId,
+    title,
+    source_type: "file",
+    state: "indexed",
+    ingestion_stage: "ready",
+    ingestion_generation: 1,
+    ingestion_error_code: null,
+    ingestion_status_detail: "Ready",
+    ingestion_updated_at: now,
+    original_path: `T:\\test\\${title}`,
+    import_root_path: null,
+    import_relative_path: null,
+    url: null,
+    raw_text: "",
+    extracted_text: `${title} explains a browser startup issue.`,
+    summary: `${title} summary`,
+    tags: [],
+    metadata_quality: "semantic",
+    semantic_metadata_version: 2,
+    semantic_metadata_updated_at: now,
+    cover_image_url: null,
+    created_at: now,
+    updated_at: now,
+  });
+  const members = [
+    source("source-browser-log", "browser-start.log", clusterId),
+    source("source-browser-notes", "startup-notes.md", clusterId),
+  ];
+  const unrelated = source("source-other", "unrelated-cluster.md", "cluster-other");
+  const clusterChat = {
+    id: "chat-browser",
+    vault_id: vaultId,
+    title: "Browser startup investigation",
+    scope_cluster_id: clusterId,
+    scope_project_id: null,
+    scope_unclustered: false,
+    saved: false,
+    memory_status: "idle",
+    memory_updated_at: null,
+    active_generation: false,
+    created_at: now,
+    updated_at: now,
+    messages: [],
+  };
+  const unrelatedChat = {
+    ...clusterChat,
+    id: "chat-other",
+    title: "Unrelated cluster conversation",
+    scope_cluster_id: "cluster-other",
+  };
+  const observedPageClusterIds: Array<string | null> = [];
+  const observedCountClusterIds: Array<string | null> = [];
+  const observedChatClusterIds: Array<string | null> = [];
+
+  await page.route(`${backendOrigin}/api/v1/vaults`, (route) =>
+    route.fulfill({
+      json: [{ id: vaultId, name: "Active vault", path: "T:\\test", created_at: now, updated_at: now }],
+    }),
+  );
+  await page.route(`${backendOrigin}/api/v1/clusters/${clusterId}`, (route) =>
+    route.fulfill({ json: cluster }),
+  );
+  await page.route(
+    (url) => url.origin === backendOrigin && url.pathname === "/api/v1/clusters",
+    (route) => route.fulfill({ json: [cluster] }),
+  );
+  await page.route(
+    (url) => url.origin === backendOrigin && url.pathname === "/api/v1/clusters/page",
+    (route) => route.fulfill({ json: { items: [cluster], next_cursor: null, has_more: false } }),
+  );
+  await page.route(`${backendOrigin}/api/v1/clusters/${clusterId}/merge-artifacts`, (route) =>
+    route.fulfill({ json: { cluster_id: clusterId, items: [] } }),
+  );
+  await page.route(
+    (url) => url.origin === backendOrigin && url.pathname === "/api/v1/sources",
+    (route) => {
+      const requestedCluster = new URL(route.request().url()).searchParams.get("cluster_id");
+      return route.fulfill({ json: requestedCluster === clusterId ? members : [...members, unrelated] });
+    },
+  );
+  await page.route(
+    (url) => url.origin === backendOrigin && url.pathname === "/api/v1/sources/page",
+    (route) => {
+      const requestedCluster = new URL(route.request().url()).searchParams.get("cluster_id");
+      observedPageClusterIds.push(requestedCluster);
+      const items = requestedCluster === clusterId ? members : [...members, unrelated];
+      return route.fulfill({ json: { items, next_cursor: null, has_more: false, total: items.length } });
+    },
+  );
+  await page.route(
+    (url) => url.origin === backendOrigin && url.pathname === "/api/v1/sources/count",
+    (route) => {
+      const requestedCluster = new URL(route.request().url()).searchParams.get("cluster_id");
+      observedCountClusterIds.push(requestedCluster);
+      return route.fulfill({ json: { total: requestedCluster === clusterId ? members.length : 3 } });
+    },
+  );
+  await page.route(`${backendOrigin}/api/v1/sources/${members[1].id}`, (route) =>
+    route.fulfill({ json: members[1] }),
+  );
+  await page.route(`${backendOrigin}/api/v1/sources/${members[1].id}/stats`, (route) =>
+    route.fulfill({
+      json: { source_id: members[1].id, page_count: 1, chunk_count: 2, size_bytes: 256, last_error: null },
+    }),
+  );
+  await page.route(
+    (url) => url.origin === backendOrigin && url.pathname === "/api/v1/chat/sessions",
+    (route) => {
+      const requestedCluster = new URL(route.request().url()).searchParams.get("cluster_id");
+      return route.fulfill({
+        json: requestedCluster === clusterId ? [clusterChat] : [clusterChat, unrelatedChat],
+      });
+    },
+  );
+  await page.route(
+    (url) => url.origin === backendOrigin && url.pathname === "/api/v1/chat/sessions/page",
+    (route) => {
+      const requestedCluster = new URL(route.request().url()).searchParams.get("cluster_id");
+      observedChatClusterIds.push(requestedCluster);
+      const items = requestedCluster === clusterId ? [clusterChat] : [clusterChat, unrelatedChat];
+      return route.fulfill({ json: { items, next_cursor: null, has_more: false, total: items.length } });
+    },
+  );
+
+  await page.goto(`/clusters/${clusterId}`);
+  await expect(page).toHaveTitle("Cluster");
+  await expect(page.getByRole("heading", { name: "Browser Start Issues" })).toBeVisible();
+  await page.getByRole("button", { name: "Sources", exact: true }).click();
+  const clusterSourceSearch = page.getByLabel("Search sources in this cluster");
+  await expect(clusterSourceSearch).toBeEditable();
+  await clusterSourceSearch.fill("startup-notes");
+  await expect(page.getByText("startup-notes.md", { exact: true })).toBeVisible();
+  await expect(page.getByText("browser-start.log", { exact: true })).toHaveCount(0);
+  await page.getByRole("link", { name: /startup-notes\.md/ }).click();
+  await expect.poll(() => {
+    const url = new URL(page.url());
+    return {
+      pathname: url.pathname,
+      cluster: url.searchParams.get("cluster"),
+      source: url.searchParams.get("source"),
+    };
+  }).toEqual({ pathname: "/sources", cluster: clusterId, source: members[1].id });
+  await expect(page.getByRole("heading", { name: "startup-notes.md" })).toBeVisible();
+
+  await page.goBack();
+  await expect(page.getByRole("heading", { name: "Browser Start Issues" })).toBeVisible();
+  await page.getByRole("link", { name: "View all sources" }).click();
+
+  await expect(page).toHaveURL(new RegExp(`/sources\\?cluster=${clusterId}`));
+  await expect(page).toHaveTitle("Sources");
+  await expect(page.getByRole("heading", { name: "Browser Start Issues" })).toBeVisible();
+  await expect(page.getByText("2 sources in this cluster.")).toBeVisible();
+  await expect(page.getByText("browser-start.log", { exact: true })).toBeVisible();
+  await expect(page.getByText("startup-notes.md", { exact: true })).toBeVisible();
+  await expect(page.getByText("unrelated-cluster.md", { exact: true })).toHaveCount(0);
+  await expect.poll(() => observedPageClusterIds.at(-1)).toBe(clusterId);
+  await expect.poll(() => observedCountClusterIds.at(-1)).toBe(clusterId);
+  expect(consoleProblems).toEqual([]);
+
+  if (process.env.CML_QA_CLUSTER_SOURCES_SCREENSHOT) {
+    await page.screenshot({ path: process.env.CML_QA_CLUSTER_SOURCES_SCREENSHOT, fullPage: false });
+  }
+
+  await page.goBack();
+  await expect(page.getByRole("heading", { name: "Browser Start Issues" })).toBeVisible();
+  await page.getByRole("link", { name: "View all chats" }).click();
+  await expect(page).toHaveURL(new RegExp(`/chat\\?cluster=${clusterId}`));
+  await expect(page.getByRole("heading", { name: "Ask Browser Start Issues" })).toBeVisible();
+  const clusterChatHistory = page
+    .getByRole("button", { name: "New chat" })
+    .locator("xpath=ancestor::aside");
+  await expect(clusterChatHistory.getByText("Browser startup investigation", { exact: true })).toBeVisible();
+  await expect(clusterChatHistory.getByText("Unrelated cluster conversation", { exact: true })).toHaveCount(0);
+  await expect(page.getByRole("combobox")).toContainText("Browser Start Issues");
+  await expect(page.getByPlaceholder("Ask Browser Start Issues...")).toBeVisible();
+  await expect.poll(() => observedChatClusterIds.at(-1)).toBe(clusterId);
+  expect(consoleProblems).toEqual([]);
+
+  if (process.env.CML_QA_CLUSTER_CHATS_SCREENSHOT) {
+    await page.screenshot({ path: process.env.CML_QA_CLUSTER_CHATS_SCREENSHOT, fullPage: false });
+  }
+});
+
 test("Bridge presents connected AI write-back as a guided workflow", async ({ page }) => {
   const consoleProblems: string[] = [];
   page.on("console", (message) => {
@@ -853,7 +1424,7 @@ test("project detail distinguishes Odin freshness from Git changes", async ({ pa
     status: "ready",
     structure_status: "ready",
     retrieval_status: "ready",
-    interpretation_status: "unavailable",
+    interpretation_status: "ready",
     active_snapshot_id: "snapshot-active",
     active_manifest_snapshot_id: "snapshot-active",
     active_structure_snapshot_id: "snapshot-active",
@@ -944,9 +1515,19 @@ test("project detail distinguishes Odin freshness from Git changes", async ({ pa
   await page.route(`${backendOrigin}/api/v1/projects/${project.id}/changes*`, (route) =>
     route.fulfill({ json: changes }),
   );
+  await page.route(`${backendOrigin}/api/v1/projects/${project.id}/reindex`, async (route) => {
+    const payload = route.request().postDataJSON();
+    expect(payload).toEqual({ layer: "interpretation" });
+    await route.fulfill({ json: { project, queued_jobs: 1, layer: "interpretation" } });
+  });
   await page.route(`${backendOrigin}/api/v1/clusters*`, (route) => route.fulfill({ json: [] }));
-  await page.route(`${backendOrigin}/api/v1/projects/${project.id}/graph/view*`, (route) =>
-    route.fulfill({
+  const graphNodeLimits: number[] = [];
+  await page.route(`${backendOrigin}/api/v1/projects/${project.id}/graph/view*`, (route) => {
+    const requestUrl = new URL(route.request().url());
+    const requestedLimit = Number(requestUrl.searchParams.get("max_nodes") ?? "90");
+    const requestedQuery = requestUrl.searchParams.get("q") ?? "";
+    graphNodeLimits.push(requestedLimit);
+    return route.fulfill({
       json: {
         version: 1,
         project_id: project.id,
@@ -954,29 +1535,68 @@ test("project detail distinguishes Odin freshness from Git changes", async ({ pa
         indexed_commit: project.indexed_commit,
         mode: "graph",
         direction: "balanced",
-        query: "Open the project map.",
+        query: requestedQuery,
         root: "",
-        nodes: [],
-        edges: [],
-        truncated: false,
-        limits: { max_nodes: 90, max_depth: 2 },
-        project_totals: { nodes: 0, edges: 0 },
+        nodes: [{
+          id: "node-map-overview",
+          qualified_id: "backend.app.api.routes.map.map_overview",
+          kind: "function",
+          language: "Python",
+          label: "map_overview",
+          relative_path: "backend/app/api/routes/map.py",
+          start_line: 51,
+          end_line: 140,
+          signature: "map_overview(vault_id)",
+          source_id: "source-map",
+          matched_terms: ["map", "connections"],
+        }, {
+          id: "node-map-view",
+          qualified_id: "apps.desktop.routes.MapView",
+          kind: "function",
+          language: "TypeScript",
+          label: "MapView",
+          relative_path: "apps/desktop/src/routes/_app.map.tsx",
+          start_line: 20,
+          end_line: 110,
+          signature: "MapView()",
+          source_id: "source-map-view",
+          matched_terms: ["map"],
+        }],
+        edges: [{
+          id: "edge-map-view",
+          source: "node-map-view",
+          target: "node-map-overview",
+          type: "calls",
+          confidence: "extracted",
+          evidence_source_id: "source-map-view",
+          source_line: 48,
+        }],
+        truncated: requestedLimit < 2000,
+        limits: { max_nodes: requestedLimit, max_depth: requestedLimit >= 160 ? 3 : 2 },
+        project_totals: { nodes: 10175, edges: 18873 },
         warnings: [],
         insights: {
-          summary: "No mapped nodes.",
-          key_areas: [],
+          summary: "This view connects the map UI to its indexed connection API.",
+          key_areas: [{
+            id: "node-map-overview",
+            label: "map_overview",
+            kind: "function",
+            relative_path: "backend/app/api/routes/map.py",
+            connections: 1,
+            why: "Direct question match: map, connections",
+          }],
           flows: [],
           node_kinds: {},
           relationship_types: {},
           component_count: 0,
         },
       },
-    }),
-  );
+    });
+  });
 
   await page.goto(`/projects/${project.id}`);
   await expect(page).toHaveTitle("Project");
-  await expect(page.getByRole("heading", { name: project.name })).toBeVisible();
+  await expect(page.getByRole("heading", { name: project.name })).toBeVisible({ timeout: 20_000 });
   await expect(page.getByText(project.brief)).toBeVisible();
   await expect(page.getByRole("heading", { name: "Ask Odin" })).toBeVisible();
   await expect(page.getByLabel("Ask about this project")).toBeVisible();
@@ -1002,6 +1622,7 @@ test("project detail distinguishes Odin freshness from Git changes", async ({ pa
     }),
   ).toBeVisible();
   await page.getByText("Project details", { exact: true }).click();
+  await expect(page.getByText("Interpretation").locator("..")).toContainText("ready");
   await expect(page.getByRole("heading", { name: "Odin freshness" })).toBeVisible();
   await expect(
     page.getByText(/The active Odin snapshot matches the current eligible files\./).first(),
@@ -1015,9 +1636,120 @@ test("project detail distinguishes Odin freshness from Git changes", async ({ pa
   }
   await suggestedQuestions.first().click();
   await expect(page).toHaveURL(/\/project-map\?.*project=project-rendered/);
+  await expect(page.getByRole("heading", { name: "Project map" })).toBeVisible();
+  await page.getByLabel("Filter project map").fill("Why are map connections shown?");
+  await page.getByRole("button", { name: "Show", exact: true }).click();
+  await expect(page.getByText(/question-focused items/)).toBeVisible();
+  for (const expectedLimit of [160, 240, 300]) {
+    await page.getByRole("button", { name: "Show more" }).click();
+    await expect.poll(() => graphNodeLimits.at(-1)).toBe(expectedLimit);
+  }
+  await page.getByRole("button", { name: "Show all relevant" }).click();
+  await expect.poll(() => graphNodeLimits.at(-1)).toBe(2000);
+  await expect(page.getByText(/complete relevant slice/)).toBeVisible();
+  await expect(page.getByRole("button", { name: "Show all relevant" })).toBeDisabled();
+  if (process.env.CML_QA_PROJECT_MAP_SCREENSHOT) {
+    await page.screenshot({ path: process.env.CML_QA_PROJECT_MAP_SCREENSHOT, fullPage: false });
+  }
   await page.goBack();
   await page.getByRole("button", { name: "Settings" }).click();
   await expect(page.getByRole("heading", { name: "Project settings" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Refresh interpretation" })).toBeVisible();
+  await page.getByRole("button", { name: "Refresh interpretation" }).click();
+  await expect(page.getByText("Interpretation refresh queued.")).toBeVisible();
+  if (process.env.CML_QA_PROJECT_SETTINGS_SCREENSHOT) {
+    await page.screenshot({ path: process.env.CML_QA_PROJECT_SETTINGS_SCREENSHOT, fullPage: false });
+  }
+  expect(consoleProblems).toEqual([]);
+});
+
+test("map Connections mode reveals semantic cluster edges", async ({ page }) => {
+  const consoleProblems: string[] = [];
+  page.on("console", (message) => {
+    if (message.type() === "error" || message.type() === "warning") {
+      consoleProblems.push(`${message.type()}: ${message.text()}`);
+    }
+  });
+  page.on("pageerror", (error) => consoleProblems.push(`pageerror: ${error.message}`));
+
+  const vault = {
+    id: "vault-map-connections",
+    name: "Connected library",
+    path: "T:\\connected",
+    created_at: "2026-08-01T09:00:00Z",
+    updated_at: "2026-08-01T09:00:00Z",
+  };
+  const nodes = [
+    {
+      id: "cluster-ethics",
+      kind: "cluster",
+      label: "Ethical practice",
+      summary: "Privacy and professional ethics.",
+      color: "sage",
+      state: "ready",
+      source_count: 2,
+      fact_count: 0,
+      updated_at: "2026-08-01T09:00:00Z",
+    },
+    {
+      id: "cluster-privacy",
+      kind: "cluster",
+      label: "Privacy reports",
+      summary: "Privacy and surveillance reports.",
+      color: "sky",
+      state: "ready",
+      source_count: 2,
+      fact_count: 0,
+      updated_at: "2026-08-01T09:00:00Z",
+    },
+  ];
+  const edge = {
+    id: "similarity:cluster-ethics:cluster-privacy",
+    source: "cluster-ethics",
+    target: "cluster-privacy",
+    kind: "similarity",
+    label: "59% similar",
+    direction: "undirected",
+    temporal_state: "current",
+    provenance_ids: ["source-ethics", "source-privacy"],
+    updated_at: "2026-08-01T09:00:00Z",
+    relationship_basis: "semantic_similarity",
+    similarity_score: 0.59,
+    shared_terms: ["privacy", "ethical"],
+    evidence_labels: ["Shared topics: privacy, ethical"],
+  };
+
+  await page.route(`${backendOrigin}/api/v1/vaults`, (route) => route.fulfill({ json: [vault] }));
+  await page.route(`${backendOrigin}/api/v1/map/overview*`, (route) => {
+    const url = new URL(route.request().url());
+    const connected = url.searchParams.get("connections") === "similar";
+    return route.fulfill({
+      json: {
+        vault_id: vault.id,
+        nodes,
+        edges: connected ? [edge] : [],
+        total: 2,
+        cluster_total: 2,
+        unclustered_count: 0,
+        limit: 160,
+        offset: 0,
+        truncated: false,
+        connection_mode: connected ? "similar" : "current",
+        relationship_policy: connected ? "evidence_and_similarity" : "authoritative_only",
+      },
+    });
+  });
+
+  await page.goto("/map");
+  await expect(page).toHaveTitle("Map");
+  await expect(page.getByRole("heading", { name: "Knowledge map" })).toBeVisible();
+  await page.getByRole("button", { name: "Connections" }).click();
+  await expect(page.getByText("1 strong local connection.")).toBeVisible();
+  await page.getByRole("button", { name: "List" }).click();
+  await expect(page.getByText(/1 relationship.*59% similar/).first()).toBeVisible();
+  if (process.env.CML_QA_MAP_CONNECTIONS_SCREENSHOT) {
+    await page.screenshot({ path: process.env.CML_QA_MAP_CONNECTIONS_SCREENSHOT, fullPage: false });
+  }
   expect(consoleProblems).toEqual([]);
 });
 
@@ -1261,6 +1993,111 @@ test("new cluster asks for its name after the action is chosen", async ({ page }
   await expect(page.getByText("Research notes", { exact: true })).toBeVisible();
 });
 
+test("Clusters exposes indexed unclustered sources and opens the complete unclustered view", async ({ page }) => {
+  const consoleProblems: string[] = [];
+  page.on("console", (message) => {
+    if (message.type() === "error" || message.type() === "warning") {
+      consoleProblems.push(`${message.type()}: ${message.text()}`);
+    }
+  });
+  page.on("pageerror", (error) => consoleProblems.push(`pageerror: ${error.message}`));
+
+  const now = "2026-08-10T10:00:00Z";
+  const vaultId = "vault-unclustered";
+  const sources = Array.from({ length: 9 }, (_, index) => ({
+    id: `source-unclustered-${index + 1}`,
+    vault_id: vaultId,
+    cluster_id: null,
+    title: `Unclustered indexed source ${index + 1}.md`,
+    source_type: "file",
+    state: "indexed",
+    ingestion_stage: "ready",
+    ingestion_generation: 1,
+    ingestion_error_code: null,
+    ingestion_status_detail: "Ready",
+    ingestion_updated_at: now,
+    original_path: `T:\\test\\unclustered-${index + 1}.md`,
+    import_root_path: null,
+    import_relative_path: null,
+    url: null,
+    raw_text: "",
+    extracted_text: `Indexed unclustered source ${index + 1}.`,
+    summary: `Unclustered source ${index + 1} summary`,
+    tags: [],
+    metadata_quality: "semantic",
+    semantic_metadata_version: 2,
+    semantic_metadata_updated_at: now,
+    cover_image_url: null,
+    created_at: now,
+    updated_at: now,
+  }));
+  const observedSourceRequests: Array<{ unclustered: string | null; states: string | null }> = [];
+
+  await page.route(`${backendOrigin}/api/v1/vaults`, (route) =>
+    route.fulfill({
+      json: [{ id: vaultId, name: "Active vault", path: "T:\\test", created_at: now, updated_at: now }],
+    }),
+  );
+  await page.route(`${backendOrigin}/api/v1/clusters/page*`, (route) =>
+    route.fulfill({ json: { items: [], next_cursor: null, has_more: false } }),
+  );
+  await page.route(`${backendOrigin}/api/v1/clusters/suggestions*`, (route) =>
+    route.fulfill({ json: [] }),
+  );
+  await page.route(`${backendOrigin}/api/v1/sources/counts-by-cluster*`, (route) =>
+    route.fulfill({ json: { items: [{ cluster_id: null, state: "indexed", total: 9 }] } }),
+  );
+  await page.route(`${backendOrigin}/api/v1/projects/cluster-membership-summary*`, (route) =>
+    route.fulfill({ json: { cluster_ids: [] } }),
+  );
+  await page.route(`${backendOrigin}/api/v1/sources/latest-by-cluster*`, (route) =>
+    route.fulfill({ json: { items: [] } }),
+  );
+  await page.route(
+    (url) => url.origin === backendOrigin && url.pathname === "/api/v1/sources/page",
+    (route) => {
+      const url = new URL(route.request().url());
+      observedSourceRequests.push({
+        unclustered: url.searchParams.get("unclustered"),
+        states: url.searchParams.get("states"),
+      });
+      return route.fulfill({
+        json: { items: sources, next_cursor: null, has_more: false, total: sources.length },
+      });
+    },
+  );
+  await page.route(
+    (url) => url.origin === backendOrigin && url.pathname === "/api/v1/sources/count",
+    (route) => route.fulfill({ json: { total: sources.length } }),
+  );
+
+  await page.goto("/clusters");
+  await expect(page).toHaveTitle("Clusters");
+  await expect(page.getByRole("heading", { name: "Clusters" })).toBeVisible();
+  const unclusteredRow = page.getByRole("link", { name: "Open Unclustered sources, 9 sources" });
+  await expect(unclusteredRow).toBeVisible();
+  await expect(unclusteredRow).toContainText("9");
+  await expect(unclusteredRow).toContainText("Needs organization");
+  if (process.env.CML_QA_UNCLUSTERED_CLUSTER_SCREENSHOT) {
+    await page.screenshot({ path: process.env.CML_QA_UNCLUSTERED_CLUSTER_SCREENSHOT, fullPage: false });
+  }
+
+  await unclusteredRow.click();
+  await expect(page).toHaveURL(/\/sources\?filter=unclustered/);
+  await expect(page).toHaveTitle("Sources");
+  await expect(page.getByRole("heading", { name: "Unclustered sources" })).toBeVisible();
+  await expect(page.getByText("Showing 9 of 9 sources")).toBeVisible();
+  await expect(page.getByText("Unclustered indexed source 1.md", { exact: true })).toBeVisible();
+  await expect.poll(() => observedSourceRequests.at(-1)).toEqual({
+    unclustered: "true",
+    states: null,
+  });
+  expect(consoleProblems).toEqual([]);
+  if (process.env.CML_QA_UNCLUSTERED_SOURCES_SCREENSHOT) {
+    await page.screenshot({ path: process.env.CML_QA_UNCLUSTERED_SOURCES_SCREENSHOT, fullPage: false });
+  }
+});
+
 test("settings explains passphrase requirements before protected setup", async ({ page }) => {
   const now = "2026-07-31T08:00:00Z";
   let initializeRequests = 0;
@@ -1336,6 +2173,102 @@ test("settings explains passphrase requirements before protected setup", async (
     await page.screenshot({ path: process.env.CML_QA_PASSPHRASE_SCREENSHOT, fullPage: false });
   }
   expect(initializeRequests).toBe(0);
+});
+
+test("delete and restart setup survive authorization taking longer than 12 seconds", async ({ page }) => {
+  test.setTimeout(45_000);
+  const consoleProblems: string[] = [];
+  page.on("console", (message) => {
+    if (
+      (message.type() === "error" || message.type() === "warning") &&
+      !message.text().includes("Failed to load resource")
+    ) {
+      consoleProblems.push(`${message.type()}: ${message.text()}`);
+    }
+  });
+  page.on("pageerror", (error) => consoleProblems.push(`pageerror: ${error.message}`));
+  const now = "2026-08-10T00:00:00Z";
+  const vault = {
+    id: "vault-delete",
+    name: "My Library",
+    path: "T:\\test",
+    created_at: now,
+    updated_at: now,
+  };
+  let authorizationCompleted = false;
+  await page.route(`${backendOrigin}/api/v1/vaults`, (route) =>
+    route.fulfill({ json: [vault] }),
+  );
+  await page.route(`${backendOrigin}/api/v1/system/unlock/status`, (route) =>
+    route.fulfill({
+      json: {
+        state: "ready",
+        ready: true,
+        secured_vault_count: 0,
+        secured_vault_ids: [],
+      },
+    }),
+  );
+  await page.route(`${backendOrigin}/api/v1/jobs/temporal-facts/status*`, (route) =>
+    route.fulfill({
+      json: {
+        vault_id: vault.id,
+        extractor_version: "test",
+        session_count: 0,
+        indexed_session_count: 0,
+        pending_session_count: 0,
+        fact_count: 0,
+        status_counts: { current: 0 },
+        latest_observed_at: null,
+      },
+    }),
+  );
+  await page.route(`${backendOrigin}/api/v1/chat/evidence-retention/policy`, (route) =>
+    route.fulfill({
+      json: {
+        default_keep_latest_snapshots_per_message: 1,
+        max_keep_latest_snapshots_per_message: 10,
+        default_excerpt_chars: 240,
+        deleted_source_state: "tombstoned",
+        compacted_state: "compacted",
+        query_cache_prune_endpoint: "",
+      },
+    }),
+  );
+  await page.route(
+    `${backendOrigin}/api/v1/vaults/${vault.id}/delete/authorize`,
+    async (route) => {
+      await new Promise((resolve) => setTimeout(resolve, 13_000));
+      authorizationCompleted = true;
+      await route.fulfill({ json: { authorized: true, vault_id: vault.id } });
+    },
+  );
+
+  await page.goto(`/settings?section=advanced&backendUrl=${encodeURIComponent(backendOrigin)}`);
+  await expect(page.getByRole("button", { name: /Delete library/ })).toBeVisible();
+  await expect(page.getByRole("button", { name: /Restart setup/ })).toBeVisible();
+  await page.getByRole("button", { name: /Restart setup/ }).click();
+  await expect(page.getByRole("heading", { name: "Wipe this library and restart setup?" })).toBeVisible();
+  await page.getByPlaceholder("My Library").fill("My Library");
+  if (process.env.CML_QA_VAULT_RESTART_SCREENSHOT) {
+    await page.screenshot({
+      path: process.env.CML_QA_VAULT_RESTART_SCREENSHOT,
+      fullPage: false,
+    });
+  }
+  await page.getByRole("button", { name: "Wipe and restart" }).click();
+
+  await expect.poll(() => authorizationCompleted, { timeout: 20_000 }).toBe(true);
+  await expect(page).toHaveURL(/\/onboarding/);
+  await expect.poll(() =>
+    page.evaluate(() =>
+      Boolean(
+        (window as typeof window & { __vaultDeletionFinalized?: boolean })
+          .__vaultDeletionFinalized,
+      ),
+    )
+  ).toBe(true);
+  expect(consoleProblems).toEqual([]);
 });
 
 test("Memory history settles completed refreshes and retries failed insight loads", async ({ page }) => {

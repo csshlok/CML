@@ -276,6 +276,18 @@ function Onboarding() {
           } else {
             setError("Vault could not read the previous setup progress. Review these choices to continue.");
           }
+        } else if (
+          state.phase === "vault_prepared"
+          && state.onboarding_vault.stage !== "none"
+          && state.onboarding_vault.stage !== "setup_complete"
+        ) {
+          setMessage("Finishing your library setup...");
+          const created = await resumeOnboardingVault(state);
+          if (cancelled) return;
+          setVault(created);
+          setSetupVaultId(created.id);
+          setMessage("Library folder is ready.");
+          setStep(3);
         }
       } catch (err) {
         if (!cancelled) {
@@ -866,21 +878,11 @@ function Onboarding() {
         setMessage(null);
         return;
       }
-      await desktop?.prepareActiveVaultFolder?.(vaultPath.trim());
-      await desktop?.updateSetupState?.({
-        phase: "vault_prepared",
-        profile: { display_name: displayName.trim() },
-        vault: { id: "", name: vaultName.trim(), path: vaultPath.trim() },
-      });
-      const created = await createVaultWithRetry(vaultName.trim(), vaultPath.trim());
-      await desktop?.setActiveVaultFolder?.(vaultPath.trim());
-      await desktop?.updateSetupState?.({
-        phase: "vault_committed",
-        vault: {
-          id: created.id,
-          name: created.name,
-          path: vaultPath.trim(),
-        },
+      const created = await commitOnboardingVault({
+        operationId: crypto.randomUUID(),
+        name: vaultName.trim(),
+        path: vaultPath.trim(),
+        profileName: displayName.trim(),
       });
       setVault(created);
       setSetupVaultId(created.id);
@@ -1099,6 +1101,87 @@ function Onboarding() {
       }
     }
     setStep(Math.min(step + 1, 6) as Step);
+  }
+
+  async function resumeOnboardingVault(state: DesktopSetupState) {
+    const journal = state.onboarding_vault;
+    return commitOnboardingVault({
+      operationId: journal.operation_id,
+      name: journal.name || state.vault.name,
+      path: journal.path || state.vault.path,
+      profileName: state.profile.display_name,
+      expectedPathIdentity: journal.path_identity,
+      currentStage: journal.stage,
+    });
+  }
+
+  async function commitOnboardingVault(input: {
+    operationId: string;
+    name: string;
+    path: string;
+    profileName: string;
+    expectedPathIdentity?: string;
+    currentStage?: DesktopSetupState["onboarding_vault"]["stage"];
+  }) {
+    if (!desktop?.getVaultPathIdentity || !desktop.prepareActiveVaultFolder || !desktop.setActiveVaultFolder) {
+      throw new Error("Vault desktop setup services are unavailable.");
+    }
+    const pathIdentity = await desktop.getVaultPathIdentity(input.path);
+    if (!pathIdentity) throw new Error("Could not verify the selected library folder.");
+    if (input.expectedPathIdentity && input.expectedPathIdentity !== pathIdentity) {
+      await desktop.updateSetupState({
+        phase: "recovery",
+        recoverable_error: {
+          code: "vault_path_identity_changed",
+          message: "The selected library folder changed while setup was incomplete.",
+          action: "Choose the original folder or restart library setup.",
+          diagnostic_id: input.operationId,
+        },
+      });
+      throw new Error("The selected library folder changed. Vault stopped before opening it.");
+    }
+    await desktop.prepareActiveVaultFolder(input.path);
+    const preparedIdentity = await desktop.getVaultPathIdentity(input.path);
+    if (preparedIdentity !== pathIdentity) {
+      throw new Error("The selected library folder changed while it was being prepared.");
+    }
+    const stageOrder = ["none", "prepared", "created", "path_set", "setup_complete"] as const;
+    const stageIndex = stageOrder.indexOf(input.currentStage ?? "none");
+    if (stageIndex < stageOrder.indexOf("prepared")) {
+      await desktop.updateSetupState({
+        phase: "vault_prepared",
+        profile: { display_name: input.profileName },
+        vault: { id: "", name: input.name, path: input.path },
+        onboarding_vault: {
+          operation_id: input.operationId,
+          stage: "prepared",
+          path_identity: pathIdentity,
+          vault_id: "",
+          name: input.name,
+          path: input.path,
+        },
+        recoverable_error: null,
+      });
+    }
+    const created = await createVaultWithRetry(input.name, input.path);
+    if (stageIndex < stageOrder.indexOf("created")) {
+      await desktop.updateSetupState({
+        onboarding_vault: { stage: "created", vault_id: created.id },
+        vault: { id: created.id, name: created.name, path: input.path },
+      });
+    }
+    await desktop.setActiveVaultFolder(input.path);
+    if (stageIndex < stageOrder.indexOf("path_set")) {
+      await desktop.updateSetupState({
+        onboarding_vault: { stage: "path_set" },
+      });
+    }
+    await desktop.updateSetupState({
+      phase: "vault_committed",
+      onboarding_vault: { stage: "setup_complete" },
+      vault: { id: created.id, name: created.name, path: input.path },
+    });
+    return created;
   }
 
   async function runSetupTransition(action: () => Promise<void>) {

@@ -21,6 +21,7 @@ import { Route as AppProjectsRouteImport } from './routes/_app.projects'
 import { Route as AppProjectMapRouteImport } from './routes/_app.project-map'
 import { Route as AppMapRouteImport } from './routes/_app.map'
 import { Route as AppHomeRouteImport } from './routes/_app.home'
+import { Route as AppHelpRouteImport } from './routes/_app.help'
 import { Route as AppClustersRouteImport } from './routes/_app.clusters'
 import { Route as AppChatRouteImport } from './routes/_app.chat'
 import { Route as AppBridgeRouteImport } from './routes/_app.bridge'
@@ -88,6 +89,11 @@ const AppHomeRoute = AppHomeRouteImport.update({
   path: '/home',
   getParentRoute: () => AppRoute,
 } as any)
+const AppHelpRoute = AppHelpRouteImport.update({
+  id: '/help',
+  path: '/help',
+  getParentRoute: () => AppRoute,
+} as any)
 const AppClustersRoute = AppClustersRouteImport.update({
   id: '/clusters',
   path: '/clusters',
@@ -131,6 +137,7 @@ export interface FileRoutesByFullPath {
   '/bridge': typeof AppBridgeRoute
   '/chat': typeof AppChatRouteWithChildren
   '/clusters': typeof AppClustersRouteWithChildren
+  '/help': typeof AppHelpRoute
   '/home': typeof AppHomeRoute
   '/map': typeof AppMapRoute
   '/project-map': typeof AppProjectMapRoute
@@ -151,6 +158,7 @@ export interface FileRoutesByTo {
   '/bridge': typeof AppBridgeRoute
   '/chat': typeof AppChatRouteWithChildren
   '/clusters': typeof AppClustersRouteWithChildren
+  '/help': typeof AppHelpRoute
   '/home': typeof AppHomeRoute
   '/map': typeof AppMapRoute
   '/project-map': typeof AppProjectMapRoute
@@ -173,6 +181,7 @@ export interface FileRoutesById {
   '/_app/bridge': typeof AppBridgeRoute
   '/_app/chat': typeof AppChatRouteWithChildren
   '/_app/clusters': typeof AppClustersRouteWithChildren
+  '/_app/help': typeof AppHelpRoute
   '/_app/home': typeof AppHomeRoute
   '/_app/map': typeof AppMapRoute
   '/_app/project-map': typeof AppProjectMapRoute
@@ -195,6 +204,7 @@ export interface FileRouteTypes {
     | '/bridge'
     | '/chat'
     | '/clusters'
+    | '/help'
     | '/home'
     | '/map'
     | '/project-map'
@@ -215,6 +225,7 @@ export interface FileRouteTypes {
     | '/bridge'
     | '/chat'
     | '/clusters'
+    | '/help'
     | '/home'
     | '/map'
     | '/project-map'
@@ -236,6 +247,7 @@ export interface FileRouteTypes {
     | '/_app/bridge'
     | '/_app/chat'
     | '/_app/clusters'
+    | '/_app/help'
     | '/_app/home'
     | '/_app/map'
     | '/_app/project-map'
@@ -342,6 +354,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AppHomeRouteImport
       parentRoute: typeof AppRoute
     }
+    '/_app/help': {
+      id: '/_app/help'
+      path: '/help'
+      fullPath: '/help'
+      preLoaderRoute: typeof AppHelpRouteImport
+      parentRoute: typeof AppRoute
+    }
     '/_app/clusters': {
       id: '/_app/clusters'
       path: '/clusters'
@@ -434,6 +453,7 @@ interface AppRouteChildren {
   AppBridgeRoute: typeof AppBridgeRoute
   AppChatRoute: typeof AppChatRouteWithChildren
   AppClustersRoute: typeof AppClustersRouteWithChildren
+  AppHelpRoute: typeof AppHelpRoute
   AppHomeRoute: typeof AppHomeRoute
   AppMapRoute: typeof AppMapRoute
   AppProjectMapRoute: typeof AppProjectMapRoute
@@ -450,6 +470,7 @@ const AppRouteChildren: AppRouteChildren = {
   AppBridgeRoute: AppBridgeRoute,
   AppChatRoute: AppChatRouteWithChildren,
   AppClustersRoute: AppClustersRouteWithChildren,
+  AppHelpRoute: AppHelpRoute,
   AppHomeRoute: AppHomeRoute,
   AppMapRoute: AppMapRoute,
   AppProjectMapRoute: AppProjectMapRoute,

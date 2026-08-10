@@ -9,6 +9,7 @@ import {
   FileText,
   Folder,
   HeartPulse,
+  HelpCircle,
   Layers,
   Lock,
   MessageSquare,
@@ -57,6 +58,7 @@ import {
   lockVault,
   getModelRuntimeStatus,
   getOCRRuntimeStatus,
+  getSecurityScanStatus,
   getTemporalFactStatus,
   pruneQueryCache,
   resetVaultPassphrase,
@@ -71,6 +73,7 @@ import {
   listProjects,
   listTemporalFacts,
   scanLocalFolderIntegration,
+  runSecurityScan,
   refreshIntegrationImport,
   retractTemporalFact,
   revokeCliClient,
@@ -80,6 +83,7 @@ import {
   startEmbeddingDownload,
   unlockVaultWithPassphrase,
   updateIntegrationImport,
+  updateSecurityScanSchedule,
   updateVault,
   useBackendHealth,
   type ChatEvidenceRetentionPolicy,
@@ -100,6 +104,7 @@ import {
   type ProjectRecord,
   type ReconciliationItemPage,
   type ReconciliationRunRecord,
+  type SecurityScanStatus,
   type TemporalFactDiagnostics,
   type TemporalFactRecord,
   type UnlockStatusRead,
@@ -248,6 +253,8 @@ function SettingsView() {
   const [retentionPolicy, setRetentionPolicy] = useState<ChatEvidenceRetentionPolicy | null>(null);
   const [retentionResult, setRetentionResult] = useState<ChatEvidenceRetentionResult | null>(null);
   const [unlockStatus, setUnlockStatus] = useState<UnlockStatusRead | null>(null);
+  const [securityScan, setSecurityScan] = useState<SecurityScanStatus | null>(null);
+  const [securityScanIntervalDraft, setSecurityScanIntervalDraft] = useState("30");
   const [vaultPassphrase, setVaultPassphrase] = useState("");
   const vaultPassphraseRef = useRef<HTMLInputElement>(null);
   const [unlockError, setUnlockError] = useState<string | null>(null);
@@ -370,6 +377,15 @@ function SettingsView() {
       const currentUnlock = await getUnlockStatus();
       setHealthLoadError(null);
       setUnlockStatus(currentUnlock);
+      if (activeSection === "library") {
+        try {
+          const scanStatus = await getSecurityScanStatus();
+          setSecurityScan(scanStatus);
+          setSecurityScanIntervalDraft(String(scanStatus.interval_days));
+        } catch {
+          setSecurityScan(null);
+        }
+      }
       const vaultRows = await listVaults();
       const firstVault = vaultRows[0] ?? null;
       setBackendVault(firstVault ?? null);
@@ -811,6 +827,53 @@ function SettingsView() {
       setStatusMessage(`Diagnostic bundle saved to ${displayPath(bundle.bundle_path)}`);
     } catch (error) {
       setStatusMessage(error instanceof Error ? error.message : "Could not create diagnostic bundle.");
+    }
+  }
+
+  async function startSecurityScan(scanType: "antivirus" | "full") {
+    setActionBusy("security-scan", true);
+    setStatusMessage(
+      scanType === "full"
+        ? "Full security check started. You can keep using Vault."
+        : "Antivirus scan started. You can keep using Vault.",
+    );
+    try {
+      const summary = await runSecurityScan(scanType);
+      const next = await getSecurityScanStatus();
+      setSecurityScan(next);
+      setSecurityScanIntervalDraft(String(next.interval_days));
+      setStatusMessage(
+        summary.status === "passed"
+          ? `${scanType === "full" ? "Full security check" : "Antivirus scan"} passed.`
+          : `${scanType === "full" ? "Full security check" : "Antivirus scan"} finished with items to review.`,
+      );
+    } catch (error) {
+      setStatusMessage(error instanceof Error ? error.message : "The security scan could not finish.");
+      setSecurityScan(await getSecurityScanStatus().catch(() => null));
+    } finally {
+      setActionBusy("security-scan", false);
+    }
+  }
+
+  async function saveSecurityScanSchedule(nextEnabled = securityScan?.enabled ?? true) {
+    const intervalDays = Number.parseInt(securityScanIntervalDraft, 10);
+    if (!Number.isFinite(intervalDays) || intervalDays < 1 || intervalDays > 365) {
+      setStatusMessage("Choose a full-scan interval between 1 and 365 days.");
+      return;
+    }
+    setActionBusy("security-schedule", true);
+    try {
+      const next = await updateSecurityScanSchedule({
+        enabled: nextEnabled,
+        interval_days: intervalDays,
+      });
+      setSecurityScan(next);
+      setSecurityScanIntervalDraft(String(next.interval_days));
+      setStatusMessage(next.enabled ? `Full security checks will run every ${next.interval_days} days.` : "Automatic full security checks are off.");
+    } catch (error) {
+      setStatusMessage(error instanceof Error ? error.message : "Could not update the security-check schedule.");
+    } finally {
+      setActionBusy("security-schedule", false);
     }
   }
 
@@ -1457,6 +1520,18 @@ function SettingsView() {
                   onClick={() => window.dispatchEvent(new Event("vault:start-tour"))}
                 >
                   Start tour
+                </Button>
+              </SettingsCard>
+              <SettingsCard
+                icon={<HelpCircle className="h-4 w-4" />}
+                title="Help & FAQ"
+                description="Browse practical answers, visual walkthroughs, command paths, and recovery plans for Vault."
+              >
+                <Button variant="outline" className="mt-5 gap-2" asChild>
+                  <Link to="/help">
+                    <HelpCircle className="h-4 w-4" />
+                    Open Help & FAQ
+                  </Link>
                 </Button>
               </SettingsCard>
             </>
@@ -2359,6 +2434,130 @@ function SettingsView() {
             </div>
           </SettingsCard>
           </>)}
+
+          {showSection("library") && (
+          <SettingsCard
+            icon={<ShieldCheck className="h-4 w-4" />}
+            title="Security scans"
+            description="Scan vault files with Microsoft Defender, or run a full check of files, database integrity, protected storage, and connection access."
+            status={
+              securityScan?.active_job
+                ? "Running"
+                : securityScan?.last_status === "passed"
+                  ? "Passed"
+                  : securityScan?.last_status === "attention"
+                    ? "Review needed"
+                    : securityScan?.last_status === "failed"
+                      ? "Failed"
+                      : "Not run yet"
+            }
+            statusTone={
+              securityScan?.active_job
+                ? "neutral"
+                : securityScan?.last_status === "passed"
+                  ? "ready"
+                  : securityScan?.last_status === "attention" || securityScan?.last_status === "failed"
+                    ? "issue"
+                    : "neutral"
+            }
+          >
+            <div className="mt-5 flex flex-wrap gap-2">
+              <Button
+                variant="outline"
+                onClick={() => void startSecurityScan("antivirus")}
+                disabled={!securityScan || isActionBusy("security-scan") || Boolean(securityScan.active_job)}
+              >
+                {securityScan?.active_job ? "Scan running..." : "Run antivirus scan"}
+              </Button>
+              <Button
+                onClick={() => void startSecurityScan("full")}
+                disabled={!securityScan || isActionBusy("security-scan") || Boolean(securityScan.active_job)}
+              >
+                Run full security check
+              </Button>
+            </div>
+
+            <div className="mt-5 rounded-md border border-border bg-background p-4">
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <label className="flex cursor-pointer items-center gap-2 text-sm font-medium">
+                  <input
+                    type="checkbox"
+                    className="h-4 w-4 accent-primary"
+                    checked={securityScan?.enabled ?? false}
+                    disabled={!securityScan || isActionBusy("security-schedule")}
+                    onChange={(event) => void saveSecurityScanSchedule(event.target.checked)}
+                  />
+                  Automatic full security checks
+                </label>
+                <div className="flex items-center gap-2 text-sm">
+                  <span className="text-muted-foreground">Every</span>
+                  <Input
+                    aria-label="Full security check interval in days"
+                    className="h-8 w-20"
+                    inputMode="numeric"
+                    min={1}
+                    max={365}
+                    type="number"
+                    value={securityScanIntervalDraft}
+                    onChange={(event) => setSecurityScanIntervalDraft(event.target.value)}
+                    disabled={!securityScan?.enabled || isActionBusy("security-schedule")}
+                  />
+                  <span className="text-muted-foreground">days</span>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={() => void saveSecurityScanSchedule()}
+                    disabled={!securityScan?.enabled || isActionBusy("security-schedule")}
+                  >
+                    Save
+                  </Button>
+                </div>
+              </div>
+              <p className="mt-2 text-xs leading-5 text-muted-foreground">
+                The default is every 30 days. Scheduled scans run as background work and continue beyond the normal request timeout.
+              </p>
+            </div>
+
+            <div className="mt-4 grid gap-2 text-xs text-muted-foreground sm:grid-cols-2">
+              <p>
+                <span className="font-medium text-foreground">Last completed: </span>
+                {securityScan?.last_completed_at
+                  ? new Date(securityScan.last_completed_at).toLocaleString()
+                  : "Never"}
+              </p>
+              <p>
+                <span className="font-medium text-foreground">Next full check: </span>
+                {!securityScan
+                  ? "Loading schedule..."
+                  : securityScan.enabled && securityScan.next_run_at
+                    ? new Date(securityScan.next_run_at).toLocaleString()
+                    : "Automatic checks are off"}
+              </p>
+            </div>
+
+            {securityScan?.last_summary.checks?.length ? (
+              <details className="mt-4 rounded-md border border-border bg-background">
+                <summary className="cursor-pointer px-3 py-3 text-sm font-medium">Last check details</summary>
+                <div className="divide-y divide-border border-t border-border">
+                  {securityScan.last_summary.checks.map((check) => (
+                    <div key={check.id} className="px-3 py-3 text-sm">
+                      <div className="flex items-center justify-between gap-3">
+                        <span className="font-medium">{check.label}</span>
+                        <span className={cn(
+                          "text-xs capitalize",
+                          check.status === "passed" ? "text-[var(--status-ready)]" : "text-[var(--status-warn-ink)]",
+                        )}>
+                          {check.status}
+                        </span>
+                      </div>
+                      <p className="mt-1 text-xs leading-5 text-muted-foreground">{check.detail}</p>
+                    </div>
+                  ))}
+                </div>
+              </details>
+            ) : null}
+          </SettingsCard>
+          )}
 
           {showSection("library") && (
           <SettingsCard

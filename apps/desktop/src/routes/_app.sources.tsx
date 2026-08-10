@@ -80,10 +80,11 @@ import {
 } from "@/components/ui/select";
 
 export const Route = createFileRoute("/_app/sources")({
-  validateSearch: (search: Record<string, unknown>): { filter?: "unsorted"; source?: string; project?: string; folder?: string; subfolder?: string } => ({
-    filter: search.filter === "unsorted" ? "unsorted" : undefined,
+  validateSearch: (search: Record<string, unknown>): { filter?: "unsorted" | "unclustered"; source?: string; project?: string; cluster?: string; folder?: string; subfolder?: string } => ({
+    filter: search.filter === "unsorted" || search.filter === "unclustered" ? search.filter : undefined,
     source: typeof search.source === "string" ? search.source : undefined,
     project: typeof search.project === "string" ? search.project : undefined,
+    cluster: typeof search.cluster === "string" ? search.cluster : undefined,
     folder: typeof search.folder === "string" ? search.folder : undefined,
     subfolder: typeof search.subfolder === "string" ? search.subfolder : undefined,
   }),
@@ -106,8 +107,11 @@ const typeIcon = {
 function SourcesView() {
   const navigate = useNavigate();
   const sourceImport = useSourceImport();
-  const { filter, source: requestedSourceId, project: projectId, folder: folderPath, subfolder } = Route.useSearch();
+  const { filter, source: requestedSourceId, project: projectId, cluster: requestedClusterId, folder: folderPath, subfolder } = Route.useSearch();
   const inboxOnly = filter === "unsorted";
+  const allUnclustered = filter === "unclustered";
+  const unclusteredOnly = inboxOnly || allUnclustered;
+  const clusterId = unclusteredOnly ? undefined : requestedClusterId;
   const pageSize = 25;
   const [q, setQ] = useState("");
   const [typeFilter, setTypeFilter] = useState("all");
@@ -161,7 +165,8 @@ function SourcesView() {
         listSourcesPage(activeVault.id, {
           limit: pageSize,
           cursor: pageCursors[pageIndex] ?? null,
-          unclustered: inboxOnly,
+          clusterId,
+          unclustered: unclusteredOnly,
           states: inboxOnly
             ? ["waiting", "processing", "failed"]
             : stateFilter === "all"
@@ -173,11 +178,11 @@ function SourcesView() {
           importRootPath: folderPath,
           importRelativePrefix: subfolder,
           importDirectOnly: Boolean(folderPath),
-          excludeGroupedProjects: !projectId && !folderPath && !inboxOnly,
+          excludeGroupedProjects: !clusterId && !projectId && !folderPath && !unclusteredOnly,
         }),
         listClusters(activeVault.id),
-        countSources(activeVault.id, undefined, {
-          unclustered: inboxOnly,
+        countSources(activeVault.id, clusterId, {
+          unclustered: unclusteredOnly,
           states: inboxOnly
             ? ["waiting", "processing", "failed"]
             : stateFilter === "all"
@@ -189,7 +194,7 @@ function SourcesView() {
           importRootPath: folderPath,
           importRelativePrefix: subfolder,
           importDirectOnly: Boolean(folderPath),
-          excludeGroupedProjects: !projectId && !folderPath && !inboxOnly,
+          excludeGroupedProjects: !clusterId && !projectId && !folderPath && !unclusteredOnly,
         }),
         requestedSourceId ? getSource(requestedSourceId).catch(() => null) : Promise.resolve(null),
         listProjectsPage(activeVault.id, { limit: 200 }),
@@ -247,12 +252,12 @@ function SourcesView() {
 
   useEffect(() => {
     void refreshBackendSources();
-  }, [deferredQuery, folderPath, inboxOnly, pageIndex, projectId, requestedSourceId, pageCursors, stateFilter, subfolder, typeFilter]);
+  }, [clusterId, deferredQuery, folderPath, inboxOnly, pageIndex, projectId, requestedSourceId, pageCursors, stateFilter, subfolder, typeFilter, unclusteredOnly]);
 
   useEffect(() => {
     setPageIndex(0);
     setPageCursors([null]);
-  }, [folderPath, inboxOnly, projectId, subfolder]);
+  }, [clusterId, folderPath, inboxOnly, projectId, subfolder, unclusteredOnly]);
 
   useEffect(() => {
     setPageIndex(0);
@@ -298,13 +303,14 @@ function SourcesView() {
 
   const filtered = useMemo(() => sources, [sources]);
   const activeProject = projects.find((project) => project.id === projectId) ?? null;
+  const activeCluster = clusters.find((cluster) => cluster.id === clusterId) ?? null;
   const activeSourceFolder = sourceFolders.find((folder) => folder.root_path === folderPath) ?? null;
   const activeNestedFolder = sourceFolderTree.find((folder) => folder.path === subfolder) ?? null;
   const visibleNestedFolders = folderPath
     ? sourceFolderTree.filter((folder) => folder.parent_path === (subfolder ?? ""))
     : [];
   const visibleProjectFolders = useMemo(() => {
-    if (projectId || folderPath || inboxOnly || !["all", "code"].includes(typeFilter) || !["all", "indexed"].includes(stateFilter)) {
+    if (clusterId || projectId || folderPath || unclusteredOnly || !["all", "code"].includes(typeFilter) || !["all", "indexed"].includes(stateFilter)) {
       return [];
     }
     const query = deferredQuery.trim().toLocaleLowerCase();
@@ -315,9 +321,9 @@ function SourcesView() {
           project.name.toLocaleLowerCase().includes(query) ||
           project.brief.toLocaleLowerCase().includes(query)),
     );
-  }, [deferredQuery, folderPath, inboxOnly, projectId, projects, stateFilter, typeFilter]);
+  }, [clusterId, deferredQuery, folderPath, projectId, projects, stateFilter, typeFilter, unclusteredOnly]);
   const visibleSourceFolders =
-    projectId || folderPath || inboxOnly || typeFilter !== "all" || !["all", "indexed"].includes(stateFilter)
+    clusterId || projectId || folderPath || unclusteredOnly || typeFilter !== "all" || !["all", "indexed"].includes(stateFilter)
       ? []
       : sourceFolders.filter((folder) => {
           const query = deferredQuery.trim().toLocaleLowerCase();
@@ -378,7 +384,7 @@ function SourcesView() {
         setIngestMessage("Create or open a library before adding text sources.");
         return;
       }
-      await createSourceFromText({ vault_id: vault.id, title, text });
+      await createSourceFromText({ vault_id: vault.id, cluster_id: clusterId, title, text });
       await refreshBackendSources();
       setTextBody("");
       setTextTitle("Pasted note");
@@ -403,7 +409,7 @@ function SourcesView() {
         return;
       }
       setIngestMessage("Fetching link text...");
-      const source = await createSourceFromUrl({ vault_id: vault.id, url });
+      const source = await createSourceFromUrl({ vault_id: vault.id, cluster_id: clusterId, url });
       await refreshBackendSources();
       setLinkUrl("");
       setLinkDialogOpen(false);
@@ -446,6 +452,7 @@ function SourcesView() {
     try {
       await sourceImport.start({
         vaultId: vault.id,
+        clusterId,
         paths,
         truncatedAt,
         folderRoots,
@@ -588,11 +595,19 @@ function SourcesView() {
         <PageHeader className="mb-8">
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div>
-              {activeProject || activeSourceFolder ? (
+              {activeCluster || activeProject || activeSourceFolder ? (
                 <div className="mb-2 flex min-w-0 flex-wrap items-center gap-1 text-xs text-muted-foreground">
                   <Link to="/sources" search={{}} className="hover:text-foreground">Sources</Link>
                   <span>/</span>
-                  {activeSourceFolder && subfolder ? (
+                  {activeCluster ? (
+                    <Link
+                      to="/clusters/$clusterId"
+                      params={{ clusterId: activeCluster.id }}
+                      className="text-foreground hover:text-primary"
+                    >
+                      {activeCluster.name}
+                    </Link>
+                  ) : activeSourceFolder && subfolder ? (
                     <Link
                       to="/sources"
                       search={{ folder: activeSourceFolder.root_path }}
@@ -627,7 +642,7 @@ function SourcesView() {
                     : null}
                 </div>
               ) : null}
-              <h1 className="page-title">{inboxOnly ? "Inbox" : activeProject?.name ?? activeNestedFolder?.name ?? activeSourceFolder?.name ?? "Sources"}</h1>
+              <h1 className="page-title">{inboxOnly ? "Inbox" : allUnclustered ? "Unclustered sources" : activeCluster?.name ?? activeProject?.name ?? activeNestedFolder?.name ?? activeSourceFolder?.name ?? "Sources"}</h1>
             </div>
             {inboxOnly && (
               <Link
@@ -642,6 +657,10 @@ function SourcesView() {
           <p className="mt-3 text-sm text-muted-foreground">
             {inboxOnly
               ? "Unclustered sources that are still waiting, processing, or need review."
+              : allUnclustered
+                ? "Every source that is not currently assigned to a cluster."
+              : activeCluster
+                ? `${sourceTotal.toLocaleString()} source${sourceTotal === 1 ? "" : "s"} in this cluster.`
               : activeProject || activeSourceFolder
                 ? `${(activeProject?.source_count ?? activeNestedFolder?.source_count ?? activeSourceFolder?.source_count ?? 0).toLocaleString()} files, grouped together.`
                 : "Files, links, notes, images, transcripts, and large project folders stored locally."}
@@ -725,11 +744,15 @@ function SourcesView() {
           <SkeletonRegion className="py-8" lines={9} />
         ) : filtered.length === 0 && visibleProjectFolders.length === 0 && visibleSourceFolders.length === 0 && visibleNestedFolders.length === 0 ? (
           <EmptyState
-            title={inboxOnly ? "Inbox clear" : q ? "No sources match" : "Add your first source"}
+            title={inboxOnly ? "Inbox clear" : q ? "No sources match" : allUnclustered ? "Everything is clustered" : activeCluster ? "No sources in this cluster" : "Add your first source"}
             description={inboxOnly
               ? "Everything has been organized or indexed."
               : q
                 ? "Try a shorter title, type, or tag."
+                : allUnclustered
+                  ? "New unassigned sources will appear here."
+                : activeCluster
+                  ? `Add a file, note, or link to ${activeCluster.name}.`
                 : vault
                   ? "Drop files here, paste a note, or add a link. Vault keeps the original material local."
                   : "Choose a library in Settings before adding sources."}
@@ -950,7 +973,7 @@ function SourcesView() {
             </button>
           </div>
           <span className="rounded-md border border-border bg-card px-4 py-2">
-            {inboxOnly ? "Inbox view" : `${pageSize} / page`}
+            {inboxOnly ? "Inbox view" : allUnclustered ? "Unclustered view" : activeCluster ? "Cluster view" : `${pageSize} / page`}
           </span>
         </div>
       </main>
@@ -967,7 +990,13 @@ function SourcesView() {
             if (requestedSourceId) {
               navigate({
                 to: "/sources",
-                search: inboxOnly ? { filter: "unsorted" } : {},
+                search: inboxOnly
+                  ? { filter: "unsorted" }
+                  : allUnclustered
+                    ? { filter: "unclustered" }
+                  : clusterId
+                    ? { cluster: clusterId }
+                    : {},
               });
             }
           }}
@@ -1292,6 +1321,10 @@ function InspectorRow({ label, value, icon }: { label: string; value: string; ic
 
 function StateChip({ source }: { source: Source }) {
   const { state, ingestionStage } = source;
+  const label =
+    ingestionStage === "ready" && !source.clusterId
+      ? "Ready · Unclustered"
+      : sourceIngestionStageLabel[ingestionStage] ?? sourceStateLabel[state];
   const color =
     ingestionStage === "ready"
       ? "var(--status-ready)"
@@ -1303,7 +1336,7 @@ function StateChip({ source }: { source: Source }) {
   return (
     <span className="inline-flex items-center gap-1.5 text-xs text-muted-foreground">
       <span className="h-1.5 w-1.5 rounded-full" style={{ background: color }} />
-      {sourceIngestionStageLabel[ingestionStage] ?? sourceStateLabel[state]}
+      {label}
     </span>
   );
 }
