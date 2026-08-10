@@ -3,6 +3,7 @@ import tempfile
 import threading
 import time
 import unittest
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from unittest.mock import patch
 
@@ -46,6 +47,89 @@ class BackgroundJobSchedulerTests(unittest.TestCase):
 
         self.assertIsNotNone(job)
         self.assertEqual(job["id"], "high-job")
+
+    def test_ingestion_priority_runs_before_other_high_priority_work(self) -> None:
+        from backend.app.core.background_jobs import _claim_next_job
+        from backend.app.core.database import connect
+
+        with connect() as conn:
+            self._insert_job(conn, "project-job", job_type="project_discover", priority="high")
+            self._insert_job(
+                conn,
+                "import-job",
+                job_type="source_import_batch",
+                priority="ingestion",
+            )
+
+        job = _claim_next_job()
+
+        self.assertIsNotNone(job)
+        self.assertEqual(job["id"], "import-job")
+
+    def test_critical_work_remains_above_ingestion(self) -> None:
+        from backend.app.core.background_jobs import _claim_next_job
+        from backend.app.core.database import connect
+
+        with connect() as conn:
+            self._insert_job(
+                conn,
+                "import-job",
+                job_type="source_import_batch",
+                priority="ingestion",
+            )
+            self._insert_job(
+                conn,
+                "delete-job",
+                job_type="delete_source_cleanup",
+                priority="critical",
+            )
+
+        job = _claim_next_job()
+
+        self.assertIsNotNone(job)
+        self.assertEqual(job["id"], "delete-job")
+
+    def test_dedicated_ingestion_lane_can_claim_while_normal_work_is_running(self) -> None:
+        from backend.app.core.background_jobs import _claim_next_job
+        from backend.app.core.database import connect
+
+        with connect() as conn:
+            self._insert_job(conn, "normal-job", job_type="diagnostic_bundle", priority="normal")
+            self._insert_job(
+                conn,
+                "import-job",
+                job_type="source_import_batch",
+                priority="ingestion",
+            )
+
+        normal = _claim_next_job(excluded_job_types={"source_import_batch"})
+        ingestion = _claim_next_job(only_job_types={"source_import_batch"})
+
+        self.assertEqual(normal["id"], "normal-job")
+        self.assertEqual(ingestion["id"], "import-job")
+
+    def test_running_critical_work_blocks_the_dedicated_ingestion_lane(self) -> None:
+        from backend.app.core.background_jobs import _claim_next_job
+        from backend.app.core.database import connect
+
+        with connect() as conn:
+            self._insert_job(
+                conn,
+                "delete-job",
+                job_type="delete_source_cleanup",
+                status="running",
+                priority="critical",
+            )
+            self._insert_job(
+                conn,
+                "import-job",
+                job_type="source_import_batch",
+                priority="ingestion",
+            )
+
+        ingestion = _claim_next_job(only_job_types={"source_import_batch"})
+
+        self.assertIsNone(ingestion)
 
     def test_dependency_failure_policy_cancel_cancels_dependent_job(self) -> None:
         from backend.app.core.background_jobs import _claim_next_job
@@ -325,6 +409,181 @@ class BackgroundJobSchedulerTests(unittest.TestCase):
         self.assertIsNotNone(job)
         self.assertEqual(job["attempts"], 1)
 
+    def test_claim_assigns_lease_and_hard_deadline(self) -> None:
+        from backend.app.core.background_jobs import _claim_next_job
+        from backend.app.core.database import connect
+
+        with connect() as conn:
+            self._insert_job(conn, "job-a", timeout_seconds=30)
+
+        before = datetime.now(UTC)
+        job = _claim_next_job()
+
+        self.assertIsNotNone(job)
+        self.assertTrue(str(job["claim_token"]).startswith("job-claim-"))
+        self.assertIsNotNone(job["heartbeat_at"])
+        deadline = datetime.fromisoformat(job["deadline_at"])
+        self.assertGreaterEqual(deadline, before + timedelta(seconds=29))
+        self.assertLessEqual(deadline, datetime.now(UTC) + timedelta(seconds=31))
+
+    def test_expired_deferred_job_is_requeued_and_old_worker_cannot_finish_it(self) -> None:
+        from backend.app.core import background_jobs
+        from backend.app.core.database import connect
+
+        with connect() as conn:
+            self._insert_job(
+                conn,
+                "job-a",
+                timeout_seconds=30,
+                timeout_action="defer",
+                max_attempts=3,
+            )
+
+        old_claim = background_jobs._claim_next_job()
+        self.assertIsNotNone(old_claim)
+        future = (datetime.now(UTC) + timedelta(seconds=31)).isoformat()
+
+        result = background_jobs.reclaim_expired_jobs(now=future)
+        background_jobs._run_claimed_job(old_claim)
+
+        with connect() as conn:
+            row = conn.execute(
+                "SELECT status, claim_token, started_at, completed_at FROM app_jobs WHERE id = 'job-a'"
+            ).fetchone()
+        self.assertEqual(result["queued"], 1)
+        self.assertEqual(row["status"], "queued")
+        self.assertEqual(row["claim_token"], "")
+        self.assertIsNone(row["started_at"])
+        self.assertIsNone(row["completed_at"])
+
+    def test_expired_job_obeys_terminal_timeout_policies(self) -> None:
+        from backend.app.core.background_jobs import reclaim_expired_jobs
+        from backend.app.core.database import connect
+
+        expired = (datetime.now(UTC) - timedelta(seconds=1)).isoformat()
+        with connect() as conn:
+            self._insert_job(
+                conn,
+                "failed-job",
+                status="running",
+                attempts=1,
+                timeout_action="fail",
+                claim_token="failed-claim",
+                heartbeat_at=expired,
+                deadline_at=expired,
+            )
+            self._insert_job(
+                conn,
+                "review-job",
+                status="running",
+                attempts=1,
+                timeout_action="escalate",
+                claim_token="review-claim",
+                heartbeat_at=expired,
+                deadline_at=expired,
+            )
+            self._insert_job(
+                conn,
+                "cancelled-job",
+                status="running",
+                attempts=1,
+                timeout_action="defer",
+                claim_token="cancelled-claim",
+                heartbeat_at=expired,
+                deadline_at=expired,
+            )
+            conn.execute(
+                "UPDATE app_jobs SET cancellation_requested = 1 WHERE id = 'cancelled-job'"
+            )
+
+        result = reclaim_expired_jobs()
+
+        with connect() as conn:
+            rows = {
+                row["id"]: dict(row)
+                for row in conn.execute(
+                    "SELECT id, status, completed_at, claim_token FROM app_jobs"
+                ).fetchall()
+            }
+        self.assertEqual(result, {"queued": 0, "failed": 1, "manual_review": 1, "cancelled": 1})
+        self.assertEqual(rows["failed-job"]["status"], "failed")
+        self.assertEqual(rows["review-job"]["status"], "manual_review")
+        self.assertEqual(rows["cancelled-job"]["status"], "cancelled")
+        for row in rows.values():
+            self.assertEqual(row["claim_token"], "")
+            self.assertIsNotNone(row["completed_at"])
+
+    def test_scoped_delete_cancels_pending_and_signals_running_worker(self) -> None:
+        from backend.app.core import background_jobs
+        from backend.app.core.database import connect
+
+        with connect() as conn:
+            self._insert_job(
+                conn,
+                "queued-job",
+                write_scope="source",
+                scope_id="source-1",
+            )
+            self._insert_job(
+                conn,
+                "running-job",
+                status="running",
+                attempts=1,
+                write_scope="source",
+                scope_id="source-1",
+                claim_token="active-claim",
+            )
+            result = background_jobs.cancel_jobs_for_scope(
+                conn,
+                write_scope="source",
+                scope_id="source-1",
+                detail="Source was deleted.",
+            )
+
+        background_jobs._mark_job_failed_or_retry(
+            {"id": "running-job", "job_type": "reindex_source", "claim_token": "active-claim"},
+            "late worker failure",
+        )
+
+        with connect() as conn:
+            rows = {
+                row["id"]: dict(row)
+                for row in conn.execute(
+                    "SELECT id, status, cancellation_requested, completed_at FROM app_jobs"
+                ).fetchall()
+            }
+        self.assertEqual(result, {"cancelled": 1, "cancellation_requested": 1})
+        self.assertEqual(rows["queued-job"]["status"], "cancelled")
+        self.assertIsNotNone(rows["queued-job"]["completed_at"])
+        self.assertEqual(rows["running-job"]["status"], "cancelled")
+        self.assertEqual(rows["running-job"]["cancellation_requested"], 1)
+
+    def test_paused_job_retains_dedupe_ownership(self) -> None:
+        from backend.app.core.background_jobs import enqueue_job
+        from backend.app.core.database import connect
+
+        with connect() as conn:
+            first = enqueue_job(
+                conn,
+                job_type="source_import_batch",
+                payload={"vault_id": "vault-1", "paths": ["first.txt"]},
+                dedupe_key="import:paused-owner",
+            )
+            conn.execute("UPDATE app_jobs SET status = 'paused' WHERE id = ?", (first["id"],))
+            duplicate = enqueue_job(
+                conn,
+                job_type="source_import_batch",
+                payload={"vault_id": "vault-1", "paths": ["second.txt"]},
+                dedupe_key="import:paused-owner",
+            )
+
+        self.assertEqual(duplicate["id"], first["id"])
+        with connect() as conn:
+            count = conn.execute(
+                "SELECT COUNT(*) AS count FROM app_jobs WHERE dedupe_key = 'import:paused-owner'"
+            ).fetchone()["count"]
+        self.assertEqual(count, 1)
+
     def test_turbovec_evaluation_is_queued_only_after_threshold_without_epoch_evidence(self) -> None:
         from backend.app.core import background_jobs
         from backend.app.core.database import connect, utc_now
@@ -412,6 +671,9 @@ class BackgroundJobSchedulerTests(unittest.TestCase):
             "status_detail": "",
             "started_at": None,
             "completed_at": None,
+            "claim_token": "",
+            "heartbeat_at": None,
+            "deadline_at": None,
             "created_at": now,
             "updated_at": now,
         }
@@ -425,7 +687,7 @@ class BackgroundJobSchedulerTests(unittest.TestCase):
                 user_initiated, cancellable, preemptable, timeout_seconds,
                 soft_timeout_seconds, timeout_action, depends_on_job_id, attempts,
                 max_attempts, last_error, status_detail, started_at, completed_at,
-                created_at, updated_at
+                claim_token, heartbeat_at, deadline_at, created_at, updated_at
             )
             VALUES (
                 :id, :job_type, :status, :payload, :dedupe_key, :priority,
@@ -435,7 +697,7 @@ class BackgroundJobSchedulerTests(unittest.TestCase):
                 :cancellable, :preemptable, :timeout_seconds, :soft_timeout_seconds,
                 :timeout_action, :depends_on_job_id, :attempts, :max_attempts,
                 :last_error, :status_detail, :started_at, :completed_at,
-                :created_at, :updated_at
+                :claim_token, :heartbeat_at, :deadline_at, :created_at, :updated_at
             )
             """,
             job,

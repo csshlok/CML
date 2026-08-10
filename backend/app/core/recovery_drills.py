@@ -8,7 +8,11 @@ def startup_recovery_drills(*, apply_recovery: bool = False, stale_timeout_secon
     summary = startup_repair_summary(apply_recovery=apply_recovery)
     staleness = startup_status_staleness(timeout_seconds=stale_timeout_seconds)
     generation_counts_before = _generation_counts()
-    generation_recovered = recover_interrupted_generations() if apply_recovery else 0
+    generation_recovered = (
+        recover_interrupted_generations(stale_after_seconds=stale_timeout_seconds)
+        if apply_recovery
+        else 0
+    )
     generation_counts_after = _generation_counts()
     return {
         "apply_recovery": apply_recovery,

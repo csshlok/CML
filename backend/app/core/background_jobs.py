@@ -2,6 +2,7 @@ import json
 import logging
 import threading
 import time
+from contextvars import ContextVar
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime, timedelta
@@ -99,6 +100,10 @@ PRIORITY_ORDER = {
 _WORKER_STARTED = False
 _WORKER_LOCK = threading.Lock()
 _WORKER_WAKE = threading.Event()
+_INGESTION_WORKER_WAKE = threading.Event()
+_ACTIVE_JOB_CLAIM_TOKEN: ContextVar[str | None] = ContextVar(
+    "active_job_claim_token", default=None
+)
 EMBEDDING_JOB_TYPES = {
     "project_delta_apply",
     "project_retrieval_stage",
@@ -123,6 +128,10 @@ class JobCancelled(RuntimeError):
 
 
 class JobPaused(RuntimeError):
+    pass
+
+
+class JobLeaseLost(RuntimeError):
     pass
 
 
@@ -278,7 +287,7 @@ JOB_REGISTRY: dict[str, JobPolicy] = {
         timeout_action="defer",
     ),
     "source_import_batch": JobPolicy(
-        priority="high",
+        priority="ingestion",
         idempotency_class="idempotent",
         restart_policy="requeue",
         dependency_failure_policy="cancel",
@@ -634,6 +643,23 @@ JOB_REGISTRY: dict[str, JobPolicy] = {
         soft_timeout_seconds=120,
         timeout_action="defer",
     ),
+    "security_scan": JobPolicy(
+        priority="normal",
+        idempotency_class="idempotent",
+        restart_policy="requeue",
+        dependency_failure_policy="cancel",
+        write_scope="diagnostics",
+        concurrency_group="security_scan",
+        resource_cost="medium",
+        can_run_during_synthesis=True,
+        user_visible=True,
+        user_initiated=True,
+        cancellable=True,
+        preemptable=False,
+        timeout_seconds=7200,
+        soft_timeout_seconds=1800,
+        timeout_action="defer",
+    ),
     "integration_refresh": JobPolicy(
         priority="normal",
         idempotency_class="idempotent",
@@ -673,6 +699,46 @@ UNKNOWN_JOB_POLICY = JobPolicy(
 )
 
 
+def cancel_jobs_for_scope(
+    conn,
+    *,
+    write_scope: str,
+    scope_id: str,
+    detail: str,
+) -> dict[str, int]:
+    """Cancel pending scoped work and signal already-running lease owners.
+
+    This is deliberately transaction-local so entity deletion and cancellation
+    become visible atomically. Running workers retain their lease until they
+    observe ``cancellation_requested``; their terminal writes remain claim-token
+    guarded.
+    """
+    now = utc_now()
+    pending = conn.execute(
+        """
+        UPDATE app_jobs
+        SET status = 'cancelled', cancellation_requested = 1,
+            claim_token = '', heartbeat_at = NULL, deadline_at = NULL,
+            status_detail = ?, completed_at = ?, updated_at = ?
+        WHERE write_scope = ? AND scope_id = ?
+          AND status IN (
+              'queued', 'blocked_by_dependency', 'blocked_setup_required',
+              'deferred', 'paused', 'retriable'
+          )
+        """,
+        (detail, now, now, write_scope, scope_id),
+    ).rowcount
+    running = conn.execute(
+        """
+        UPDATE app_jobs
+        SET cancellation_requested = 1, status_detail = ?, updated_at = ?
+        WHERE write_scope = ? AND scope_id = ? AND status = 'running'
+        """,
+        (detail, now, write_scope, scope_id),
+    ).rowcount
+    return {"cancelled": int(pending), "cancellation_requested": int(running)}
+
+
 def enqueue_job(
     conn,
     *,
@@ -690,7 +756,7 @@ def enqueue_job(
             """
             SELECT * FROM app_jobs
             WHERE dedupe_key = ? AND status IN (
-                'queued', 'running', 'blocked_by_dependency', 'blocked_setup_required', 'deferred'
+                'queued', 'running', 'paused', 'blocked_by_dependency', 'blocked_setup_required', 'deferred'
             )
             ORDER BY created_at DESC
             LIMIT 1
@@ -768,7 +834,8 @@ def recover_interrupted_jobs() -> dict[str, int]:
                 conn.execute(
                     """
                     UPDATE app_jobs
-                    SET status = 'cancelled', status_detail = ?, completed_at = ?, updated_at = ?
+                    SET status = 'cancelled', claim_token = '', heartbeat_at = NULL, deadline_at = NULL,
+                        status_detail = ?, completed_at = ?, updated_at = ?
                     WHERE id = ? AND status = 'running'
                     """,
                     ("Cancellation acknowledged during backend recovery.", now, now, job["id"]),
@@ -789,12 +856,12 @@ def recover_interrupted_jobs() -> dict[str, int]:
                 )
                 if activated:
                     conn.execute(
-                        "UPDATE app_jobs SET status = 'succeeded', status_detail = ?, completed_at = ?, updated_at = ? WHERE id = ?",
+                        "UPDATE app_jobs SET status = 'succeeded', claim_token = '', heartbeat_at = NULL, deadline_at = NULL, status_detail = ?, completed_at = ?, updated_at = ? WHERE id = ?",
                         ("Activation commit verified after backend restart.", now, now, job["id"]),
                     )
                     continue
                 conn.execute(
-                    "UPDATE app_jobs SET status = 'queued', status_detail = ?, started_at = NULL, updated_at = ? WHERE id = ?",
+                    "UPDATE app_jobs SET status = 'queued', claim_token = '', heartbeat_at = NULL, deadline_at = NULL, status_detail = ?, started_at = NULL, updated_at = ? WHERE id = ?",
                     ("Activation was not committed; queued for an idempotent retry.", now, job["id"]),
                 )
                 counts["queued"] += 1
@@ -802,7 +869,8 @@ def recover_interrupted_jobs() -> dict[str, int]:
                 conn.execute(
                     """
                     UPDATE app_jobs
-                    SET status = 'queued', status_detail = ?, started_at = NULL, updated_at = ?
+                    SET status = 'queued', claim_token = '', heartbeat_at = NULL, deadline_at = NULL,
+                        status_detail = ?, started_at = NULL, updated_at = ?
                     WHERE id = ?
                     """,
                     ("Requeued after backend restart.", now, job["id"]),
@@ -812,7 +880,8 @@ def recover_interrupted_jobs() -> dict[str, int]:
                 conn.execute(
                     """
                     UPDATE app_jobs
-                    SET status = 'manual_review', status_detail = ?, updated_at = ?
+                    SET status = 'manual_review', claim_token = '', heartbeat_at = NULL, deadline_at = NULL,
+                        status_detail = ?, updated_at = ?
                     WHERE id = ?
                     """,
                     ("Interrupted job requires reconciliation before retry.", now, job["id"]),
@@ -828,12 +897,19 @@ def start_background_worker() -> None:
             return
         recover_interrupted_jobs()
         thread = threading.Thread(target=_worker_loop, name="cml-background-jobs", daemon=True)
+        ingestion_thread = threading.Thread(
+            target=_ingestion_worker_loop,
+            name="cml-ingestion-jobs",
+            daemon=True,
+        )
         thread.start()
+        ingestion_thread.start()
         _WORKER_STARTED = True
 
 
 def wake_background_worker() -> None:
     _WORKER_WAKE.set()
+    _INGESTION_WORKER_WAKE.set()
 
 
 def enqueue_startup_reconciliation_jobs() -> None:
@@ -890,6 +966,53 @@ def enqueue_startup_reconciliation_jobs() -> None:
                 payload={"vault_id": vault_id, "batch_size": 100},
                 dedupe_key=f"cluster-membership-repair:{vault_id}",
                 scope_id=vault_id,
+                user_initiated=False,
+            )
+        from backend.app.core.project_graph_intelligence import GRAPH_METRICS_VERSION
+
+        graph_metrics_ready = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'project_graph_metrics'"
+        ).fetchone()
+        missing_project_graphs = []
+        if graph_metrics_ready is not None:
+            missing_project_graphs = conn.execute(
+                """
+                SELECT projects.id AS project_id,
+                       COALESCE(projects.active_structure_snapshot_id, projects.active_snapshot_id)
+                           AS snapshot_id
+                FROM projects
+                WHERE projects.deleted_at IS NULL
+                  AND COALESCE(projects.active_structure_snapshot_id, projects.active_snapshot_id) IS NOT NULL
+                  AND EXISTS (
+                        SELECT 1 FROM code_nodes
+                        WHERE code_nodes.project_id = projects.id
+                          AND code_nodes.snapshot_id = COALESCE(
+                                projects.active_structure_snapshot_id, projects.active_snapshot_id
+                          )
+                  )
+                  AND NOT EXISTS (
+                        SELECT 1 FROM project_graph_metrics
+                        WHERE project_graph_metrics.project_id = projects.id
+                          AND project_graph_metrics.snapshot_id = COALESCE(
+                                projects.active_structure_snapshot_id, projects.active_snapshot_id
+                          )
+                  )
+                ORDER BY projects.updated_at DESC
+                LIMIT 25
+                """
+            ).fetchall()
+        for row in missing_project_graphs:
+            project_id = str(row["project_id"])
+            snapshot_id = str(row["snapshot_id"])
+            enqueue_job(
+                conn,
+                job_type="project_graph_metrics",
+                payload={"project_id": project_id, "snapshot_id": snapshot_id},
+                dedupe_key=(
+                    f"project_graph_metrics:{project_id}:{snapshot_id}:"
+                    f"{GRAPH_METRICS_VERSION}"
+                ),
+                scope_id=project_id,
                 user_initiated=False,
             )
 
@@ -1037,18 +1160,25 @@ def migrate_legacy_project_index_jobs(*, limit: int = 100) -> int:
     return len(project_ids)
 
 
-def run_due_jobs_once(limit: int = 5) -> int:
+def run_due_jobs_once(limit: int = 5, *, include_ingestion: bool = True) -> int:
     _refresh_setup_prerequisites()
     _refresh_blocked_dependencies()
     _enqueue_due_integration_refresh_jobs()
     _enqueue_due_project_delta_jobs()
     _enqueue_due_turbovec_evaluations()
+    from backend.app.core.security_scans import enqueue_due_security_scan
+
+    enqueue_due_security_scan()
     processed = 0
     for _ in range(limit):
-        job = _claim_next_job()
+        job = _claim_next_job(
+            excluded_job_types=None if include_ingestion else {"source_import_batch"}
+        )
         if job is None:
             _refresh_blocked_dependencies()
-            job = _claim_next_job()
+            job = _claim_next_job(
+                excluded_job_types=None if include_ingestion else {"source_import_batch"}
+            )
             if job is None:
                 break
         _run_claimed_job(job)
@@ -1267,25 +1397,33 @@ def _raise_if_job_cancelled(job_id: str | None) -> None:
         return
     with connect() as conn:
         row = conn.execute(
-            "SELECT status, cancellation_requested FROM app_jobs WHERE id = ?",
+            "SELECT status, cancellation_requested, claim_token, deadline_at FROM app_jobs WHERE id = ?",
             (job_id,),
         ).fetchone()
     if row is None or row["status"] == "cancelled" or int(row["cancellation_requested"] or 0) == 1:
         raise JobCancelled(job_id)
+    active_claim = _ACTIVE_JOB_CLAIM_TOKEN.get()
+    if active_claim and (
+        row["status"] != "running" or str(row["claim_token"] or "") != active_claim
+    ):
+        raise JobLeaseLost(job_id)
 
 
 def _acknowledge_job_cancelled(job_id: str) -> None:
     now = utc_now()
     with connect() as conn:
+        claim_token = _ACTIVE_JOB_CLAIM_TOKEN.get()
         conn.execute(
             """
             UPDATE app_jobs
             SET status = 'cancelled', cancellation_requested = 1,
                 status_detail = 'Cancellation acknowledged by worker.',
+                claim_token = '', heartbeat_at = NULL, deadline_at = NULL,
                 completed_at = ?, updated_at = ?
             WHERE id = ? AND status = 'running'
+              AND (? IS NULL OR claim_token = ?)
             """,
-            (now, now, job_id),
+            (now, now, job_id, claim_token, claim_token),
         )
 
 
@@ -1293,7 +1431,10 @@ def _worker_loop() -> None:
     global _LAST_WORKER_LOOP_ERROR
     while True:
         try:
-            run_due_jobs_once(limit=3)
+            from backend.app.core.maintenance import run_maintenance_if_due
+
+            run_maintenance_if_due()
+            run_due_jobs_once(limit=3, include_ingestion=False)
         except Exception as exc:
             signature = f"{type(exc).__name__}:{exc}"
             now = time.monotonic()
@@ -1308,29 +1449,87 @@ def _worker_loop() -> None:
         _WORKER_WAKE.clear()
 
 
-def _claim_next_job() -> dict | None:
+def _ingestion_worker_loop() -> None:
+    global _LAST_WORKER_LOOP_ERROR
+    while True:
+        try:
+            job = _claim_next_job(only_job_types={"source_import_batch"})
+            if job is not None:
+                _run_claimed_job(job)
+        except Exception as exc:
+            signature = f"ingestion:{type(exc).__name__}:{exc}"
+            now = time.monotonic()
+            last_signature, last_logged_at = _LAST_WORKER_LOOP_ERROR or ("", 0.0)
+            if signature != last_signature or now - last_logged_at >= 60:
+                logger.exception(
+                    "ingestion_worker_loop_failed error_signature=%s",
+                    signature[:300],
+                )
+                _LAST_WORKER_LOOP_ERROR = (signature, now)
+        _INGESTION_WORKER_WAKE.wait(timeout=JOB_POLL_SECONDS)
+        _INGESTION_WORKER_WAKE.clear()
+
+
+def _job_type_filter_sql(
+    *,
+    only_job_types: set[str] | None,
+    excluded_job_types: set[str] | None,
+) -> tuple[str, list[str]]:
+    if only_job_types:
+        values = sorted(only_job_types)
+        return f" AND job_type IN ({','.join('?' for _ in values)})", values
+    if excluded_job_types:
+        values = sorted(excluded_job_types)
+        return f" AND job_type NOT IN ({','.join('?' for _ in values)})", values
+    return "", []
+
+
+def _claim_next_job(
+    *,
+    only_job_types: set[str] | None = None,
+    excluded_job_types: set[str] | None = None,
+) -> dict | None:
+    reclaim_expired_jobs()
     embeddings_available = bool(embedding_status(probe_model=False).get("available"))
     local_model_available: bool | None = None
+    type_filter, type_params = _job_type_filter_sql(
+        only_job_types=only_job_types,
+        excluded_job_types=excluded_job_types,
+    )
     with connect() as conn:
         rows = conn.execute(
-            """
+            f"""
             SELECT * FROM app_jobs
             WHERE status = 'queued'
+            {type_filter}
             ORDER BY
                 CASE priority
                     WHEN 'critical' THEN 0
-                    WHEN 'high' THEN 1
-                    WHEN 'normal' THEN 2
-                    WHEN 'low' THEN 3
-                    WHEN 'on_demand' THEN 4
-                    ELSE 5
+                    WHEN 'ingestion' THEN 1
+                    WHEN 'high' THEN 2
+                    WHEN 'normal' THEN 3
+                    WHEN 'low' THEN 4
+                    WHEN 'on_demand' THEN 5
+                    ELSE 6
                 END,
                 created_at ASC
             LIMIT 25
-            """
+            """,
+            type_params,
         ).fetchall()
         for row in rows:
             job = dict_from_row(row)
+            if job["job_type"] == "source_import_batch":
+                critical = conn.execute(
+                    """
+                    SELECT 1 FROM app_jobs
+                    WHERE status = 'running' AND priority = 'critical' AND id != ?
+                    LIMIT 1
+                    """,
+                    (job["id"],),
+                ).fetchone()
+                if critical is not None:
+                    continue
             if job["job_type"] in LOCAL_MODEL_JOB_TYPES:
                 if local_model_available is None:
                     from backend.app.core.llm_runtime import runtime_status
@@ -1380,20 +1579,78 @@ def _claim_next_job() -> dict | None:
                 continue
             if _has_scope_conflict(conn, job):
                 continue
-            now = utc_now()
+            now_dt = datetime.now(UTC)
+            now = now_dt.isoformat()
+            claim_token = f"job-claim-{uuid4()}"
+            timeout_seconds = int(job.get("timeout_seconds") or 0)
+            deadline_at = (
+                (now_dt + timedelta(seconds=timeout_seconds)).isoformat()
+                if timeout_seconds > 0
+                else None
+            )
             claimed = conn.execute(
                 """
                 UPDATE app_jobs
                 SET status = 'running', attempts = attempts + 1, started_at = ?,
+                    claim_token = ?, heartbeat_at = ?, deadline_at = ?,
                     status_detail = '', updated_at = ?
                 WHERE id = ? AND status = 'queued'
                 RETURNING *
                 """,
-                (now, now, job["id"]),
+                (now, claim_token, now, deadline_at, now, job["id"]),
             ).fetchone()
             if claimed is not None:
                 return dict_from_row(claimed)
     return None
+
+
+def reclaim_expired_jobs(*, now: str | None = None) -> dict[str, int]:
+    """Reclaim hard-expired leases without allowing an old worker to finish them."""
+    current = now or utc_now()
+    counts = {"queued": 0, "failed": 0, "manual_review": 0, "cancelled": 0}
+    with connect() as conn:
+        rows = conn.execute(
+            """
+            SELECT * FROM app_jobs
+            WHERE status = 'running' AND deadline_at IS NOT NULL AND deadline_at <= ?
+            ORDER BY deadline_at, id
+            LIMIT 100
+            """,
+            (current,),
+        ).fetchall()
+        for row in rows:
+            job = dict_from_row(row)
+            claim_token = str(job.get("claim_token") or "")
+            if int(job.get("cancellation_requested") or 0) == 1:
+                status = "cancelled"
+                detail = "Cancellation acknowledged after the worker lease expired."
+            elif str(job.get("timeout_action") or "fail") == "escalate":
+                status = "manual_review"
+                detail = "Task exceeded its hard timeout and needs review."
+            elif (
+                str(job.get("timeout_action") or "fail") == "defer"
+                and int(job.get("attempts") or 0) < int(job.get("max_attempts") or 3)
+            ):
+                status = "queued"
+                detail = "Task exceeded its hard timeout and was queued for a safe retry."
+            else:
+                status = "failed"
+                detail = "Task exceeded its hard timeout."
+            completed_at = None if status == "queued" else current
+            changed = conn.execute(
+                """
+                UPDATE app_jobs
+                SET status = ?, claim_token = '', heartbeat_at = NULL, deadline_at = NULL,
+                    started_at = CASE WHEN ? = 'queued' THEN NULL ELSE started_at END,
+                    last_error = 'job_timeout', error_code = 'job_timeout',
+                    status_detail = ?, completed_at = ?, updated_at = ?
+                WHERE id = ? AND status = 'running' AND claim_token = ?
+                """,
+                (status, status, detail, completed_at, current, job["id"], claim_token),
+            )
+            if changed.rowcount == 1:
+                counts[status] += 1
+    return counts
 
 
 def _synthesis_conflict(conn, job: dict) -> bool:
@@ -1431,6 +1688,14 @@ def _with_runtime_estimate(job: dict) -> dict:
 
 
 def _run_claimed_job(job: dict) -> None:
+    context_token = _ACTIVE_JOB_CLAIM_TOKEN.set(str(job.get("claim_token") or "") or None)
+    try:
+        _run_claimed_job_with_lease(job)
+    finally:
+        _ACTIVE_JOB_CLAIM_TOKEN.reset(context_token)
+
+
+def _run_claimed_job_with_lease(job: dict) -> None:
     if job["job_type"] not in JOB_REGISTRY:
         _mark_job_manual_review(job, f"Unsupported job type: {job['job_type']}")
         return
@@ -1496,11 +1761,17 @@ def _run_claimed_job(job: dict) -> None:
             _run_model_runtime_recovery(payload, job["id"])
         elif job["job_type"] == "diagnostic_bundle":
             _run_diagnostic_bundle(payload, job["id"])
+        elif job["job_type"] == "security_scan":
+            _run_security_scan(payload, job["id"])
         elif job["job_type"] == "integration_refresh":
             _run_integration_refresh(payload, job["id"])
         else:
             raise ValueError(f"Unsupported job type: {job['job_type']}")
         _raise_if_job_cancelled(job["id"])
+    except JobLeaseLost:
+        # A reclaimer or newer attempt owns the row. The old worker must not
+        # mutate the new attempt's terminal state.
+        return
     except JobCancelled:
         _acknowledge_job_cancelled(job["id"])
         if job["job_type"] == "source_semantic_enrichment":
@@ -1530,10 +1801,12 @@ def _run_claimed_job(job: dict) -> None:
         conn.execute(
             """
             UPDATE app_jobs
-            SET status = 'succeeded', completed_at = ?, updated_at = ?, last_error = ''
+            SET status = 'succeeded', claim_token = '', heartbeat_at = NULL, deadline_at = NULL,
+                completed_at = ?, updated_at = ?, last_error = ''
             WHERE id = ? AND status = 'running' AND cancellation_requested = 0
+              AND claim_token = ?
             """,
-            (utc_now(), utc_now(), job["id"]),
+            (utc_now(), utc_now(), job["id"], str(job.get("claim_token") or "")),
         )
     if job["job_type"] == "source_semantic_enrichment":
         _finalize_source_semantic_wave(_decode_payload(job["payload"]))
@@ -1904,7 +2177,10 @@ def _run_project_intelligence_job(job_type: str, payload: dict, job_id: str) -> 
         summary = {"project_id": project_id, "generated": bool(result.get("interpretation", {}).get("generated_synopsis"))}
     elif job_type == "project_graph_metrics":
         from backend.app.core.project_graph_intelligence import refresh_graph_intelligence
-        result = refresh_graph_intelligence(project_id)
+        result = refresh_graph_intelligence(
+            project_id,
+            expected_snapshot_id=str(payload.get("snapshot_id") or "") or None,
+        )
         summary = result
     elif job_type == "project_git_intelligence":
         from backend.app.core.project_git_intelligence import refresh_git_intelligence
@@ -2849,6 +3125,8 @@ def _run_source_semantic_enrichment(payload: dict, job_id: str | None = None) ->
             # the remaining descriptions. Keep the cluster visibly stale and
             # publish one profile refresh after the enrichment wave drains.
             mark_cluster_metadata_pending(conn, cluster_id)
+            ingestion_stage = "ready"
+            ingestion_detail = "Source is searchable, organized, and described."
         else:
             enqueue_job(
                 conn,
@@ -2864,12 +3142,14 @@ def _run_source_semantic_enrichment(payload: dict, job_id: str | None = None) ->
                 ),
                 scope_id=str(current["vault_id"]),
             )
+            ingestion_stage = "organizing"
+            ingestion_detail = "Source is searchable and described. Organization is continuing."
         publish_source_ingestion_stage(
             conn,
             source_id=source_id,
-            stage="ready",
+            stage=ingestion_stage,
             generation=current_identity.generation,
-            detail="Source is searchable, organized, and described.",
+            detail=ingestion_detail,
         )
         _enqueue_source_semantic_backlog(
             conn,
@@ -3051,6 +3331,16 @@ def _run_source_cluster_reconciliation(payload: dict, job_id: str | None = None)
                 cluster_id,
                 "Newly analyzed sources were organized into this cluster.",
             )
+            candidate_profile = conn.execute(
+                "SELECT 1 FROM cluster_candidate_profiles WHERE cluster_id = ?",
+                (cluster_id,),
+            ).fetchone()
+            if candidate_profile is None:
+                # The first document in a vault bootstraps an automatic cluster.
+                # Publish its deterministic candidate profile immediately so
+                # later files in the same import can match it without requiring
+                # a manual/model-backed profile refresh.
+                refresh_cluster_profile(conn, cluster_id, require_model=False)
         remaining = max(0, len(sources) - sum(len(set(ids)) for ids in assigned.values()))
         result = {
             "sources_checked": len(sources),
@@ -3156,7 +3446,8 @@ def _run_cluster_membership_repair(payload: dict, job_id: str | None = None) -> 
 
 def _run_ocr_source(payload: dict, job_id: str) -> None:
     require_embeddings_available("OCR source indexing")
-    from backend.app.core.extraction import extract_pages_from_path
+    from backend.app.core.extraction import extract_pages_from_validated_path
+    from backend.app.core.quarantine import validate_candidate_file
 
     source_id = str(payload["source_id"])
     with connect() as conn:
@@ -3166,7 +3457,11 @@ def _run_ocr_source(payload: dict, job_id: str) -> None:
         path = source["original_path"]
         if not path:
             raise RuntimeError("OCR source job requires an original local path.")
-        title, pages = extract_pages_from_path(path)
+        expected_checksum = str(payload.get("source_checksum") or "")
+        candidate = validate_candidate_file(str(path))
+        if expected_checksum and str(candidate.get("content_hash") or "") != expected_checksum:
+            raise RuntimeError("OCR source changed after it was queued; re-import it before retrying OCR.")
+        title, pages = extract_pages_from_validated_path(str(candidate["canonical_path"]))
         text = "\n\n".join(page for page in pages if page.strip()).strip()
         if not text:
             raise RuntimeError("OCR produced no readable text.")
@@ -3292,9 +3587,16 @@ def _update_ocr_page_progress(conn, job_id: str, page_current: int, page_total: 
 
 
 def _update_job_progress(conn, job_id: str, detail: dict) -> None:
+    claim_token = _ACTIVE_JOB_CLAIM_TOKEN.get()
     conn.execute(
-        "UPDATE app_jobs SET status_detail = ?, updated_at = ? WHERE id = ? AND status = 'running'",
-        (json.dumps(detail, separators=(",", ":")), utc_now(), job_id),
+        """
+        UPDATE app_jobs SET status_detail = ?, heartbeat_at = ?, updated_at = ?
+        WHERE id = ? AND status = 'running' AND (? IS NULL OR claim_token = ?)
+        """,
+        (
+            json.dumps(detail, separators=(",", ":")), utc_now(), utc_now(), job_id,
+            claim_token, claim_token,
+        ),
     )
 
 
@@ -3353,7 +3655,10 @@ def _materialize_analysis_packets(payload: dict, job_id: str, *, full_scope: boo
 
 def _run_delete_source_cleanup(payload: dict, job_id: str | None = None) -> None:
     _raise_if_job_cancelled(job_id)
+    from backend.app.core.quarantine import delete_quarantine_artifacts_for_source
+
     source_id = str(payload["source_id"])
+    quarantine_cleanup = {"records_deleted": 0, "blobs_deleted": 0}
     with connect() as conn:
         source = conn.execute("SELECT vault_id FROM sources WHERE id = ?", (source_id,)).fetchone()
         delete_source_encrypted_content(
@@ -3376,6 +3681,7 @@ def _run_delete_source_cleanup(payload: dict, job_id: str | None = None) -> None
         conn.execute("DELETE FROM chat_attachments WHERE source_id = ?", (source_id,))
         conn.execute("DELETE FROM source_chunks WHERE source_id = ?", (source_id,))
         conn.execute("DELETE FROM source_pages WHERE source_id = ?", (source_id,))
+        quarantine_cleanup = delete_quarantine_artifacts_for_source(conn, source_id)
         conn.execute(
             """
             UPDATE sources
@@ -3384,6 +3690,15 @@ def _run_delete_source_cleanup(payload: dict, job_id: str | None = None) -> None
             WHERE id = ? AND deleted_at IS NOT NULL
             """,
             (source_id,),
+        )
+    if job_id:
+        _set_job_result(
+            job_id,
+            {"source_id": source_id, **quarantine_cleanup},
+            detail=(
+                f"Removed {quarantine_cleanup['records_deleted']} quarantine records and "
+                f"{quarantine_cleanup['blobs_deleted']} encrypted originals."
+            ),
         )
 
 
@@ -3395,6 +3710,7 @@ def _enqueue_due_integration_refresh_jobs() -> None:
             SELECT id, vault_id
             FROM integration_imports
             WHERE watch_enabled = 1
+              AND status != 'action_needed'
               AND vault_id IS NOT NULL
               AND (next_watch_at IS NULL OR next_watch_at <= ?)
             LIMIT 25
@@ -3488,6 +3804,11 @@ def _run_vector_reconcile_incremental(payload: dict, job_id: str | None = None) 
                 dedupe_key=f"reindex-source:{source_id}",
                 scope_id=source_id,
             )
+    if payload.get("rebuild_sidecar") and vault_id:
+        from backend.app.core.turbovec_runtime import build_turbovec_sidecar
+
+        _raise_if_job_cancelled(job_id)
+        build_turbovec_sidecar(str(vault_id), rebuild_reason="embedding_policy_activation")
 
 
 def _run_model_import(payload: dict, job_id: str | None = None) -> None:
@@ -3537,17 +3858,20 @@ def _set_job_result(job_id: str | None, result: dict, *, detail: str) -> None:
     if not job_id:
         return
     with connect() as conn:
+        claim_token = _ACTIVE_JOB_CLAIM_TOKEN.get()
         conn.execute(
             """
             UPDATE app_jobs
             SET result_json = ?, status_detail = ?, updated_at = ?
-            WHERE id = ?
+            WHERE id = ? AND status = 'running' AND (? IS NULL OR claim_token = ?)
             """,
             (
                 json.dumps(result, separators=(",", ":"), ensure_ascii=False),
                 detail[:500],
                 utc_now(),
                 job_id,
+                claim_token,
+                claim_token,
             ),
         )
 
@@ -3668,6 +3992,28 @@ def _run_diagnostic_bundle(payload: dict, job_id: str | None = None) -> None:
     _set_job_result(job_id, result, detail="Diagnostic bundle is ready.")
 
 
+def _run_security_scan(payload: dict, job_id: str | None = None) -> None:
+    _raise_if_job_cancelled(job_id)
+    from backend.app.core.security_scans import execute_security_scan, record_security_scan_failure
+
+    scan_type = str(payload.get("scan_type") or "")
+    if scan_type not in {"antivirus", "full"}:
+        raise RuntimeError("Security scan requires a valid scan_type.")
+    trigger = str(payload.get("trigger") or "manual")
+    try:
+        result = execute_security_scan(scan_type, trigger=trigger)
+    except Exception:
+        record_security_scan_failure(scan_type, trigger=trigger)
+        raise
+    _raise_if_job_cancelled(job_id)
+    detail = (
+        "Security check passed."
+        if result["status"] == "passed"
+        else "Security check finished with items that need attention."
+    )
+    _set_job_result(job_id, result, detail=detail)
+
+
 def _run_integration_refresh(payload: dict, job_id: str | None = None) -> None:
     _raise_if_job_cancelled(job_id)
     from backend.app.api.routes.integrations import refresh_integration_import
@@ -3709,19 +4055,26 @@ def _mark_job_failed_or_retry(job: dict, error: Exception | str) -> None:
         )
     with connect() as conn:
         current = conn.execute(
-            "SELECT attempts, max_attempts, cancellation_requested FROM app_jobs WHERE id = ?",
-            (job["id"],),
+            """
+            SELECT attempts, max_attempts, cancellation_requested
+            FROM app_jobs
+            WHERE id = ? AND status = 'running' AND claim_token = ?
+            """,
+            (job["id"], str(job.get("claim_token") or "")),
         ).fetchone()
+        if current is None:
+            return
         if current is not None and int(current["cancellation_requested"] or 0) == 1:
             now = utc_now()
             conn.execute(
                 """
                 UPDATE app_jobs
                 SET status = 'cancelled', status_detail = 'Cancellation acknowledged by worker.',
+                    claim_token = '', heartbeat_at = NULL, deadline_at = NULL,
                     completed_at = ?, updated_at = ?
-                WHERE id = ? AND status = 'running'
+                WHERE id = ? AND status = 'running' AND claim_token = ?
                 """,
-                (now, now, job["id"]),
+                (now, now, job["id"], str(job.get("claim_token") or "")),
             )
             return
         attempts = int(current["attempts"] if current is not None else job.get("attempts") or 0)
@@ -3738,8 +4091,10 @@ def _mark_job_failed_or_retry(job: dict, error: Exception | str) -> None:
             UPDATE app_jobs
             SET status = ?, last_error = ?, error_code = ?, diagnostic_id = ?,
                 status_detail = ?,
+                claim_token = '', heartbeat_at = NULL, deadline_at = NULL,
+                started_at = CASE WHEN ? = 'queued' THEN NULL ELSE started_at END,
                 completed_at = ?, updated_at = ?
-            WHERE id = ? AND status = 'running'
+            WHERE id = ? AND status = 'running' AND claim_token = ?
             """,
             (
                 status,
@@ -3747,9 +4102,11 @@ def _mark_job_failed_or_retry(job: dict, error: Exception | str) -> None:
                 error_code,
                 diagnostic_id,
                 public_detail,
+                status,
                 completed_at,
                 utc_now(),
                 job["id"],
+                str(job.get("claim_token") or ""),
             ),
         )
         if status == "failed" and job.get("job_type", "").startswith("project_"):
@@ -3859,11 +4216,12 @@ def _mark_job_blocked_setup(job: dict) -> None:
                 attempts = CASE WHEN attempts > 0 THEN attempts - 1 ELSE 0 END,
                 last_error = '',
                 status_detail = 'Set up memory search to continue this task.',
+                claim_token = '', heartbeat_at = NULL, deadline_at = NULL,
                 started_at = NULL,
                 updated_at = ?
-            WHERE id = ? AND status = 'running'
+            WHERE id = ? AND status = 'running' AND claim_token = ?
             """,
-            (utc_now(), job["id"]),
+            (utc_now(), job["id"], str(job.get("claim_token") or "")),
         )
         if job.get("job_type") == "reindex_source":
             payload = _decode_payload(job.get("payload") or "{}")
@@ -3888,14 +4246,16 @@ def _mark_job_blocked_local_model(job: dict, detail: str = "") -> None:
                 attempts = CASE WHEN attempts > 0 THEN attempts - 1 ELSE 0 END,
                 last_error = '',
                 status_detail = ?,
+                claim_token = '', heartbeat_at = NULL, deadline_at = NULL,
                 started_at = NULL,
                 updated_at = ?
-            WHERE id = ? AND status = 'running'
+            WHERE id = ? AND status = 'running' AND claim_token = ?
             """,
             (
                 f"Local model unavailable. {message[:430]}",
                 utc_now(),
                 job["id"],
+                str(job.get("claim_token") or ""),
             ),
         )
 
@@ -4328,8 +4688,12 @@ def _mark_job_manual_review(job: dict, detail: str) -> None:
             """
             UPDATE app_jobs
             SET status = 'manual_review', last_error = ?, status_detail = ?,
+                claim_token = '', heartbeat_at = NULL, deadline_at = NULL,
                 completed_at = ?, updated_at = ?
-            WHERE id = ?
+            WHERE id = ? AND status = 'running' AND claim_token = ?
             """,
-            (detail[:500], detail[:500], utc_now(), utc_now(), job["id"]),
+            (
+                detail[:500], detail[:500], utc_now(), utc_now(), job["id"],
+                str(job.get("claim_token") or ""),
+            ),
         )

@@ -113,6 +113,59 @@ class ChatCompletionRegressionTests(unittest.TestCase):
         )
         self.assertFalse(updated["scope_unclustered"])
 
+    def test_unclustered_chat_retrieval_excludes_clustered_sources(self) -> None:
+        from backend.app.api.routes.chat import build_chat_context
+        from backend.app.api.routes.sources import create_source
+        from backend.app.core.database import connect, dict_from_row, utc_now
+        from backend.app.core.embeddings import reindex_source_chunks
+        from backend.app.schemas import ChatContextRequest, SourceCreate
+
+        now = utc_now()
+        with connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO clusters (id, vault_id, name, description, created_at, updated_at)
+                VALUES ('cluster-chat', 'vault-chat', 'Grouped', '', ?, ?)
+                """,
+                (now, now),
+            )
+        loose = create_source(
+            SourceCreate(
+                vault_id="vault-chat",
+                title="Loose astronomy note",
+                source_type="note",
+                raw_text="The loose astronomy note explains nebula formation and stellar nurseries. "
+                * 20,
+            )
+        )
+        grouped = create_source(
+            SourceCreate(
+                vault_id="vault-chat",
+                cluster_id="cluster-chat",
+                title="Grouped astronomy note",
+                source_type="note",
+                raw_text="The grouped astronomy note explains nebula formation and stellar nurseries. "
+                * 20,
+            )
+        )
+        with connect() as conn:
+            for source_id in (loose["id"], grouped["id"]):
+                row = conn.execute("SELECT * FROM sources WHERE id = ?", (source_id,)).fetchone()
+                reindex_source_chunks(conn, dict_from_row(row))
+
+        response = build_chat_context(
+            ChatContextRequest(
+                vault_id="vault-chat",
+                prompt="What do the saved notes say about nebula formation?",
+                unclustered_only=True,
+            )
+        )
+
+        cited_ids = {citation["source_id"] for citation in response["citations"]}
+        self.assertIn(loose["id"], cited_ids)
+        self.assertNotIn(grouped["id"], cited_ids)
+        self.assertEqual(response["coverage_ledger"]["scope"], "unclustered")
+
     def test_durable_generation_finishes_from_only_its_persisted_generation_id(self) -> None:
         from backend.app.api.routes.chat import (
             _start_chat_generation,
@@ -728,6 +781,11 @@ class ChatCompletionRegressionTests(unittest.TestCase):
             prompt="Explain the selected project.",
             request_id="request-original-123",
         )
+        with connect() as conn:
+            conn.execute(
+                "UPDATE chat_generations SET state = 'retriable' WHERE id = ?",
+                (first["generation_id"],),
+            )
         retry = _start_chat_generation(
             vault_id="vault-chat",
             session_id=first["session_id"],
@@ -752,6 +810,80 @@ class ChatCompletionRegressionTests(unittest.TestCase):
         self.assertEqual(retry["user_message_id"], first["user_message_id"])
         self.assertEqual(attempts["parent_generation_id"], first["generation_id"])
         self.assertEqual(attempts["attempt_number"], 2)
+
+    def test_only_one_generation_can_start_for_a_session_under_concurrency(self) -> None:
+        from concurrent.futures import ThreadPoolExecutor
+
+        from fastapi import HTTPException
+
+        from backend.app.api.routes.chat import _start_chat_generation, create_chat_session
+        from backend.app.schemas import ChatSessionCreate
+
+        session = create_chat_session(ChatSessionCreate(vault_id="vault-chat", title="Concurrent"))
+
+        def start(index: int) -> str:
+            try:
+                _start_chat_generation(
+                    vault_id="vault-chat",
+                    session_id=session["id"],
+                    cluster_id=None,
+                    prompt=f"Question {index}",
+                    request_id=f"concurrent-{index}",
+                )
+                return "created"
+            except HTTPException as exc:
+                self.assertEqual(exc.status_code, 409)
+                return "rejected"
+
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            outcomes = list(executor.map(start, range(2)))
+
+        self.assertEqual(outcomes.count("created"), 1)
+        self.assertEqual(outcomes.count("rejected"), 1)
+
+    def test_cancelling_generation_prevents_late_answer_persistence(self) -> None:
+        from backend.app.api.routes.chat import (
+            ChatGenerationCancelled,
+            _complete_chat_generation,
+            _start_chat_generation,
+            cancel_chat_generation,
+        )
+        from backend.app.core.database import connect
+
+        generation = _start_chat_generation(
+            vault_id="vault-chat",
+            session_id=None,
+            cluster_id=None,
+            prompt="Do not save a late answer.",
+        )
+        cancelled = cancel_chat_generation(generation["generation_id"])
+
+        with self.assertRaises(ChatGenerationCancelled):
+            _complete_chat_generation(
+                generation_id=generation["generation_id"],
+                session_id=generation["session_id"],
+                assistant_message_id=generation["assistant_message_id"],
+                vault_id="vault-chat",
+                prompt="Do not save a late answer.",
+                answer="This answer must not be saved.",
+                clusters_used=[],
+                citations=[],
+                token_budget=64,
+                warnings=[],
+            )
+
+        with connect() as conn:
+            state = conn.execute(
+                "SELECT state FROM chat_generations WHERE id = ?",
+                (generation["generation_id"],),
+            ).fetchone()["state"]
+            assistant = conn.execute(
+                "SELECT 1 FROM chat_messages WHERE id = ?",
+                (generation["assistant_message_id"],),
+            ).fetchone()
+        self.assertEqual(cancelled["state"], "stopped")
+        self.assertEqual(state, "stopped")
+        self.assertIsNone(assistant)
 
     def test_generation_request_id_rejects_duplicate_persistence(self) -> None:
         from fastapi import HTTPException
