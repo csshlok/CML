@@ -10,6 +10,12 @@ from backend.app.core.retrieval_trust import is_low_trust, trust_weight
 from backend.app.core.vector_maintenance import active_embedding_selector
 
 
+MAX_ATTACHMENT_SOURCES = 12
+MAX_ATTACHMENT_CANDIDATES_PER_SOURCE = 256
+MAX_ATTACHMENT_CANDIDATE_CHUNKS = MAX_ATTACHMENT_SOURCES * MAX_ATTACHMENT_CANDIDATES_PER_SOURCE
+MAX_ATTACHMENT_SELECTED_CHUNKS = 12
+
+
 def session_attachment_source_ids(
     conn,
     *,
@@ -63,7 +69,7 @@ def build_attachment_bundle(
 ) -> dict:
     unique_source_ids = list(
         dict.fromkeys(str(item) for item in source_ids if str(item).strip())
-    )[:12]
+    )[:MAX_ATTACHMENT_SOURCES]
     if not unique_source_ids:
         return _empty_attachment_bundle()
 
@@ -78,40 +84,91 @@ def build_attachment_bundle(
         )
         tuple_clause, tuple_params = chunk_eligibility_sql("chunks", snapshot)
         placeholders = ",".join("?" for _ in unique_source_ids)
-        rows = conn.execute(
+        candidate_rows = conn.execute(
             f"""
+            WITH bounded_candidates AS (
+                SELECT
+                    chunks.id AS chunk_id,
+                    chunks.source_id,
+                    chunks.vault_id,
+                    chunks.page_id,
+                    chunks.chunk_index,
+                    chunks.embedding,
+                    chunks.cluster_id,
+                    sources.title AS source_title,
+                    sources.source_type,
+                    sources.provenance,
+                    sources.trust_tier,
+                    sources.security_labels,
+                    pages.page_number,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY chunks.source_id ORDER BY chunks.chunk_index, chunks.id
+                    ) AS source_rank
+                FROM source_chunks chunks
+                JOIN sources ON sources.id = chunks.source_id
+                LEFT JOIN source_pages pages ON pages.id = chunks.page_id
+                WHERE chunks.vault_id = ?
+                  AND chunks.source_id IN ({placeholders})
+                  AND sources.state = 'indexed'
+                  AND sources.deleted_at IS NULL
+                  {tuple_clause}
+            )
             SELECT
-                chunks.id AS chunk_id,
-                chunks.source_id,
-                chunks.vault_id,
-                chunks.page_id,
-                chunks.chunk_index,
-                chunks.text,
-                chunks.embedding,
-                chunks.cluster_id,
-                sources.title AS source_title,
-                sources.source_type,
-                sources.provenance,
-                sources.trust_tier,
-                sources.security_labels,
-                pages.page_number
-            FROM source_chunks chunks
-            JOIN sources ON sources.id = chunks.source_id
-            LEFT JOIN source_pages pages ON pages.id = chunks.page_id
-            WHERE chunks.vault_id = ?
-              AND chunks.source_id IN ({placeholders})
-              AND sources.state = 'indexed'
-              AND sources.deleted_at IS NULL
-              {tuple_clause}
-            ORDER BY chunks.source_id, chunks.chunk_index
+                chunk_id, source_id, vault_id, page_id, chunk_index, embedding,
+                cluster_id, source_title, source_type, provenance, trust_tier,
+                security_labels, page_number
+            FROM bounded_candidates
+            WHERE source_rank <= ?
+            ORDER BY source_id, chunk_index, chunk_id
+            LIMIT ?
             """,
-            [vault_id, *unique_source_ids, *tuple_params],
+            [
+                vault_id,
+                *unique_source_ids,
+                *tuple_params,
+                MAX_ATTACHMENT_CANDIDATES_PER_SOURCE,
+                MAX_ATTACHMENT_CANDIDATE_CHUNKS,
+            ],
         ).fetchall()
-        hydrated_rows = [chunk_from_encrypted_row(conn, row) for row in rows]
+        scored = [_citation_from_chunk_metadata(dict_from_row(row), query_vector) for row in candidate_rows]
+        scored.sort(key=lambda item: item["score"], reverse=True)
+        selected_metadata = _select_diverse_citations(
+            scored,
+            source_ids=unique_source_ids,
+            limit=min(limit, MAX_ATTACHMENT_SELECTED_CHUNKS),
+        )
+        selected_ids = [str(item["chunk_id"]) for item in selected_metadata]
+        hydrated_by_id: dict[str, dict] = {}
+        if selected_ids:
+            selected_placeholders = ",".join("?" for _ in selected_ids)
+            selected_rows = conn.execute(
+                f"""
+                SELECT
+                    chunks.id AS chunk_id, chunks.source_id, chunks.vault_id,
+                    chunks.page_id, chunks.chunk_index, chunks.text, chunks.embedding,
+                    chunks.cluster_id, sources.title AS source_title,
+                    sources.source_type, sources.provenance, sources.trust_tier,
+                    sources.security_labels, pages.page_number
+                FROM source_chunks chunks
+                JOIN sources ON sources.id = chunks.source_id
+                LEFT JOIN source_pages pages ON pages.id = chunks.page_id
+                WHERE chunks.vault_id = ? AND chunks.id IN ({selected_placeholders})
+                """,
+                [vault_id, *selected_ids],
+            ).fetchall()
+            hydrated_by_id = {
+                str(row["chunk_id"]): chunk_from_encrypted_row(conn, row)
+                for row in selected_rows
+            }
+        selected = [
+            {**item, "snippet": hydrated_by_id[str(item["chunk_id"])]["text"]}
+            for item in selected_metadata
+            if str(item["chunk_id"]) in hydrated_by_id
+        ]
         cluster_ids = list(
             dict.fromkeys(
                 str(row["cluster_id"])
-                for row in hydrated_rows
+                for row in selected
                 if str(row.get("cluster_id") or "").strip()
             )
         )
@@ -127,13 +184,6 @@ def build_attachment_bundle(
             else []
         )
 
-    scored = [_citation_from_chunk(row, query_vector) for row in hydrated_rows]
-    scored.sort(key=lambda item: item["score"], reverse=True)
-    selected = _select_diverse_citations(
-        scored,
-        source_ids=unique_source_ids,
-        limit=limit,
-    )
     represented_sources = {str(item["source_id"]) for item in selected}
     return {
         "citations": selected,
@@ -152,6 +202,8 @@ def build_attachment_bundle(
                 len(unique_source_ids) - len(represented_sources),
                 0,
             ),
+            "candidate_chunks_considered": len(candidate_rows),
+            "candidate_limit": MAX_ATTACHMENT_CANDIDATE_CHUNKS,
         },
         "retrieval_authority": True,
         "cluster_profile": {},
@@ -190,7 +242,7 @@ def prompt_references_chat_attachments(prompt: str) -> bool:
     )
 
 
-def _citation_from_chunk(row: dict, query_vector: list[float]) -> dict:
+def _citation_from_chunk_metadata(row: dict, query_vector: list[float]) -> dict:
     raw_score = cosine_similarity(query_vector, decode_embedding(row["embedding"]))
     return {
         "source_id": row["source_id"],
@@ -200,7 +252,6 @@ def _citation_from_chunk(row: dict, query_vector: list[float]) -> dict:
         "chunk_id": row["chunk_id"],
         "page_id": row["page_id"],
         "page_number": row["page_number"],
-        "snippet": row["text"],
         "score": round(max(raw_score * trust_weight(row), 0.0001), 4),
         "provenance": row["provenance"],
         "trust_tier": row["trust_tier"],
@@ -226,7 +277,10 @@ def _select_diverse_citations(
         if best is not None:
             selected.append(best)
             selected_chunks.add(str(best["chunk_id"]))
-    target_limit = max(len(selected), min(12, max(1, limit)))
+    target_limit = max(
+        len(selected),
+        min(MAX_ATTACHMENT_SELECTED_CHUNKS, max(1, limit)),
+    )
     for item in scored:
         if len(selected) >= target_limit:
             break

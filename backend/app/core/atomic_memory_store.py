@@ -60,10 +60,28 @@ def sync_chat_session_atomic_memory(
         raise ValueError("chat_session_not_found")
 
     payload = chat_session_atomic_payload(session_id, messages)
-    extraction = compile_deterministic_atomic_session(payload)
     compiled_source_hash = source_content_hash(
         payload["session_id"], payload["date"], payload["turns"]
     )
+    existing_state = conn.execute(
+        "SELECT * FROM atomic_memory_session_state WHERE session_id = ? AND vault_id = ?",
+        (session_id, vault_id),
+    ).fetchone()
+    if (
+        existing_state is not None
+        and str(existing_state["compiler_version"]) == ATOMIC_MEMORY_VERSION
+        and str(existing_state["source_content_hash"]) == compiled_source_hash
+        and int(existing_state["source_message_count"] or 0) == len(messages)
+    ):
+        return {
+            "fact_count": int(existing_state["fact_count"] or 0),
+            "source_unit_count": int(existing_state["source_unit_count"] or 0),
+            "covered_source_unit_count": int(existing_state["covered_source_unit_count"] or 0),
+            "source_coverage_complete": int(existing_state["source_unit_count"] or 0) > 0
+            and int(existing_state["covered_source_unit_count"] or 0)
+            == int(existing_state["source_unit_count"] or 0),
+        }
+    extraction = compile_deterministic_atomic_session(payload)
     message_ids = [str(row["id"]) for row in messages]
     desired_facts: set[str] = set()
     desired_units: set[str] = set()

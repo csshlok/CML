@@ -1,10 +1,12 @@
 import json
+from collections import deque
 from uuid import uuid4
 
 from backend.app.core.database import dict_from_row, utc_now
 from backend.app.core.embeddings import reindex_source_chunks
 from backend.app.core.encrypted_storage import (
     hydrate_chat_message_rows,
+    source_from_encrypted_row,
     store_source_content_fields,
     update_source_content_fields,
 )
@@ -16,30 +18,113 @@ from backend.app.core.cluster_lifecycle import (
 from backend.app.core.cluster_membership import move_source_cluster_membership
 from backend.app.core.memory_card import summarize_text
 
+TRANSCRIPT_RECENT_MESSAGE_LIMIT = 40
+TRANSCRIPT_SUMMARY_MAX_CHARS = 1_200
+TRANSCRIPT_INDEX_MAX_CHARS = 120_000
+TRANSCRIPT_SUMMARY_VERSION = "bounded-v1"
+
 
 def upsert_chat_transcript_sources(conn, *, vault_id: str, session_id: str) -> None:
     session = conn.execute("SELECT * FROM chat_sessions WHERE id = ?", (session_id,)).fetchone()
     if session is None:
         return
-    messages = hydrate_chat_message_rows(conn, conn.execute(
-        "SELECT * FROM chat_messages WHERE session_id = ? ORDER BY created_at ASC",
+    aggregate = conn.execute(
+        "SELECT COUNT(*) AS count, COALESCE(MAX(rowid), 0) AS last_rowid "
+        "FROM chat_messages WHERE session_id = ?",
         (session_id,),
-    ).fetchall())
-    if not messages:
+    ).fetchone()
+    message_count = int(aggregate["count"] or 0)
+    last_rowid = int(aggregate["last_rowid"] or 0)
+    if message_count == 0:
+        return
+    state = conn.execute(
+        "SELECT * FROM chat_transcript_memory_state WHERE session_id = ? AND vault_id = ?",
+        (session_id, vault_id),
+    ).fetchone()
+    if (
+        state is not None
+        and state["summary_version"] == TRANSCRIPT_SUMMARY_VERSION
+        and int(state["source_message_count"] or 0) == message_count
+        and int(state["last_message_rowid"] or 0) == last_rowid
+    ):
         return
 
-    clusters = _transcript_target_clusters(conn, vault_id=vault_id, session=session, messages=messages)
-    attachments = conn.execute(
+    clusters = _transcript_target_clusters_bounded(conn, vault_id=vault_id, session=session)
+    prior_count = int(state["source_message_count"] or 0) if state is not None else 0
+    prior_rowid = int(state["last_message_rowid"] or 0) if state is not None else 0
+    prefix_count = int(
+        conn.execute(
+            "SELECT COUNT(*) AS count FROM chat_messages WHERE session_id = ? AND rowid <= ?",
+            (session_id, prior_rowid),
+        ).fetchone()["count"]
+    )
+    append_only = (
+        state is not None
+        and state["summary_version"] == TRANSCRIPT_SUMMARY_VERSION
+        and prior_count == prefix_count
+        and prior_count <= message_count
+        and prior_rowid <= last_rowid
+    )
+    rolling_summary = ""
+    if append_only:
+        for cluster in clusters:
+            existing = conn.execute(
+                "SELECT * FROM sources WHERE id = ?",
+                (f"chat-source-{session_id}-{cluster['id']}",),
+            ).fetchone()
+            if existing is not None:
+                rolling_summary = str(source_from_encrypted_row(conn, existing).get("summary") or "")
+                break
+    summary_cursor = prior_rowid if append_only else 0
+    while True:
+        batch_rows = conn.execute(
+            """
+            SELECT rowid AS message_rowid, * FROM chat_messages
+            WHERE session_id = ? AND rowid > ? ORDER BY rowid ASC LIMIT 100
+            """,
+            (session_id, summary_cursor),
+        ).fetchall()
+        if not batch_rows:
+            break
+        batch = hydrate_chat_message_rows(conn, batch_rows)
+        user_text = " ".join(
+            str(message["content"] or "")
+            for message in batch
+            if str(message["role"] or "").casefold() == "user"
+        )
+        if user_text:
+            rolling_summary = summarize_text(
+                f"{rolling_summary} {user_text}".strip(), max_chars=TRANSCRIPT_SUMMARY_MAX_CHARS
+            )[:TRANSCRIPT_SUMMARY_MAX_CHARS]
+        summary_cursor = int(batch_rows[-1]["message_rowid"])
+
+    recent_rows = conn.execute(
         """
-        SELECT chat_attachments.*, sources.title AS source_title, sources.cluster_id
-        FROM chat_attachments
-        JOIN sources ON sources.id = chat_attachments.source_id
-        WHERE chat_attachments.session_id = ?
-        ORDER BY chat_attachments.created_at ASC
+        SELECT rowid AS message_rowid, * FROM chat_messages
+        WHERE session_id = ? ORDER BY rowid DESC LIMIT ?
         """,
-        (session_id,),
+        (session_id, TRANSCRIPT_RECENT_MESSAGE_LIMIT),
     ).fetchall()
-    transcript = _transcript_text(session, messages, attachments)
+    recent_messages = hydrate_chat_message_rows(conn, list(reversed(recent_rows)))
+    recent_ids = [str(message["id"]) for message in recent_messages]
+    attachments = []
+    if recent_ids:
+        placeholders = ",".join("?" for _ in recent_ids)
+        attachments = conn.execute(
+            f"""
+            SELECT chat_attachments.*, sources.title AS source_title, sources.cluster_id
+            FROM chat_attachments
+            JOIN sources ON sources.id = chat_attachments.source_id
+            WHERE chat_attachments.session_id = ?
+              AND chat_attachments.message_id IN ({placeholders})
+            ORDER BY chat_attachments.created_at ASC
+            """,
+            [session_id, *recent_ids],
+        ).fetchall()
+    transcript = _bounded_transcript_text(
+        session, recent_messages, attachments, rolling_summary=rolling_summary,
+        total_message_count=message_count,
+    )
     now = utc_now()
     for cluster in clusters:
         source_id = f"chat-source-{session_id}-{cluster['id']}"
@@ -55,7 +140,7 @@ def upsert_chat_transcript_sources(conn, *, vault_id: str, session_id: str) -> N
             "state": "indexed",
             "raw_text": transcript,
             "extracted_text": transcript,
-            "summary": summarize_text(transcript),
+            "summary": rolling_summary or summarize_text(transcript),
             "tags": tags,
             "updated_at": now,
         }
@@ -109,6 +194,76 @@ def upsert_chat_transcript_sources(conn, *, vault_id: str, session_id: str) -> N
         if row is not None:
             reindex_source_chunks(conn, dict_from_row(row))
             mark_cluster_needs_update(conn, cluster["id"], "Chat transcript memory was indexed.")
+    conn.execute(
+        """
+        INSERT INTO chat_transcript_memory_state (
+            session_id, vault_id, last_message_rowid, source_message_count,
+            summary_version, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?)
+        ON CONFLICT(session_id) DO UPDATE SET
+            vault_id = excluded.vault_id,
+            last_message_rowid = excluded.last_message_rowid,
+            source_message_count = excluded.source_message_count,
+            summary_version = excluded.summary_version,
+            updated_at = excluded.updated_at
+        """,
+        (session_id, vault_id, last_rowid, message_count, TRANSCRIPT_SUMMARY_VERSION, utc_now()),
+    )
+
+
+def _transcript_target_clusters_bounded(conn, *, vault_id: str, session) -> list[dict]:
+    cluster_ids: set[str] = set()
+    if session["scope_cluster_id"]:
+        cluster_ids.add(str(session["scope_cluster_id"]))
+    try:
+        rows = conn.execute(
+            """
+            SELECT DISTINCT json_extract(item.value, '$.cluster_id') AS cluster_id
+            FROM chat_messages messages, json_each(messages.clusters_used) item
+            WHERE messages.session_id = ?
+              AND json_extract(item.value, '$.cluster_id') IS NOT NULL
+            """,
+            (session["id"],),
+        ).fetchall()
+        cluster_ids.update(str(row["cluster_id"]) for row in rows if row["cluster_id"])
+    except Exception:
+        rows = conn.execute(
+            "SELECT clusters_used FROM chat_messages WHERE session_id = ?",
+            (session["id"],),
+        )
+        for row in rows:
+            cluster_ids.update(
+                str(item.get("cluster_id"))
+                for item in _json_list(row["clusters_used"])
+                if item.get("cluster_id")
+            )
+    if not cluster_ids:
+        return [_ensure_chats_cluster(conn, vault_id)]
+    placeholders = ",".join("?" for _ in cluster_ids)
+    rows = conn.execute(
+        f"SELECT id, name FROM clusters WHERE vault_id = ? AND id IN ({placeholders})",
+        [vault_id, *sorted(cluster_ids)],
+    ).fetchall()
+    clusters = [dict_from_row(row) for row in rows]
+    return clusters or [_ensure_chats_cluster(conn, vault_id)]
+
+
+def _bounded_transcript_text(session, messages, attachments, *, rolling_summary: str, total_message_count: int) -> str:
+    lines = [f"Chat transcript: {session['title']}", ""]
+    if rolling_summary:
+        lines.extend(["Cumulative user-memory summary:", rolling_summary, ""])
+    if total_message_count > len(messages):
+        lines.append(f"Recent {len(messages)} of {total_message_count} messages:")
+    for message in messages:
+        role = "User" if message["role"] == "user" else "Assistant"
+        lines.append(f"{role}: {message['content']}")
+        for attachment in attachments or []:
+            if attachment["message_id"] == message["id"]:
+                lines.append(
+                    f"Attachment stored as source: {attachment['source_title']} ({attachment['source_id']})"
+                )
+        lines.append("")
+    return "\n".join(lines).strip()[:TRANSCRIPT_INDEX_MAX_CHARS]
 
 
 def _transcript_target_clusters(conn, *, vault_id: str, session, messages) -> list[dict]:

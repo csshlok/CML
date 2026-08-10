@@ -5,7 +5,12 @@ from uuid import uuid4
 
 from backend.app.core.database import dict_from_row, utc_now
 from backend.app.core.embeddings import content_hash
-from backend.app.core.encrypted_storage import hydrate_chat_message_rows, source_from_encrypted_row
+from backend.app.core.encrypted_storage import (
+    get_encrypted_text,
+    hydrate_chat_message_rows,
+    is_vault_secured,
+    source_from_encrypted_row,
+)
 from backend.app.core.memory_card import summarize_text
 from backend.app.core.atomic_memory_store import load_v2_atomic_memory_items
 from backend.app.core.temporal_facts import (
@@ -25,6 +30,7 @@ MEMORY_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
     ("task", re.compile(r"\b(todo|to do|implement|build|fix|add|update|work on)\b", re.IGNORECASE)),
     ("open_loop", re.compile(r"\b(question|follow up|later|remaining|still need|next pass)\b", re.IGNORECASE)),
 ]
+_UNCLUSTERED_SCOPE_ID = "__unclustered__"
 
 
 def rebuild_chat_session_memory(conn, *, vault_id: str, session_id: str) -> None:
@@ -102,9 +108,10 @@ def get_context_memory(
     limit: int = 8,
     personal_only: bool = False,
 ) -> tuple[list[dict], dict]:
+    unclustered_only = cluster_id == _UNCLUSTERED_SCOPE_ID
     working = (
         {}
-        if personal_only
+        if personal_only or unclustered_only
         else _latest_working_memory(conn, vault_id=vault_id, cluster_id=cluster_id)
     )
     memory_items = _select_memory_items(
@@ -115,17 +122,21 @@ def get_context_memory(
         limit=limit,
         personal_only=personal_only,
     )
-    temporal_items = _select_temporal_memory_items(
-        conn,
-        vault_id=vault_id,
-        cluster_id=cluster_id,
-        query=query,
-        limit=limit,
+    temporal_items = (
+        []
+        if unclustered_only
+        else _select_temporal_memory_items(
+            conn,
+            vault_id=vault_id,
+            cluster_id=cluster_id,
+            query=query,
+            limit=limit,
+        )
     )
     from backend.app.core.config import get_settings
 
     v2_items = []
-    if get_settings().atomic_v2_retrieval_enabled:
+    if get_settings().atomic_v2_retrieval_enabled and not unclustered_only:
         v2_items = load_v2_atomic_memory_items(
             conn,
             vault_id=vault_id,
@@ -150,7 +161,7 @@ def get_context_memory(
         memory_items,
         limit=limit,
     )
-    if not working and not personal_only:
+    if not working and not personal_only and not unclustered_only:
         refresh_bootstrap_memory_map(conn, vault_id=vault_id, cluster_id=cluster_id)
         working = _latest_working_memory(conn, vault_id=vault_id, cluster_id=cluster_id)
     return memory_items, working or {}
@@ -253,7 +264,16 @@ def classify_external_response_quality(
         return {"quality_state": "unknown", "reasons": ["context_request_not_found"]}
     handles = _json_list(packet["evidence_handles_json"])
     titles = _json_list(packet["source_titles_json"])
-    packet_text = " ".join(str(packet["packet_text"] or "").lower().split())
+    stored_packet_text = str(packet["packet_text"] or "")
+    if is_vault_secured(conn, vault_id):
+        stored_packet_text = get_encrypted_text(
+            conn,
+            vault_id=vault_id,
+            entity_type="bridge_context_packet",
+            entity_id=context_request_id,
+            field_name="packet_text",
+        )
+    packet_text = " ".join(stored_packet_text.lower().split())
     normalized = " ".join(response_text.lower().split())
     matched_handles = [handle for handle in handles if handle.lower() in normalized]
     matched_titles = [title for title in titles if str(title).lower() in normalized]
@@ -634,7 +654,9 @@ def _select_memory_items(
 ) -> list[dict]:
     params: list[str] = [vault_id]
     cluster_clause = ""
-    if cluster_id:
+    if cluster_id == _UNCLUSTERED_SCOPE_ID:
+        cluster_clause = "AND cluster_id IS NULL AND source_id IS NOT NULL"
+    elif cluster_id:
         cluster_clause = "AND (cluster_id = ? OR cluster_id IS NULL)"
         params.append(cluster_id)
     personal_clause = (

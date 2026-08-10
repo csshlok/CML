@@ -426,33 +426,56 @@ def sync_chat_session_temporal_facts(
     session_id: str,
     messages: list[sqlite3.Row],
 ) -> dict:
+    prior_state = conn.execute(
+        "SELECT * FROM temporal_fact_session_state WHERE session_id = ? AND vault_id = ?",
+        (session_id, vault_id),
+    ).fetchone()
+    sync_mode = "full"
+    messages_to_process = messages
+    retract_missing = True
+    if prior_state is not None and prior_state["extractor_version"] == CHAT_FACT_EXTRACTOR_VERSION:
+        prior_count = max(0, int(prior_state["source_message_count"] or 0))
+        if prior_count <= len(messages):
+            prefix_hash = temporal_fact_source_hash(messages[:prior_count])
+            if prefix_hash == str(prior_state["source_content_hash"] or ""):
+                messages_to_process = messages[prior_count:]
+                retract_missing = False
+                sync_mode = "no_change" if not messages_to_process else "append"
+
     desired_fingerprints: set[str] = set()
-    created_ids: list[str] = []
-    for message in messages:
+    for message in messages_to_process:
         for candidate, supersede_current in _chat_candidates(vault_id, session_id, message):
             fact = record_temporal_fact(
                 conn, candidate, supersede_current=supersede_current
             )
             desired_fingerprints.add(str(fact["origin_fingerprint"]))
-            created_ids.append(str(fact["id"]))
 
-    retained = conn.execute(
-        """
-        SELECT id, origin_fingerprint FROM temporal_facts
-        WHERE vault_id = ? AND session_id = ? AND source_type = 'chat_message'
-          AND status != 'retracted'
-        """,
-        (vault_id, session_id),
-    ).fetchall()
     retracted = 0
-    for row in retained:
-        if str(row["origin_fingerprint"]) in desired_fingerprints:
-            continue
-        conn.execute(
-            "UPDATE temporal_facts SET status = 'retracted', valid_until = ? WHERE id = ?",
-            (utc_now(), row["id"]),
-        )
-        retracted += 1
+    if retract_missing:
+        retained = conn.execute(
+            """
+            SELECT id, origin_fingerprint FROM temporal_facts
+            WHERE vault_id = ? AND session_id = ? AND source_type = 'chat_message'
+              AND status != 'retracted'
+            """,
+            (vault_id, session_id),
+        ).fetchall()
+        retracted_at = utc_now()
+        stale_ids = [
+            str(row["id"])
+            for row in retained
+            if str(row["origin_fingerprint"]) not in desired_fingerprints
+        ]
+        for offset in range(0, len(stale_ids), 200):
+            batch = stale_ids[offset : offset + 200]
+            placeholders = ",".join("?" for _ in batch)
+            retracted += int(
+                conn.execute(
+                    f"UPDATE temporal_facts SET status = 'retracted', valid_until = ? "
+                    f"WHERE id IN ({placeholders}) AND status != 'retracted'",
+                    [retracted_at, *batch],
+                ).rowcount
+            )
     source_hash = temporal_fact_source_hash(messages)
     fact_count = int(
         conn.execute(
@@ -494,9 +517,23 @@ def sync_chat_session_temporal_facts(
         session_id=session_id,
         messages=messages,
     )
+    fact_ids = [
+        str(row["id"])
+        for row in conn.execute(
+            """
+            SELECT id FROM temporal_facts
+            WHERE vault_id = ? AND session_id = ? AND source_type = 'chat_message'
+              AND status != 'retracted'
+            ORDER BY created_at, id
+            """,
+            (vault_id, session_id),
+        ).fetchall()
+    ]
     return {
-        "fact_ids": list(dict.fromkeys(created_ids)),
+        "fact_ids": fact_ids,
         "retracted_count": retracted,
+        "sync_mode": sync_mode,
+        "processed_message_count": len(messages_to_process),
         "atomic_memory": atomic,
     }
 

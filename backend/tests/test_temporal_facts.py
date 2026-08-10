@@ -137,6 +137,9 @@ class TemporalFactLedgerTests(unittest.TestCase):
 
         self.assertEqual(first["retracted_count"], 0)
         self.assertEqual(second["retracted_count"], 0)
+        self.assertEqual(first["sync_mode"], "full")
+        self.assertEqual(second["sync_mode"], "no_change")
+        self.assertEqual(second["processed_message_count"], 0)
         self.assertEqual(first["fact_ids"], second["fact_ids"])
         self.assertEqual([item["object_text"] for item in current], ["Berlin"])
         self.assertEqual([item["object_text"] for item in historical], ["London"])

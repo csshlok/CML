@@ -545,7 +545,6 @@ class AdditionalQACases(unittest.TestCase):
                 "INSERT INTO vaults (id, name, path, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
                 ("vault-1", "Vault", self.tmp.name, now, now),
             )
-
         settings = update_bridge_settings(
             BridgeSettingsUpdate(enabled=True, allowed_vault_ids=["vault-1"], rotate_token=True)
         )
@@ -910,8 +909,61 @@ class AdditionalQACases(unittest.TestCase):
         self.assertEqual(raised.exception.status_code, 400)
 
         with connect() as conn:
-            row = conn.execute("SELECT status FROM integration_imports WHERE id = 'import-1'").fetchone()
+            row = conn.execute(
+                "SELECT status, next_watch_at FROM integration_imports WHERE id = 'import-1'"
+            ).fetchone()
         self.assertEqual(row["status"], "error")
+        self.assertIsNone(row["next_watch_at"])
+
+    def test_watched_folder_failures_back_off_then_require_action(self) -> None:
+        from fastapi import HTTPException
+
+        from backend.app.api.routes.integrations import refresh_integration_import
+        from backend.app.core.background_jobs import _enqueue_due_integration_refresh_jobs
+        from backend.app.core.database import connect, utc_now
+
+        now = utc_now()
+        with connect() as conn:
+            conn.execute(
+                "INSERT INTO vaults (id, name, path, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+                ("vault-watch-error", "Watch", self.tmp.name, now, now),
+            )
+            conn.execute(
+                """
+                INSERT INTO integration_imports (
+                    id, vault_id, integration_type, root_path, status, supported_count,
+                    skipped_count, truncated, last_scan_at, watch_enabled,
+                    watch_interval_seconds, next_watch_at, created_at, updated_at
+                )
+                VALUES ('import-watch-error', 'vault-watch-error', 'local_folder', ?, 'scanned', 0, 0, 0,
+                        ?, 1, 60, ?, ?, ?)
+                """,
+                (str(Path(self.tmp.name) / "missing-watch"), now, now, now, now),
+            )
+
+        scheduled: list[str] = []
+        with patch("backend.app.api.routes.integrations.random.uniform", return_value=1.0):
+            for attempt in range(1, 6):
+                with self.assertRaises(HTTPException):
+                    refresh_integration_import("import-watch-error", trigger_source="watch_refresh")
+                with connect() as conn:
+                    row = conn.execute(
+                        "SELECT status, watch_failure_count, next_watch_at FROM integration_imports "
+                        "WHERE id = 'import-watch-error'"
+                    ).fetchone()
+                self.assertEqual(row["watch_failure_count"], attempt)
+                if row["next_watch_at"]:
+                    scheduled.append(row["next_watch_at"])
+
+        self.assertEqual(len(scheduled), 4)
+        self.assertEqual(row["status"], "action_needed")
+        self.assertIsNone(row["next_watch_at"])
+        _enqueue_due_integration_refresh_jobs()
+        with connect() as conn:
+            queued = conn.execute(
+                "SELECT COUNT(*) AS count FROM app_jobs WHERE dedupe_key = 'integration-refresh:import-watch-error'"
+            ).fetchone()["count"]
+        self.assertEqual(queued, 0)
 
     def test_local_folder_scan_skips_symlink_targets(self) -> None:
         from backend.app.core.local_integrations import scan_local_folder
@@ -1128,13 +1180,19 @@ class AdditionalQACases(unittest.TestCase):
 
     def test_safe_open_blocks_redirect_to_loopback_target(self) -> None:
         from backend.app.core.extraction import ExtractionError, _safe_open
+        from backend.app.core.network_security import NetworkSecurityError
         from urllib.request import Request
 
         class RedirectToLoopback:
-            def open(self, request, timeout=0):
-                raise HTTPError(request.full_url, 302, "redirect", {"Location": "http://127.0.0.1/admin"}, None)
+            status = 302
+            headers = {"Location": "http://127.0.0.1/admin"}
+            def geturl(self): return "https://example.com/start"
+            def close(self): pass
 
-        with patch("backend.app.core.extraction.build_opener", return_value=RedirectToLoopback()):
+        with patch(
+            "backend.app.core.extraction._open_pinned_request",
+            side_effect=[RedirectToLoopback(), NetworkSecurityError("Private network URLs are not allowed")],
+        ):
             with self.assertRaises(ExtractionError) as raised:
                 _safe_open(Request("https://example.com/start"), timeout=1)
         self.assertIn("not allowed", str(raised.exception).lower())
@@ -1143,29 +1201,9 @@ class AdditionalQACases(unittest.TestCase):
         from backend.app.core.extraction import ExtractionError, _safe_open
         from urllib.request import Request
 
-        class FakeSocket:
-            def getpeername(self):
-                return ("127.0.0.1", 443)
-
-        class FakeRaw:
-            _sock = FakeSocket()
-
-        class FakeFp:
-            raw = FakeRaw()
-
-        class FakeResponse:
-            fp = FakeFp()
-
-            def geturl(self):
-                return "https://example.com/start"
-
-        class PublicUrlPrivatePeer:
-            def open(self, _request, timeout=0):
-                return FakeResponse()
-
-        with (
-            patch("backend.app.core.extraction.build_opener", return_value=PublicUrlPrivatePeer()),
-            patch("socket.getaddrinfo", return_value=[(None, None, None, None, ("93.184.216.34", 443))]),
+        with patch(
+            "backend.app.core.network_security.socket.getaddrinfo",
+            return_value=[(None, None, None, None, ("127.0.0.1", 443))],
         ):
             with self.assertRaises(ExtractionError) as raised:
                 _safe_open(Request("https://example.com/start"), timeout=1)
@@ -1769,6 +1807,14 @@ class AdditionalQACases(unittest.TestCase):
                 "INSERT INTO vaults (id, name, path, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
                 ("vault-1", "Vault", self.tmp.name, now, now),
             )
+            conn.execute(
+                """
+                INSERT INTO clusters (
+                    id, vault_id, name, name_origin, description, created_at, updated_at
+                ) VALUES ('cluster-chat-filter', 'vault-1', 'Filtered chats', 'user', '', ?, ?)
+                """,
+                (now, now),
+            )
             for index in range(6):
                 session_now = f"2026-06-14T00:00:0{index}Z"
                 conn.execute(
@@ -1801,6 +1847,9 @@ class AdditionalQACases(unittest.TestCase):
             conn.execute(
                 "UPDATE chat_sessions SET saved = 1 WHERE id IN ('session-0', 'session-extra-0000')"
             )
+            conn.execute(
+                "UPDATE chat_sessions SET scope_cluster_id = 'cluster-chat-filter' WHERE id = 'session-5'"
+            )
 
         first_page = list_chat_sessions("vault-1", limit=2, offset=0)
         second_page = list_chat_sessions("vault-1", limit=2, offset=2)
@@ -1808,6 +1857,7 @@ class AdditionalQACases(unittest.TestCase):
         tail_page = list_chat_sessions("vault-1", limit=4, offset=204)
         clamped = list_chat_sessions("vault-1", limit=0, offset=-5)
         saved = list_chat_sessions("vault-1", saved=True, limit=5)
+        cluster_scoped = list_chat_sessions("vault-1", cluster_id="cluster-chat-filter")
 
         self.assertEqual([item["id"] for item in first_page], ["session-extra-0204", "session-extra-0203"])
         self.assertEqual([item["id"] for item in second_page], ["session-extra-0202", "session-extra-0201"])
@@ -1816,6 +1866,7 @@ class AdditionalQACases(unittest.TestCase):
         self.assertEqual(len(clamped), 1)
         self.assertEqual(clamped[0]["id"], "session-extra-0204")
         self.assertEqual([item["id"] for item in saved], ["session-extra-0000", "session-0"])
+        self.assertEqual([item["id"] for item in cluster_scoped], ["session-5"])
         with self.assertRaises(HTTPException) as missing_vault:
             list_chat_sessions("vault-missing")
         self.assertEqual(missing_vault.exception.status_code, 404)
@@ -2356,11 +2407,13 @@ class AdditionalQACases(unittest.TestCase):
         from backend.app.core.extraction import ExtractionError, _safe_open
         from urllib.request import Request
 
-        class LoopingOpener:
-            def open(self, request, timeout=0):
-                raise HTTPError(request.full_url, 302, "loop", {"Location": "/next"}, None)
+        class LoopingResponse:
+            status = 302
+            headers = {"Location": "/next"}
+            def geturl(self): return "https://example.com/start"
+            def close(self): pass
 
-        with patch("backend.app.core.extraction.build_opener", return_value=LoopingOpener()):
+        with patch("backend.app.core.extraction._open_pinned_request", side_effect=lambda *_args, **_kwargs: LoopingResponse()):
             with self.assertRaises(ExtractionError) as raised:
                 _safe_open(Request("https://example.com/start"), timeout=1)
         self.assertIn("Too many redirects", str(raised.exception))
@@ -2807,7 +2860,7 @@ class AdditionalQACases(unittest.TestCase):
 
         created_client_ids: list[str] = []
         for index in range(5):
-            client = create_extension_client(ExtensionClientCreate(name=f"Browser {index}"))
+            client = create_extension_client(ExtensionClientCreate(name=f"Browser {index}", allowed_vault_ids=["vault-1"]))
             created_client_ids.append(client["id"])
             stamp = f"2026-06-19T00:00:0{index}+00:00"
             with connect() as conn:
@@ -2899,7 +2952,7 @@ class AdditionalQACases(unittest.TestCase):
         from backend.app.schemas import ExtensionClientCreate, ExtensionUploadCaptureRequest
 
         os.environ["CML_API_TOKEN"] = "core-token"
-        extension_client = create_extension_client(ExtensionClientCreate(name="browser"))
+        extension_client = create_extension_client(ExtensionClientCreate(name="browser", allowed_vault_ids=["vault-1"]))
         client = self._client()
         try:
             token_response = client.post(
@@ -2933,9 +2986,9 @@ class AdditionalQACases(unittest.TestCase):
         self.assertEqual(token_response.status_code, 401)
         self.assertIn("valid base64", str(invalid_error.exception))
 
-    def test_run_migrations_detects_interrupted_running_record(self) -> None:
+    def test_run_migrations_retries_known_interrupted_running_record(self) -> None:
         from backend.app.core.database import connect
-        from backend.app.core.migrations import MigrationError, run_migrations
+        from backend.app.core import migrations
 
         with connect() as conn:
             conn.execute(
@@ -2957,7 +3010,52 @@ class AdditionalQACases(unittest.TestCase):
                 """
             )
 
-        with self.assertRaises(MigrationError):
+        original_schema_version = migrations.SCHEMA_VERSION
+        original_migrations = migrations.MIGRATIONS
+        original_restartable = migrations.RESTARTABLE_MIGRATION_VERSIONS
+        try:
+            migrations.SCHEMA_VERSION = 1
+            migrations.MIGRATIONS = {1: migrations._migration_001_baseline}
+            migrations.RESTARTABLE_MIGRATION_VERSIONS = frozenset({1})
+            migrations.run_migrations()
+        finally:
+            migrations.SCHEMA_VERSION = original_schema_version
+            migrations.MIGRATIONS = original_migrations
+            migrations.RESTARTABLE_MIGRATION_VERSIONS = original_restartable
+
+        with connect() as conn:
+            row = conn.execute(
+                "SELECT status, attempt_count, lease_owner FROM schema_migrations WHERE version = 1"
+            ).fetchone()
+        self.assertEqual(row["status"], "succeeded")
+        self.assertEqual(row["attempt_count"], 1)
+        self.assertEqual(row["lease_owner"], "")
+
+    def test_run_migrations_quarantines_unknown_interrupted_record(self) -> None:
+        from backend.app.core.database import connect
+        from backend.app.core.migrations import MigrationError, run_migrations
+
+        with connect() as conn:
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS schema_migrations (
+                    version INTEGER PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    started_at TEXT NOT NULL,
+                    finished_at TEXT,
+                    status TEXT NOT NULL,
+                    error TEXT NOT NULL DEFAULT ''
+                )
+                """
+            )
+            conn.execute(
+                """
+                INSERT INTO schema_migrations (version, name, started_at, status)
+                VALUES (999, 'unknown_partial_change', '2026-01-01T00:00:00+00:00', 'running')
+                """
+            )
+
+        with self.assertRaisesRegex(MigrationError, "cannot be retried automatically"):
             run_migrations()
 
     def test_run_migrations_retries_failed_record_without_primary_key_collision(self) -> None:
