@@ -7,6 +7,10 @@ from backend.app.core.encrypted_storage import encrypted_blob_store_size
 
 def storage_accounting(vault_id: str | None = None) -> dict:
     with connect() as conn:
+        if vault_id:
+            vault_rows = conn.execute("SELECT id, path FROM vaults WHERE id = ?", (vault_id,)).fetchall()
+        else:
+            vault_rows = conn.execute("SELECT id, path FROM vaults ORDER BY id").fetchall()
         source_clause = "WHERE deleted_at IS NULL"
         chunk_clause = ""
         page_clause = ""
@@ -113,14 +117,49 @@ def storage_accounting(vault_id: str | None = None) -> dict:
             """,
             encrypted_params,
         ).fetchone()
-    vector_dir = _directory_size(get_settings().data_dir / "vectors")
+    vector_roots = {
+        (Path(str(row["path"] or get_settings().data_dir)) / ".cml" / "derived-artifacts" / "vectors").resolve()
+        for row in vault_rows
+    }
+    legacy_vector_root = (get_settings().data_dir / "vectors").resolve()
+    if not vault_id:
+        vector_roots.add(legacy_vector_root)
+    vector_dir = sum(_directory_size(path) for path in vector_roots)
     database_size = _safe_file_size(get_settings().database_path)
     encrypted_blob_bytes = encrypted_blob_store_size(vault_id)
+    attributable_payload_bytes = sum(
+        int(value or 0)
+        for value in (
+            source_row["raw_text_bytes"],
+            source_row["extracted_text_bytes"],
+            page_row["raw_text_bytes"],
+            chunk_row["text_bytes"],
+            chunk_row["embedding_bytes"],
+            chat_row["text_bytes"],
+            snapshot_row["query_bytes"],
+            evidence_row["query_bytes"],
+            evidence_row["excerpt_bytes"],
+            encrypted_row["ciphertext_text_bytes"],
+        )
+    )
     return {
         "vault_id": vault_id,
         "database_bytes": database_size,
+        "database_bytes_scope": "shared_all_vaults",
         "vector_index_bytes": vector_dir,
+        "vector_index_bytes_scope": "vault_attributable" if vault_id else "all_vaults",
         "encrypted_blob_bytes": encrypted_blob_bytes,
+        "encrypted_blob_bytes_scope": "vault_attributable" if vault_id else "all_vaults",
+        "shared_storage": {
+            "database_bytes": database_size,
+            "note": "SQLite allocation is shared and is not attributed to one vault.",
+        },
+        "vault_attributable_storage": {
+            "logical_database_payload_bytes": attributable_payload_bytes,
+            "vector_index_bytes": vector_dir,
+            "encrypted_blob_bytes": encrypted_blob_bytes,
+            "estimate": True,
+        } if vault_id else None,
         "encrypted_content": {
             "count": int(encrypted_row["count"] or 0),
             "ciphertext_text_bytes": int(encrypted_row["ciphertext_text_bytes"] or 0),

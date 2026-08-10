@@ -15,12 +15,18 @@ from backend.app.core.model_registry import list_models
 from backend.app.core.migration_planner import staging_summary
 from backend.app.core.ocr import ocr_runtime_status
 from backend.app.core.startup_repair import startup_repair_summary
+from backend.app.core.security_scans import security_scan_status, update_security_scan_schedule
 from backend.app.core.startup_status import read_startup_status
 from backend.app.core.version import app_version
 from backend.app.core.storage_accounting import storage_accounting
 from backend.app.core.vault_crypto import redact_security_material
 from backend.app.core.vector_maintenance import embedding_index_policy, vector_repair_plan
-from backend.app.schemas import AppJobRead, DiagnosticBundleJobRequest
+from backend.app.schemas import (
+    AppJobRead,
+    DiagnosticBundleJobRequest,
+    SecurityScanRequest,
+    SecurityScanScheduleUpdate,
+)
 
 router = APIRouter(prefix="/diagnostics", tags=["diagnostics"])
 
@@ -99,6 +105,31 @@ def queue_diagnostic_bundle(payload: DiagnosticBundleJobRequest | None = None) -
             job_type="diagnostic_bundle",
             payload={},
             dedupe_key=request.idempotency_key or "diagnostic-bundle:active",
+            user_initiated=True,
+        )
+
+
+@router.get("/security-scans")
+def get_security_scan_status() -> dict:
+    return security_scan_status()
+
+
+@router.patch("/security-scans/schedule")
+def set_security_scan_schedule(payload: SecurityScanScheduleUpdate) -> dict:
+    return update_security_scan_schedule(
+        enabled=payload.enabled,
+        interval_days=payload.interval_days,
+    )
+
+
+@router.post("/security-scans", response_model=AppJobRead, status_code=202)
+def queue_security_scan(payload: SecurityScanRequest) -> dict:
+    with connect() as conn:
+        return enqueue_job(
+            conn,
+            job_type="security_scan",
+            payload={"scan_type": payload.scan_type, "trigger": "manual"},
+            dedupe_key="security-scan:active",
             user_initiated=True,
         )
 
