@@ -1,15 +1,18 @@
 from pathlib import Path
+import http.client
 import os
 import re
+import socket
+import ssl
 from html.parser import HTMLParser
 from urllib.parse import urljoin, urlparse
-from urllib.request import HTTPRedirectHandler, Request, build_opener
+from urllib.request import Request
 
 from backend.app.core.network_security import (
     NetworkSecurityError,
+    resolve_public_http_endpoint,
     strip_url_credentials,
     validate_public_http_url,
-    validate_response_peer,
 )
 from backend.app.core.ocr import OCRError, ocr_image
 from backend.app.core.pdf_pipeline import PdfPipelineError, extract_pdf_document
@@ -441,7 +444,9 @@ def link_extraction_diagnostics(url: str) -> dict:
 
     browser_diagnostics = browser_ingestion_diagnostics()
     diagnostics["browser_isolation"] = browser_diagnostics
-    diagnostics["dynamic_fallback_available"] = bool(browser_diagnostics["available"])
+    diagnostics["dynamic_fallback_available"] = False
+    diagnostics["browser_isolation"]["url_navigation_enabled"] = False
+    diagnostics["browser_isolation"]["url_navigation_reason"] = "DNS-pinned static transport is required for URL ingestion."
     if diagnostics["allowed"] and diagnostics["dynamic_fallback_available"]:
         diagnostics["quality_reason"] = "Static extraction is attempted first; browser fallback is available for thin dynamic pages."
     elif diagnostics["allowed"]:
@@ -457,44 +462,94 @@ def _needs_dynamic_extraction(text: str, html: str) -> bool:
 
 
 def _extract_dynamic_text_from_url(url: str) -> tuple[str, str, str | None, dict] | None:
-    try:
-        from backend.app.core.browser_ingestion import extract_dynamic_text_from_url_isolated
-
-        return extract_dynamic_text_from_url_isolated(url)
-    except Exception:
-        return None
-
-
-class _NoRedirectHandler(HTTPRedirectHandler):
-    def redirect_request(self, req, fp, code, msg, headers, newurl):
-        return None
+    # Browser navigation cannot pin the validated DNS answer through its
+    # connection. Keep URL ingestion on the pinned static transport.
+    return None
 
 
 def _safe_open(request: Request, timeout: int):
-    opener = build_opener(_NoRedirectHandler)
     current = request
     for _ in range(MAX_REDIRECTS + 1):
         try:
-            response = opener.open(current, timeout=timeout)
-            try:
-                validate_public_http_url(response.geturl())
-                validate_response_peer(response)
-            except NetworkSecurityError as validation_exc:
-                raise ExtractionError(str(validation_exc)) from validation_exc
+            response = _open_pinned_request(current, timeout=timeout)
+        except NetworkSecurityError as exc:
+            raise ExtractionError(str(exc)) from exc
+        if response.status not in {301, 302, 303, 307, 308}:
             return response, response.geturl()
-        except Exception as exc:
-            code = getattr(exc, "code", None)
-            headers = getattr(exc, "headers", {})
-            if code not in {301, 302, 303, 307, 308}:
-                raise
-            location = headers.get("Location")
+        try:
+            location = response.headers.get("Location")
             if not location:
-                raise ExtractionError("Link redirect did not include a target") from exc
+                raise ExtractionError("Link redirect did not include a target")
             next_url = urljoin(current.full_url, location)
             next_url = strip_url_credentials(next_url)
-            try:
-                validate_public_http_url(next_url)
-            except NetworkSecurityError as validation_exc:
-                raise ExtractionError(str(validation_exc)) from validation_exc
             current = Request(next_url, headers=dict(current.header_items()))
+        finally:
+            response.close()
     raise ExtractionError("Too many redirects while fetching link")
+
+
+class _PinnedHTTPConnection(http.client.HTTPConnection):
+    def __init__(self, hostname: str, pinned_ip: str, port: int, timeout: int):
+        super().__init__(hostname, port=port, timeout=timeout)
+        self._pinned_ip = pinned_ip
+
+    def connect(self):
+        self.sock = socket.create_connection((self._pinned_ip, self.port), self.timeout)
+
+
+class _PinnedHTTPSConnection(http.client.HTTPSConnection):
+    def __init__(self, hostname: str, pinned_ip: str, port: int, timeout: int):
+        super().__init__(hostname, port=port, timeout=timeout, context=ssl.create_default_context())
+        self._pinned_ip = pinned_ip
+
+    def connect(self):
+        raw_socket = socket.create_connection((self._pinned_ip, self.port), self.timeout)
+        self.sock = self._context.wrap_socket(raw_socket, server_hostname=self.host)
+
+
+class _PinnedResponse:
+    def __init__(self, response, connection, url: str):
+        self._response = response
+        self._connection = connection
+        self._url = url
+        self.headers = response.headers
+        self.status = response.status
+
+    def read(self, amount: int = -1):
+        return self._response.read(amount)
+
+    def geturl(self) -> str:
+        return self._url
+
+    def close(self) -> None:
+        try:
+            self._response.close()
+        finally:
+            self._connection.close()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, _exc_type, _exc, _tb):
+        self.close()
+
+
+def _open_pinned_request(request: Request, *, timeout: int) -> _PinnedResponse:
+    url = strip_url_credentials(request.full_url)
+    parsed = urlparse(url)
+    pinned_ip, port, hostname = resolve_public_http_endpoint(url)
+    connection_class = _PinnedHTTPSConnection if parsed.scheme == "https" else _PinnedHTTPConnection
+    connection = connection_class(hostname, pinned_ip, port, timeout)
+    target = parsed.path or "/"
+    if parsed.query:
+        target = f"{target}?{parsed.query}"
+    headers = dict(request.header_items())
+    default_port = 443 if parsed.scheme == "https" else 80
+    headers["Host"] = hostname if port == default_port else f"{hostname}:{port}"
+    try:
+        connection.request("GET", target, headers=headers)
+        response = connection.getresponse()
+    except Exception:
+        connection.close()
+        raise
+    return _PinnedResponse(response, connection, url)

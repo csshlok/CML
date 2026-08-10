@@ -26,6 +26,7 @@ class PdfPipelineTests(unittest.TestCase):
             "CML_DATA_DIR",
             "CML_DATABASE_PATH",
             "CML_PDF_PARSER_BACKEND",
+            "CML_DEFER_PDF_OCR",
             "CML_ALLOW_HASH_EMBEDDINGS",
             "CML_EMBEDDING_PROVIDER",
         ):
@@ -53,6 +54,27 @@ class PdfPipelineTests(unittest.TestCase):
         self.assertEqual(document["parser"]["backend"], "builtin")
         self.assertEqual(document["parser"]["mode"], "metadata_fallback")
         self.assertIn("ocr unavailable", document["pages"][0])
+
+    def test_parser_worker_defers_scanned_pdf_ocr(self) -> None:
+        from backend.app.core.pdf_pipeline import extract_pdf_document_with_backend
+
+        target = Path(self.tmp.name) / "scan.pdf"
+        target.write_bytes(b"%PDF-1.4\n%mock\n")
+        os.environ["CML_DEFER_PDF_OCR"] = "1"
+
+        class _EmptyReader:
+            def __init__(self, *_args, **_kwargs) -> None:
+                self.pages = [type("_Page", (), {"extract_text": lambda self: ""})()]
+
+        with (
+            patch("pypdf.PdfReader", _EmptyReader),
+            patch("backend.app.core.pdf_pipeline.ocr_pdf_pages") as ocr,
+        ):
+            document = extract_pdf_document_with_backend(target, "builtin")
+
+        ocr.assert_not_called()
+        self.assertTrue(document["parser"]["ocr_deferred"])
+        self.assertEqual(document["parser"]["mode"], "metadata_fallback")
 
     def test_parse_opendataloader_outputs_extracts_tables_and_boxes(self) -> None:
         from backend.app.core.pdf_pipeline import parse_opendataloader_outputs
@@ -133,6 +155,40 @@ class PdfPipelineTests(unittest.TestCase):
             source = create_source_from_path(SourcePathCreate(vault_id="vault-1", path=str(target)))
 
         self.assertIn("opendataloader_pdf", source["parser_security_json"])
+
+    def test_deferred_pdf_ocr_is_enqueued_in_its_own_concurrency_group(self) -> None:
+        from backend.app.api.routes.sources import create_source_from_path
+        from backend.app.core.background_jobs import _job_policy
+        from backend.app.core.database import connect, utc_now
+        from backend.app.schemas import SourcePathCreate
+
+        target = Path(self.tmp.name) / "deferred.pdf"
+        target.write_bytes(b"%PDF-1.4\n")
+        now = utc_now()
+        with connect() as conn:
+            conn.execute(
+                "INSERT INTO vaults (id, name, path, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+                ("vault-1", "Vault", self.tmp.name, now, now),
+            )
+
+        with patch(
+            "backend.app.core.quarantine.run_parser_worker",
+            return_value={
+                "title": "deferred.pdf",
+                "pages": ["OCR queued as a separate background stage."],
+                "parser": {"backend": "builtin", "mode": "metadata_fallback", "ocr_deferred": True},
+            },
+        ):
+            source = create_source_from_path(SourcePathCreate(vault_id="vault-1", path=str(target)))
+
+        with connect() as conn:
+            job = conn.execute(
+                "SELECT job_type, payload FROM app_jobs WHERE job_type = 'ocr_source' AND scope_id = ?",
+                (source["id"],),
+            ).fetchone()
+        self.assertIsNotNone(job)
+        self.assertIn(source["id"], job["payload"])
+        self.assertEqual(_job_policy("ocr_source").concurrency_group, "ocr_cpu")
 
 
 if __name__ == "__main__":

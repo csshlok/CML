@@ -1,16 +1,25 @@
 import hashlib
+import ctypes
 import json
 import os
 import platform
+import random
+import shutil
 import stat
 import subprocess
 import sys
+import tempfile
+import time
 import zipfile
 from pathlib import Path
 from uuid import uuid4
 
 from backend.app.core.database import connect, utc_now
-from backend.app.core.encrypted_storage import is_vault_secured, write_encrypted_file_from_path
+from backend.app.core.encrypted_storage import (
+    delete_encrypted_blob_file,
+    is_vault_secured,
+    write_encrypted_file_from_path,
+)
 from backend.app.core.extraction import (
     MAX_LOCAL_FILE_BYTES,
     MAX_LOCAL_MEDIA_BYTES,
@@ -32,6 +41,10 @@ MAX_DOCX_ENTRIES = 2000
 MAX_DOCX_UNCOMPRESSED_BYTES = 200 * 1024 * 1024
 MAX_DOCX_EXPANSION_RATIO = 100
 MAX_PDF_PAGES = 1000
+MAX_IMAGE_PIXELS = 50_000_000
+MAX_IMAGE_DIMENSION = 30_000
+PARSER_MEMORY_BYTES = 1536 * 1024 * 1024
+PARSER_MAX_PROCESSES = 8
 PARSER_TIMEOUT_SECONDS = 180
 IN_PROCESS_PARSER_EXTENSIONS = SUPPORTED_TEXT_EXTENSIONS | SUPPORTED_CODE_EXTENSIONS
 
@@ -43,10 +56,29 @@ class QuarantineError(ExtractionError):
 def ingest_file_through_quarantine(vault_id: str, path: str) -> dict:
     candidate = validate_candidate_file(path)
     defender = defender_scan(candidate["canonical_path"])
+    sandbox_only_policy = (
+        platform.system().lower() == "windows"
+        and defender["status"] == "unavailable"
+        and os.environ.get("CML_SANDBOX_ONLY_ALLOW_DEFENDER_UNAVAILABLE", "").strip().lower()
+        in {"1", "true", "yes", "on"}
+    )
     encrypted_blob = _encrypted_quarantine_blob(vault_id, Path(candidate["canonical_path"]))
     record_id = create_quarantine_record(vault_id, candidate, defender, encrypted_blob=encrypted_blob)
+    if defender["status"] == "failed" or (
+        platform.system().lower() == "windows"
+        and defender["status"] == "unavailable"
+        and not sandbox_only_policy
+    ):
+        update_quarantine_record(
+            record_id,
+            validation_status="blocked",
+            parser_status="not_run",
+            parser_detail="malware_scan_did_not_pass",
+            trust_tier="quarantined",
+        )
+        raise QuarantineError("File remained quarantined because Windows Defender did not pass it")
     try:
-        parsed = parse_candidate_file(candidate)
+        parsed = parse_candidate_file(candidate, force_sandbox=sandbox_only_policy)
         update_quarantine_record(
             record_id,
             validation_status="passed",
@@ -76,10 +108,10 @@ def ingest_file_through_quarantine(vault_id: str, path: str) -> dict:
     return parsed
 
 
-def parse_candidate_file(candidate: dict) -> dict:
+def parse_candidate_file(candidate: dict, *, force_sandbox: bool = False) -> dict:
     suffix = str(candidate.get("suffix") or "").lower()
     path = str(candidate.get("canonical_path") or "")
-    if suffix in IN_PROCESS_PARSER_EXTENSIONS:
+    if suffix in IN_PROCESS_PARSER_EXTENSIONS and not force_sandbox:
         title, pages = extract_pages_from_validated_path(path)
         return validate_worker_output({"title": title, "pages": pages})
     return run_parser_worker(path)
@@ -196,24 +228,136 @@ def update_quarantine_record(
         )
 
 
+def delete_quarantine_artifacts_for_source(conn, source_id: str) -> dict[str, int]:
+    rows = conn.execute(
+        """
+        SELECT id, vault_id, encrypted_blob_id
+        FROM source_quarantine_records
+        WHERE source_id = ?
+        ORDER BY created_at, id
+        """,
+        (source_id,),
+    ).fetchall()
+    blobs_deleted = 0
+    for row in rows:
+        blob_id = str(row["encrypted_blob_id"] or "")
+        if blob_id:
+            references = conn.execute(
+                "SELECT COUNT(*) AS count FROM source_quarantine_records WHERE encrypted_blob_id = ?",
+                (blob_id,),
+            ).fetchone()
+            if int(references["count"] or 0) <= 1:
+                blobs_deleted += int(
+                    delete_encrypted_blob_file(vault_id=str(row["vault_id"]), blob_id=blob_id)
+                )
+    deleted = conn.execute(
+        "DELETE FROM source_quarantine_records WHERE source_id = ?",
+        (source_id,),
+    ).rowcount
+    return {"records_deleted": int(deleted), "blobs_deleted": blobs_deleted}
+
+
+def prune_unattached_quarantine_artifacts(
+    conn,
+    *,
+    passed_cutoff: str,
+    failed_cutoff: str,
+    limit: int,
+    dry_run: bool = False,
+) -> dict[str, int | bool]:
+    bounded_limit = max(1, min(int(limit), 5_000))
+    rows = conn.execute(
+        """
+        SELECT id, vault_id, encrypted_blob_id
+        FROM source_quarantine_records
+        WHERE source_id IS NULL AND (
+            (parser_status = 'passed' AND updated_at < ?)
+            OR (parser_status != 'passed' AND updated_at < ?)
+        )
+        ORDER BY updated_at, id
+        LIMIT ?
+        """,
+        (passed_cutoff, failed_cutoff, bounded_limit),
+    ).fetchall()
+    if dry_run:
+        return {
+            "eligible": len(rows),
+            "deleted": 0,
+            "blobs_deleted": 0,
+            "batch_limited": len(rows) == bounded_limit,
+        }
+    deleted = 0
+    blobs_deleted = 0
+    skipped = 0
+    for row in rows:
+        blob_id = str(row["encrypted_blob_id"] or "")
+        try:
+            if blob_id:
+                references = conn.execute(
+                    "SELECT COUNT(*) AS count FROM source_quarantine_records WHERE encrypted_blob_id = ?",
+                    (blob_id,),
+                ).fetchone()
+                if int(references["count"] or 0) <= 1:
+                    blobs_deleted += int(
+                        delete_encrypted_blob_file(vault_id=str(row["vault_id"]), blob_id=blob_id)
+                    )
+            deleted += int(
+                conn.execute(
+                    "DELETE FROM source_quarantine_records WHERE id = ? AND source_id IS NULL",
+                    (row["id"],),
+                ).rowcount
+            )
+        except OSError:
+            skipped += 1
+    return {
+        "eligible": len(rows),
+        "deleted": deleted,
+        "blobs_deleted": blobs_deleted,
+        "skipped": skipped,
+        "batch_limited": len(rows) == bounded_limit,
+    }
+
+
 def run_parser_worker(path: str) -> dict:
     command = [sys.executable, "-m", "backend.app.core.parser_worker", path]
     env = _worker_env()
+    stdout_file = tempfile.TemporaryFile()
+    stderr_file = tempfile.TemporaryFile()
+    process = None
+    job = None
     try:
-        completed = subprocess.run(
+        process = subprocess.Popen(
             command,
-            check=False,
-            capture_output=True,
-            timeout=PARSER_TIMEOUT_SECONDS,
+            stdout=stdout_file,
+            stderr=stderr_file,
             env=env,
+            creationflags=getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0) if os.name == "nt" else 0,
         )
-    except subprocess.TimeoutExpired as exc:
-        raise QuarantineError("Parser worker timed out") from exc
+        job = _assign_windows_parser_job(process)
+        if os.name == "nt" and job is None:
+            _terminate_parser_tree(process, None)
+            raise QuarantineError("Parser worker containment could not be established")
+        try:
+            return_code = process.wait(timeout=PARSER_TIMEOUT_SECONDS)
+        except subprocess.TimeoutExpired as exc:
+            _terminate_parser_tree(process, job)
+            raise QuarantineError("Parser worker timed out") from exc
     except OSError as exc:
         raise QuarantineError(f"Parser worker failed to launch: {exc}") from exc
-    stdout_text = _decode_worker_stream(completed.stdout)
-    stderr_text = _decode_worker_stream(completed.stderr)
-    if completed.returncode != 0:
+    finally:
+        if job is not None:
+            job.close()
+    stdout_file.seek(0)
+    stderr_file.seek(0)
+    stdout_bytes = stdout_file.read(MAX_WORKER_JSON_BYTES + 1)
+    stderr_bytes = stderr_file.read(64 * 1024 + 1)
+    stdout_file.close()
+    stderr_file.close()
+    if len(stdout_bytes) > MAX_WORKER_JSON_BYTES:
+        raise QuarantineError("Parser worker output exceeded the allowed size")
+    stdout_text = _decode_worker_stream(stdout_bytes)
+    stderr_text = _decode_worker_stream(stderr_bytes)
+    if return_code != 0:
         detail = (stderr_text or stdout_text or "Parser worker failed").strip()
         raise QuarantineError(detail[:500])
     raw = stdout_text.encode("utf-8")
@@ -224,6 +368,97 @@ def run_parser_worker(path: str) -> dict:
     except json.JSONDecodeError as exc:
         raise QuarantineError("Parser worker returned malformed JSON") from exc
     return validate_worker_output(payload)
+
+
+class _WindowsParserJob:
+    def __init__(self, handle):
+        self.handle = handle
+
+    def terminate(self) -> None:
+        if self.handle:
+            ctypes.windll.kernel32.TerminateJobObject(self.handle, 1)
+
+    def close(self) -> None:
+        if self.handle:
+            ctypes.windll.kernel32.CloseHandle(self.handle)
+            self.handle = None
+
+
+def _assign_windows_parser_job(process) -> _WindowsParserJob | None:
+    if os.name != "nt":
+        return None
+
+    class BasicLimitInformation(ctypes.Structure):
+        _fields_ = [
+            ("PerProcessUserTimeLimit", ctypes.c_longlong),
+            ("PerJobUserTimeLimit", ctypes.c_longlong),
+            ("LimitFlags", ctypes.c_uint32),
+            ("MinimumWorkingSetSize", ctypes.c_size_t),
+            ("MaximumWorkingSetSize", ctypes.c_size_t),
+            ("ActiveProcessLimit", ctypes.c_uint32),
+            ("Affinity", ctypes.c_size_t),
+            ("PriorityClass", ctypes.c_uint32),
+            ("SchedulingClass", ctypes.c_uint32),
+        ]
+
+    class IoCounters(ctypes.Structure):
+        _fields_ = [(name, ctypes.c_ulonglong) for name in (
+            "ReadOperationCount", "WriteOperationCount", "OtherOperationCount",
+            "ReadTransferCount", "WriteTransferCount", "OtherTransferCount",
+        )]
+
+    class ExtendedLimitInformation(ctypes.Structure):
+        _fields_ = [
+            ("BasicLimitInformation", BasicLimitInformation),
+            ("IoInfo", IoCounters),
+            ("ProcessMemoryLimit", ctypes.c_size_t),
+            ("JobMemoryLimit", ctypes.c_size_t),
+            ("PeakProcessMemoryUsed", ctypes.c_size_t),
+            ("PeakJobMemoryUsed", ctypes.c_size_t),
+        ]
+
+    kernel32 = ctypes.windll.kernel32
+    kernel32.CreateJobObjectW.restype = ctypes.c_void_p
+    kernel32.SetInformationJobObject.argtypes = [
+        ctypes.c_void_p, ctypes.c_int, ctypes.c_void_p, ctypes.c_uint32,
+    ]
+    kernel32.AssignProcessToJobObject.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
+    kernel32.TerminateJobObject.argtypes = [ctypes.c_void_p, ctypes.c_uint32]
+    kernel32.CloseHandle.argtypes = [ctypes.c_void_p]
+    handle = kernel32.CreateJobObjectW(None, None)
+    if not handle:
+        return None
+    info = ExtendedLimitInformation()
+    info.BasicLimitInformation.LimitFlags = 0x2000 | 0x100 | 0x200 | 0x8
+    info.BasicLimitInformation.ActiveProcessLimit = PARSER_MAX_PROCESSES
+    info.ProcessMemoryLimit = PARSER_MEMORY_BYTES
+    info.JobMemoryLimit = PARSER_MEMORY_BYTES
+    configured = kernel32.SetInformationJobObject(
+        handle, 9, ctypes.byref(info), ctypes.sizeof(info)
+    )
+    assigned = configured and kernel32.AssignProcessToJobObject(
+        handle, ctypes.c_void_p(int(process._handle))
+    )
+    if not assigned:
+        kernel32.CloseHandle(handle)
+        return None
+    return _WindowsParserJob(handle)
+
+
+def _terminate_parser_tree(process, job: _WindowsParserJob | None) -> None:
+    if job is not None:
+        job.terminate()
+        return
+    if os.name == "nt":
+        subprocess.run(
+            ["taskkill", "/PID", str(process.pid), "/T", "/F"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=10,
+            check=False,
+        )
+        return
+    process.kill()
 
 
 def _decode_worker_stream(value: bytes | str | None) -> str:
@@ -267,9 +502,26 @@ def validate_worker_output(payload: object) -> dict:
     }
 
 
-def defender_scan(path: str) -> dict:
+def defender_scan(path: str, *, max_attempts: int = 3) -> dict:
+    attempts = max(1, min(int(max_attempts), 5))
+    result = {"status": "unavailable", "classification": "permanent", "detail": "Scanner unavailable."}
+    for attempt in range(attempts):
+        result = _defender_scan_once(path)
+        result["attempts"] = attempt + 1
+        if result["status"] != "unavailable" or result.get("classification") != "transient":
+            return result
+        if attempt + 1 < attempts:
+            time.sleep((0.2 * (2**attempt)) + random.uniform(0, 0.1))
+    return result
+
+
+def _defender_scan_once(path: str) -> dict:
     if platform.system().lower() != "windows":
-        return {"status": "unavailable", "detail": "Windows Defender scan is only available on Windows."}
+        return {
+            "status": "unavailable",
+            "classification": "permanent",
+            "detail": "Windows Defender scan is only available on Windows.",
+        }
     candidates = [
         Path(os.environ.get("ProgramFiles", "")) / "Windows Defender" / "MpCmdRun.exe",
         Path(os.environ.get("ProgramData", "")) / "Microsoft" / "Windows Defender" / "Platform",
@@ -284,22 +536,66 @@ def defender_scan(path: str) -> dict:
             if matches:
                 executable = matches[0]
                 break
-    if executable is None:
-        return {"status": "unavailable", "detail": "MpCmdRun.exe was not found."}
+    command = None
+    scanner = "mpcmdrun"
+    if executable is not None:
+        command = [str(executable), "-Scan", "-ScanType", "3", "-File", path]
+    else:
+        powershell = shutil.which("powershell.exe") or shutil.which("powershell")
+        if powershell:
+            scanner = "powershell_defender"
+            command = [
+                powershell,
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                "param($scanPath) Start-MpScan -ScanType CustomScan -ScanPath $scanPath",
+                path,
+            ]
+    if command is None:
+        return {
+            "status": "unavailable",
+            "classification": "permanent",
+            "detail": "Neither MpCmdRun.exe nor the Defender PowerShell fallback was found.",
+        }
     try:
         completed = subprocess.run(
-            [str(executable), "-Scan", "-ScanType", "3", "-File", path],
+            command,
             check=False,
             capture_output=True,
             text=True,
             timeout=120,
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
-        return {"status": "unavailable", "detail": str(exc)[:500]}
+        return {
+            "status": "unavailable",
+            "classification": "transient",
+            "scanner": scanner,
+            "detail": str(exc)[:500],
+        }
     if completed.returncode == 0:
-        return {"status": "passed", "detail": "Windows Defender reported no detected threat."}
+        return {
+            "status": "passed",
+            "classification": "clean",
+            "scanner": scanner,
+            "detail": "Windows Defender reported no detected threat.",
+        }
     detail = (completed.stderr or completed.stdout or f"Defender returned {completed.returncode}").strip()
-    return {"status": "failed", "detail": detail[:500]}
+    if completed.returncode == 2 or any(
+        marker in detail.casefold() for marker in ("threat", "malware", "virus", "infected")
+    ):
+        return {
+            "status": "failed",
+            "classification": "threat_detected",
+            "scanner": scanner,
+            "detail": detail[:500],
+        }
+    return {
+        "status": "unavailable",
+        "classification": "transient",
+        "scanner": scanner,
+        "detail": detail[:500],
+    }
 
 
 def _encrypted_quarantine_blob(vault_id: str, path: Path) -> dict | None:
@@ -327,7 +623,16 @@ def _structural_limits(path: Path, suffix: str, size: int) -> dict:
     if suffix == ".pdf":
         return _validate_pdf_structure(path)
     if suffix in SUPPORTED_IMAGE_EXTENSIONS:
-        return {"status": "passed", "max_dimension_check": "deferred_to_parser"}
+        try:
+            from PIL import Image
+
+            with Image.open(path) as image:
+                width, height = image.size
+        except Exception as exc:
+            raise QuarantineError("Image dimensions could not be validated") from exc
+        if width > MAX_IMAGE_DIMENSION or height > MAX_IMAGE_DIMENSION or width * height > MAX_IMAGE_PIXELS:
+            raise QuarantineError("Image dimensions exceed the safe decode budget")
+        return {"status": "passed", "width": width, "height": height, "pixels": width * height}
     return {"status": "passed"}
 
 
@@ -405,17 +710,20 @@ def _normalize_worker_text(text: str) -> str:
 def _worker_env() -> dict[str, str]:
     env = os.environ.copy()
     env["CML_PARSER_WORKER"] = "1"
+    env["CML_DEFER_PDF_OCR"] = "1"
     for key in list(env):
         upper = key.upper()
         if upper in {"CML_API_TOKEN", "CML_BRIDGE_TOKEN"}:
             env.pop(key, None)
-        elif upper.startswith("CML_") and upper not in {"CML_PARSER_WORKER"}:
+        elif upper.startswith("CML_") and upper not in {"CML_PARSER_WORKER", "CML_DEFER_PDF_OCR"}:
             env.pop(key, None)
     return env
 
 
 def _trust_tier(candidate: dict, defender: dict) -> str:
-    if defender["status"] == "failed":
+    if defender["status"] == "failed" or (
+        defender["status"] == "unavailable" and platform.system().lower() == "windows"
+    ):
         return "quarantined"
     return "imported_local"
 
@@ -426,6 +734,10 @@ def _security_labels(candidate: dict, defender: dict) -> list[str]:
         labels.append("defender_passed")
     elif defender["status"] == "unavailable":
         labels.append("defender_unavailable")
+        if os.environ.get("CML_SANDBOX_ONLY_ALLOW_DEFENDER_UNAVAILABLE", "").strip().lower() in {
+            "1", "true", "yes", "on"
+        }:
+            labels.append("sandbox_only_policy")
     else:
         labels.append("defender_failed")
     if candidate["suffix"] in {".pdf", ".docx"}:

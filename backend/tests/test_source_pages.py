@@ -810,7 +810,7 @@ class SourcePageIndexingTests(unittest.TestCase):
         from backend.app.api.routes.sources import create_source
         from backend.app.core.background_jobs import run_due_jobs_once
         from backend.app.core.database import connect, utc_now
-        from backend.app.core.vector_maintenance import activate_embedding_index
+        from backend.app.core.vector_maintenance import EmbeddingIndexNotReady, activate_embedding_index
         from backend.app.schemas import SemanticSearchRequest, SourceCreate
 
         now = utc_now()
@@ -833,9 +833,147 @@ class SourcePageIndexingTests(unittest.TestCase):
         baseline = semantic_search(SemanticSearchRequest(vault_id="vault-1", query="alpha beta"))
         self.assertGreater(len(baseline["results"]), 0)
 
-        activate_embedding_index("sentence-transformers/new-model", "v2")
-        filtered = semantic_search(SemanticSearchRequest(vault_id="vault-1", query="alpha beta"))
-        self.assertEqual(filtered["results"], [])
+        with self.assertRaises(EmbeddingIndexNotReady) as raised:
+            activate_embedding_index("sentence-transformers/new-model", "v2")
+        self.assertGreater(raised.exception.required_sources, 0)
+        self.assertEqual(raised.exception.ready_sources, 0)
+        still_searchable = semantic_search(SemanticSearchRequest(vault_id="vault-1", query="alpha beta"))
+        self.assertGreater(len(still_searchable["results"]), 0)
+
+    def test_embedding_transition_stages_new_chunks_without_disrupting_active_search(self) -> None:
+        from unittest.mock import patch
+
+        from backend.app.api.routes.search import activate_vector_policy, semantic_search
+        from backend.app.api.routes.sources import create_source
+        from backend.app.core.background_jobs import run_due_jobs_once
+        from backend.app.core.database import connect, utc_now
+        from backend.app.core.vector_maintenance import (
+            activate_embedding_index,
+            begin_embedding_index_transition,
+            embedding_index_policy,
+            embedding_index_readiness,
+            repair_vectors,
+        )
+        from backend.app.schemas import SemanticSearchRequest, SourceCreate
+
+        now = utc_now()
+        with connect() as conn:
+            conn.execute(
+                "INSERT INTO vaults (id, name, path, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+                ("vault-1", "Test vault", str(self.db_path.parent), now, now),
+            )
+        source = create_source(
+            SourceCreate(
+                vault_id="vault-1",
+                title="Transition note",
+                source_type="note",
+                raw_text="transition evidence remains searchable " * 120,
+            )
+        )
+        run_due_jobs_once(limit=1)
+        before = semantic_search(
+            SemanticSearchRequest(vault_id="vault-1", query="transition evidence")
+        )
+        self.assertTrue(before["results"])
+
+        old_policy = embedding_index_policy()
+        begin_embedding_index_transition("hash-next", "v2")
+        with (
+            patch("backend.app.core.vector_maintenance.active_embedding_model_id", return_value="hash-next"),
+            patch("backend.app.core.embeddings.active_embedding_model_id", return_value="hash-next"),
+        ):
+            repaired = repair_vectors("vault-1", limit=10)
+
+        self.assertEqual(repaired["sources_repaired"], 1)
+        during = semantic_search(
+            SemanticSearchRequest(vault_id="vault-1", query="transition evidence")
+        )
+        self.assertTrue(during["results"])
+        self.assertTrue(embedding_index_readiness("hash-next", "v2")["ready"])
+        with connect() as conn:
+            models = {
+                (row["embedding_model_id"], row["index_version"])
+                for row in conn.execute(
+                    "SELECT embedding_model_id, index_version FROM source_chunks WHERE source_id = ?",
+                    (source["id"],),
+                ).fetchall()
+            }
+        self.assertTrue(any(model != "hash-next" for model, _version in models))
+        self.assertIn(("hash-next", "v2"), models)
+
+        activation = activate_vector_policy("hash-next", "v2")
+        self.assertEqual(activation["sidecar_rebuilds_queued"], 1)
+        with connect() as conn:
+            rebuild_job = conn.execute(
+                """
+                SELECT id FROM app_jobs
+                WHERE job_type = 'vector_reconcile_incremental'
+                  AND scope_id = ? AND payload LIKE '%rebuild_sidecar%'
+                """,
+                ("vault-1",),
+            ).fetchone()
+        self.assertIsNotNone(rebuild_job)
+        after = semantic_search(
+            SemanticSearchRequest(vault_id="vault-1", query="transition evidence")
+        )
+        self.assertTrue(after["results"])
+        activate_embedding_index(
+            str(old_policy["active_embedding_model_id"]),
+            str(old_policy["active_index_version"]),
+        )
+        rolled_back = semantic_search(
+            SemanticSearchRequest(vault_id="vault-1", query="transition evidence")
+        )
+        self.assertTrue(rolled_back["results"])
+
+    def test_vector_retention_prunes_only_unreferenced_model_tuples(self) -> None:
+        from backend.app.api.routes.sources import create_source
+        from backend.app.core.background_jobs import run_due_jobs_once
+        from backend.app.core.database import connect, utc_now
+        from backend.app.core.vector_maintenance import prune_unreferenced_vector_chunks
+        from backend.app.schemas import SourceCreate
+
+        now = utc_now()
+        with connect() as conn:
+            conn.execute(
+                "INSERT INTO vaults (id, name, path, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+                ("vault-1", "Test vault", str(self.db_path.parent), now, now),
+            )
+        source = create_source(
+            SourceCreate(
+                vault_id="vault-1",
+                title="Vector retention",
+                source_type="note",
+                raw_text="vector retention content " * 300,
+            )
+        )
+        run_due_jobs_once(limit=1)
+        with connect() as conn:
+            chunks = conn.execute(
+                "SELECT id FROM source_chunks WHERE source_id = ? ORDER BY chunk_index",
+                (source["id"],),
+            ).fetchall()
+            self.assertGreater(len(chunks), 1)
+            obsolete_id = str(chunks[0]["id"])
+            conn.execute(
+                "UPDATE source_chunks SET embedding_model_id = 'obsolete-model', index_version = 'v0' WHERE id = ?",
+                (obsolete_id,),
+            )
+            report = prune_unreferenced_vector_chunks(
+                conn,
+                cutoff="9999-01-01T00:00:00+00:00",
+                limit=10,
+            )
+            remaining = {
+                str(row["id"])
+                for row in conn.execute(
+                    "SELECT id FROM source_chunks WHERE source_id = ?",
+                    (source["id"],),
+                ).fetchall()
+            }
+        self.assertEqual(report["deleted"], 1)
+        self.assertNotIn(obsolete_id, remaining)
+        self.assertTrue(remaining)
 
     def test_delete_source_tombstones_retrieval_items_before_page_chunk_cleanup(self) -> None:
         from backend.app.api.routes.sources import create_source, delete_source
@@ -921,7 +1059,7 @@ class SourcePageIndexingTests(unittest.TestCase):
         from backend.app.core.background_jobs import _run_delete_source_cleanup
         from backend.app.core.database import connect, utc_now
         from backend.app.core.embeddings import reindex_source_chunks
-        from backend.app.core.encrypted_storage import source_from_encrypted_row
+        from backend.app.core.encrypted_storage import source_from_encrypted_row, write_encrypted_file_from_path
         from backend.app.schemas import SourceCreate
 
         now = utc_now()
@@ -943,9 +1081,31 @@ class SourcePageIndexingTests(unittest.TestCase):
                 raw_text="secured cleanup evidence " * 80,
             )
         )
+        quarantine_original = self.db_path.parent / "quarantine-original.txt"
+        quarantine_original.write_text("encrypted original", encoding="utf-8")
+        encrypted_blob = write_encrypted_file_from_path(
+            vault_id="vault-secured",
+            source_path=quarantine_original,
+            blob_id="cleanup-quarantine-original",
+        )
         with connect() as conn:
             row = conn.execute("SELECT * FROM sources WHERE id = ?", (source["id"],)).fetchone()
             reindex_source_chunks(conn, source_from_encrypted_row(conn, row))
+            conn.execute(
+                """
+                INSERT INTO source_quarantine_records (
+                    id, vault_id, source_id, original_path, canonical_path, file_name, suffix,
+                    file_size, content_hash, encrypted_blob_id, encrypted_blob_path,
+                    validation_status, parser_status, trust_tier, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'passed', 'passed', 'imported_local', ?, ?)
+                """,
+                (
+                    "cleanup-quarantine-record", "vault-secured", source["id"],
+                    str(quarantine_original), str(quarantine_original), quarantine_original.name, ".txt",
+                    quarantine_original.stat().st_size, "hash", encrypted_blob["blob_id"], encrypted_blob["path"],
+                    now, now,
+                ),
+            )
 
         with connect() as conn:
             page = conn.execute("SELECT id FROM source_pages WHERE source_id = ?", (source["id"],)).fetchone()
@@ -1015,12 +1175,18 @@ class SourcePageIndexingTests(unittest.TestCase):
                 (source["id"],),
             ).fetchone()["count"]
             item = conn.execute("SELECT state, chunk_id, page_id FROM retrieval_snapshot_items WHERE id = 'cleanup-item'").fetchone()
+            quarantine_records = conn.execute(
+                "SELECT COUNT(*) AS count FROM source_quarantine_records WHERE source_id = ?",
+                (source["id"],),
+            ).fetchone()["count"]
         self.assertEqual(encrypted_after, 0)
         self.assertEqual(chunks, 0)
         self.assertEqual(pages, 0)
         self.assertEqual(item["state"], "source_deleted")
         self.assertIsNone(item["chunk_id"])
         self.assertIsNone(item["page_id"])
+        self.assertEqual(quarantine_records, 0)
+        self.assertFalse(Path(encrypted_blob["path"]).exists())
 
     def test_vector_reconciliation_queues_missing_source_chunks(self) -> None:
         from backend.app.api.routes.sources import create_source
@@ -2492,7 +2658,7 @@ class SourcePageIndexingTests(unittest.TestCase):
                 (now, now, now),
             )
 
-        recovered = recover_interrupted_generations()
+        recovered = recover_interrupted_generations(stale_after_seconds=0)
 
         with connect() as conn:
             row = conn.execute("SELECT state, error FROM chat_generations WHERE id = 'gen-1'").fetchone()
@@ -3180,7 +3346,7 @@ class SourcePageIndexingTests(unittest.TestCase):
                 "INSERT INTO vaults (id, name, path, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
                 ("vault-1", "Test vault", str(self.db_path.parent), now, now),
             )
-        client = create_extension_client(ExtensionClientCreate(name="Browser"))
+        client = create_extension_client(ExtensionClientCreate(name="Browser", allowed_vault_ids=["vault-1"]))
 
         response = capture_from_extension(
             ExtensionCaptureRequest(

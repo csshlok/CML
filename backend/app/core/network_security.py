@@ -30,6 +30,30 @@ def validate_public_http_url(url: str) -> None:
         validate_public_ip_address(address[4][0])
 
 
+def resolve_public_http_endpoint(url: str) -> tuple[str, int, str]:
+    """Resolve once, validate every answer, and return an address to pin."""
+    parsed = urlparse(url)
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+        raise NetworkSecurityError("Only public HTTP and HTTPS URLs are supported")
+    hostname = parsed.hostname.rstrip(".").lower()
+    port = parsed.port or _default_port(parsed.scheme)
+    if hostname == "localhost" or hostname.endswith(".localhost"):
+        raise NetworkSecurityError("Localhost URLs are not allowed")
+    try:
+        addresses = socket.getaddrinfo(hostname, port, type=socket.SOCK_STREAM)
+    except socket.gaierror as exc:
+        raise NetworkSecurityError("URL hostname could not be resolved") from exc
+    resolved: list[str] = []
+    for address in addresses:
+        value = str(address[4][0])
+        validate_public_ip_address(value)
+        if value not in resolved:
+            resolved.append(value)
+    if not resolved:
+        raise NetworkSecurityError("URL hostname could not be resolved")
+    return resolved[0], port, hostname
+
+
 def validate_public_ip_address(address: str) -> None:
     try:
         ip = ipaddress.ip_address(address)

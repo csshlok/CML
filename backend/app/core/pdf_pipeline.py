@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -99,6 +100,14 @@ def _extract_builtin_pdf_document(source_path: Path) -> dict:
         "bounding_boxes": [],
     }
     if not readable_pages:
+        if os.environ.get("CML_DEFER_PDF_OCR", "").strip().lower() in {"1", "true", "yes", "on"}:
+            fallback = _pdf_metadata_fallback(source_path, detail="OCR queued as a separate background stage.")
+            parser["mode"] = "metadata_fallback"
+            parser["issues"] = ["OCR deferred to the bounded ocr_cpu worker."]
+            parser["page_count"] = 1
+            parser["canonical_markdown"] = fallback
+            parser["ocr_deferred"] = True
+            return {"title": source_path.name, "pages": [fallback], "parser": parser}
         try:
             ocr_pages = ocr_pdf_pages(source_path)
         except OCRError as exc:

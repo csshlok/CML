@@ -7,6 +7,7 @@ from fastapi import APIRouter, HTTPException, Query
 
 from backend.app.core.background_jobs import (
     cancel_job,
+    cancel_jobs_for_scope,
     enqueue_job,
     pause_source_import_job,
     resume_source_import_job,
@@ -495,6 +496,7 @@ def _create_source_record(
     page_texts: list[str] | None = None,
     *,
     dedupe_checksum: bool = False,
+    import_root_path: str | None = None,
 ) -> dict:
     now = utc_now()
     raw_text = _sanitize_source_text(payload.raw_text)
@@ -538,6 +540,7 @@ def _create_source_record(
             "source_type": payload.source_type,
             "state": "indexed" if payload.raw_text else "waiting",
             "original_path": payload.original_path,
+            "import_root_path": import_root_path,
             "url": payload.url,
             "checksum": checksum,
             "provenance": "local_import",
@@ -571,14 +574,14 @@ def _create_source_record(
         conn.execute(
             """
             INSERT INTO sources (
-                id, vault_id, cluster_id, title, source_type, state, original_path, url,
+                id, vault_id, cluster_id, title, source_type, state, original_path, import_root_path, url,
                 checksum, provenance, trust_tier, security_labels, parser_security_json,
                 ingestion_stage, ingestion_generation, ingestion_error_code,
                 ingestion_status_detail, ingestion_updated_at,
                 raw_text, extracted_text, summary, tags, cover_image_url, created_at, updated_at
             )
             VALUES (
-                :id, :vault_id, :cluster_id, :title, :source_type, :state, :original_path, :url,
+                :id, :vault_id, :cluster_id, :title, :source_type, :state, :original_path, :import_root_path, :url,
                 :checksum, :provenance, :trust_tier, :security_labels, :parser_security_json,
                 :ingestion_stage, :ingestion_generation, :ingestion_error_code,
                 :ingestion_status_detail, :ingestion_updated_at,
@@ -767,6 +770,14 @@ def create_source_from_path(payload: SourcePathCreate) -> dict:
                 source_id,
             ),
         )
+        if bool((security.get("parser") or {}).get("ocr_deferred")):
+            enqueue_job(
+                conn,
+                job_type="ocr_source",
+                payload={"source_id": source_id, "source_checksum": checksum},
+                dedupe_key=f"ocr-source:{source_id}:{checksum}",
+                scope_id=source_id,
+            )
     attach_quarantine_record(ingested["quarantine_record_id"], source_id)
     result = get_source(source_id)
     result["import_outcome"] = "created" if created else "updated"
@@ -1457,6 +1468,12 @@ def delete_source(source_id: str) -> None:
         )
         if result.rowcount == 0:
             raise HTTPException(status_code=404, detail="Source not found")
+        cancel_jobs_for_scope(
+            conn,
+            write_scope="source",
+            scope_id=source_id,
+            detail="Source was deleted.",
+        )
         conn.execute(
             """
             UPDATE retrieval_snapshot_items
@@ -1478,18 +1495,6 @@ def delete_source(source_id: str) -> None:
         conn.execute("DELETE FROM source_chunks WHERE source_id = ?", (source_id,))
         conn.execute("DELETE FROM source_pages WHERE source_id = ?", (source_id,))
         conn.execute("DELETE FROM chat_attachments WHERE source_id = ?", (source_id,))
-        conn.execute(
-            """
-            UPDATE app_jobs
-            SET status = 'cancelled', status_detail = 'Source was deleted.', completed_at = ?, updated_at = ?
-            WHERE status IN ('queued', 'blocked_by_dependency', 'running')
-                AND (
-                    scope_id = ?
-                    OR payload LIKE ?
-                )
-            """,
-            (now, now, source_id, f'%"{source_id}"%'),
-        )
         enqueue_job(
             conn,
             job_type="delete_source_cleanup",
