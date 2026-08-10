@@ -1,8 +1,12 @@
 import importlib.util
+import atexit
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 import json
 import os
+import queue
 import subprocess
 import sys
+import threading
 from urllib.parse import urljoin
 
 from backend.app.core.config import get_settings
@@ -10,12 +14,18 @@ from backend.app.core.extraction import ExtractionError, MAX_LINK_BYTES
 from backend.app.core.network_security import NetworkSecurityError, strip_url_credentials, validate_public_http_url, validate_public_ip_address
 
 BROWSER_TIMEOUT_SECONDS = 18
+BROWSER_ADMISSION_TIMEOUT_SECONDS = 2
+BROWSER_MAX_CONCURRENT_WORKERS = 2
 BROWSER_NAVIGATION_TIMEOUT_MS = 12_000
 BROWSER_TEXT_TIMEOUT_MS = 5_000
 BROWSER_REQUEST_BUDGET = 80
 BROWSER_MAX_TEXT_BYTES = MAX_LINK_BYTES
 BROWSER_MAX_WORKER_JSON_BYTES = MAX_LINK_BYTES + 64 * 1024
+BROWSER_WORKER_RECYCLE_REQUESTS = 25
 BROWSER_BLOCKED_RESOURCE_TYPES = {"eventsource", "fetch", "font", "image", "media", "websocket", "xhr"}
+_BROWSER_WORKER_SLOTS = threading.BoundedSemaphore(BROWSER_MAX_CONCURRENT_WORKERS)
+_BROWSER_POOL = None
+_BROWSER_POOL_LOCK = threading.Lock()
 
 
 class BrowserIngestionError(ExtractionError):
@@ -34,6 +44,10 @@ def browser_ingestion_diagnostics() -> dict:
         "runtime_available": runtime_available,
         "isolated_worker": True,
         "timeout_seconds": BROWSER_TIMEOUT_SECONDS,
+        "admission_timeout_seconds": BROWSER_ADMISSION_TIMEOUT_SECONDS,
+        "max_concurrent_workers": BROWSER_MAX_CONCURRENT_WORKERS,
+        "worker_recycle_requests": BROWSER_WORKER_RECYCLE_REQUESTS,
+        "persistent_worker_pool": True,
         "navigation_timeout_ms": BROWSER_NAVIGATION_TIMEOUT_MS,
         "request_budget": BROWSER_REQUEST_BUDGET,
         "max_text_bytes": BROWSER_MAX_TEXT_BYTES,
@@ -70,17 +84,9 @@ def extract_dynamic_text_from_url_isolated(url: str) -> tuple[str, str, str | No
     if not browser_fallback_available():
         return None
 
-    command = [sys.executable, "-m", "backend.app.core.browser_worker", sanitized_url]
     try:
-        completed = subprocess.run(
-            command,
-            check=False,
-            capture_output=True,
-            text=True,
-            timeout=BROWSER_TIMEOUT_SECONDS,
-            env=_browser_worker_env(),
-        )
-    except subprocess.TimeoutExpired as exc:
+        completed = _get_browser_worker_pool().execute(sanitized_url)
+    except (subprocess.TimeoutExpired, FutureTimeoutError) as exc:
         raise BrowserIngestionError("Browser worker timed out") from exc
     except OSError as exc:
         raise BrowserIngestionError(f"Browser worker failed to launch: {exc}") from exc
@@ -98,6 +104,150 @@ def extract_dynamic_text_from_url_isolated(url: str) -> tuple[str, str, str | No
     security = browser_derived_security(validated["final_url"])
     security["request_count"] = validated["request_count"]
     return validated["title"], validated["text"], validated.get("cover_image_url"), security
+
+
+def _run_browser_worker(command: list[str]):
+    admitted = _BROWSER_WORKER_SLOTS.acquire(timeout=BROWSER_ADMISSION_TIMEOUT_SECONDS)
+    if not admitted:
+        raise BrowserIngestionError("Browser ingestion is busy; retry after active pages finish")
+    try:
+        return subprocess.run(
+            command,
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=BROWSER_TIMEOUT_SECONDS,
+            env=_browser_worker_env(),
+        )
+    finally:
+        _BROWSER_WORKER_SLOTS.release()
+
+
+class _BrowserWorkerPool:
+    def __init__(self) -> None:
+        self._idle: queue.LifoQueue[dict] = queue.LifoQueue()
+        self._workers: set[subprocess.Popen] = set()
+        self._lock = threading.Lock()
+        self._readers = ThreadPoolExecutor(
+            max_workers=BROWSER_MAX_CONCURRENT_WORKERS,
+            thread_name_prefix="browser-worker-output",
+        )
+
+    def execute(self, url: str):
+        admitted = _BROWSER_WORKER_SLOTS.acquire(timeout=BROWSER_ADMISSION_TIMEOUT_SECONDS)
+        if not admitted:
+            raise BrowserIngestionError("Browser ingestion is busy; retry after active pages finish")
+        worker = None
+        try:
+            worker = self._checkout()
+            process = worker["process"]
+            request_id = os.urandom(12).hex()
+            process.stdin.write(json.dumps({"id": request_id, "url": url}) + "\n")
+            process.stdin.flush()
+            future = self._readers.submit(process.stdout.readline)
+            line = future.result(timeout=BROWSER_TIMEOUT_SECONDS)
+            if not line:
+                raise OSError("Browser worker exited without a response")
+            if len(line.encode("utf-8")) > BROWSER_MAX_WORKER_JSON_BYTES:
+                raise BrowserIngestionError("Browser worker output exceeded the allowed size")
+            response = json.loads(line)
+            if not isinstance(response, dict) or response.get("id") != request_id:
+                raise BrowserIngestionError("Browser worker returned a mismatched response")
+            worker["requests"] += 1
+            if not response.get("ok"):
+                return subprocess.CompletedProcess(
+                    args=["browser-worker-pool"],
+                    returncode=1,
+                    stdout="",
+                    stderr=str(response.get("error") or "Browser worker failed")[:500],
+                )
+            return subprocess.CompletedProcess(
+                args=["browser-worker-pool"],
+                returncode=0,
+                stdout=json.dumps(response.get("payload"), ensure_ascii=False),
+                stderr="",
+            )
+        except (
+            FutureTimeoutError,
+            OSError,
+            BrokenPipeError,
+            json.JSONDecodeError,
+            BrowserIngestionError,
+        ):
+            if worker is not None:
+                self._discard(worker)
+                worker = None
+            raise
+        finally:
+            if worker is not None:
+                if worker["requests"] >= BROWSER_WORKER_RECYCLE_REQUESTS:
+                    self._discard(worker)
+                else:
+                    self._idle.put(worker)
+            _BROWSER_WORKER_SLOTS.release()
+
+    def _checkout(self) -> dict:
+        try:
+            return self._idle.get_nowait()
+        except queue.Empty:
+            with self._lock:
+                if len(self._workers) >= BROWSER_MAX_CONCURRENT_WORKERS:
+                    return self._idle.get(timeout=BROWSER_ADMISSION_TIMEOUT_SECONDS)
+                process = subprocess.Popen(
+                    [sys.executable, "-m", "backend.app.core.browser_worker", "--server"],
+                    stdin=subprocess.PIPE,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.DEVNULL,
+                    text=True,
+                    bufsize=1,
+                    env=_browser_worker_env(),
+                )
+                if process.stdin is None or process.stdout is None:
+                    process.kill()
+                    raise OSError("Browser worker pipes are unavailable")
+                self._workers.add(process)
+                return {"process": process, "requests": 0}
+
+    def _discard(self, worker: dict) -> None:
+        process = worker["process"]
+        with self._lock:
+            self._workers.discard(process)
+        if process.poll() is None:
+            process.kill()
+        try:
+            process.wait(timeout=2)
+        except subprocess.TimeoutExpired:
+            pass
+
+    def close(self) -> None:
+        with self._lock:
+            workers = list(self._workers)
+            self._workers.clear()
+        for process in workers:
+            if process.poll() is None:
+                process.kill()
+        self._readers.shutdown(wait=False, cancel_futures=True)
+
+
+def _get_browser_worker_pool() -> _BrowserWorkerPool:
+    global _BROWSER_POOL
+    if _BROWSER_POOL is None:
+        with _BROWSER_POOL_LOCK:
+            if _BROWSER_POOL is None:
+                _BROWSER_POOL = _BrowserWorkerPool()
+    return _BROWSER_POOL
+
+
+def _close_browser_worker_pool() -> None:
+    global _BROWSER_POOL
+    with _BROWSER_POOL_LOCK:
+        pool = _BROWSER_POOL
+        _BROWSER_POOL = None
+    if pool is not None:
+        pool.close()
+
+
+atexit.register(_close_browser_worker_pool)
 
 
 def validate_browser_worker_output(payload: object) -> dict:
@@ -150,7 +300,20 @@ def browser_worker_extract(url: str) -> dict:
     request_count = 0
     with sync_playwright() as playwright:
         browser = playwright.chromium.launch(headless=True)
-        context = browser.new_context(accept_downloads=False)
+        try:
+            return _browser_worker_extract_with_browser(browser, url)
+        finally:
+            browser.close()
+
+
+def _browser_worker_extract_with_browser(browser, url: str) -> dict:
+    try:
+        validate_public_http_url(strip_url_credentials(url))
+    except NetworkSecurityError as exc:
+        raise BrowserIngestionError(str(exc)) from exc
+    request_count = 0
+    context = browser.new_context(accept_downloads=False)
+    try:
         page = context.new_page()
 
         def route_guard(route):
@@ -190,7 +353,8 @@ def browser_worker_extract(url: str) -> dict:
         title = page.title()
         text = page.locator("body").inner_text(timeout=BROWSER_TEXT_TIMEOUT_MS).strip()
         cover = page.locator("meta[property='og:image']").first.get_attribute("content", timeout=1000)
-        browser.close()
+    finally:
+        context.close()
 
     if len(text.encode("utf-8")) > BROWSER_MAX_TEXT_BYTES:
         raise BrowserIngestionError("Browser-rendered text is too large to ingest safely")

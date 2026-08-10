@@ -202,8 +202,11 @@ function postJsonCapture(config, payload, fetchImpl, endpoint) {
       if (!config.token) {
         throw new Error("Extension token is missing. Import setup JSON first.");
       }
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 15_000);
       return fetchImpl(`${config.backendUrl}${apiPath(config, `/extension/${endpoint}`)}`, {
         method: "POST",
+        signal: controller.signal,
         headers: {
           "Content-Type": "application/json",
           "x-cml-extension-token": config.token,
@@ -221,6 +224,13 @@ function postJsonCapture(config, payload, fetchImpl, endpoint) {
           throw new Error(detail || `Capture failed with HTTP ${response.status}.`);
         }
         return response.json();
+      }).catch((error) => {
+        if (error?.name === "AbortError") {
+          throw new Error("Capture timed out. Check Vault, then retry.");
+        }
+        throw error;
+      }).finally(() => {
+        clearTimeout(timeout);
       });
 }
 

@@ -13,6 +13,7 @@ from fastapi import APIRouter, Header, HTTPException
 from backend.app.api.routes.sources import _create_source_record, create_source
 from backend.app.core.database import connect, dict_from_row, utc_now
 from backend.app.core.config import get_settings
+from backend.app.core.bridge_security import BridgeRateLimitError, enforce_rate_limit
 from backend.app.core.extraction import ExtractionError
 from backend.app.core.quarantine import attach_quarantine_record, ingest_file_through_quarantine
 from backend.app.schemas import (
@@ -56,6 +57,11 @@ def list_extension_clients(limit: int = 50, offset: int = 0) -> list[dict]:
 
 @router.post("/clients", response_model=ExtensionClientCreateResponse)
 def create_extension_client(payload: ExtensionClientCreate) -> dict:
+    with connect() as conn:
+        return _create_extension_client_in_connection(conn, payload)
+
+
+def _create_extension_client_in_connection(conn, payload: ExtensionClientCreate) -> dict:
     token = secrets.token_urlsafe(32)
     now = utc_now()
     client = {
@@ -67,17 +73,16 @@ def create_extension_client(payload: ExtensionClientCreate) -> dict:
         "created_at": now,
         "updated_at": now,
     }
-    with connect() as conn:
-        conn.execute(
-            """
-            INSERT INTO extension_clients (
-                id, name, token_hash, enabled, allowed_vault_ids, created_at, updated_at
-            )
-            VALUES (:id, :name, :token_hash, :enabled, :allowed_vault_ids, :created_at, :updated_at)
-            """,
-            client,
+    conn.execute(
+        """
+        INSERT INTO extension_clients (
+            id, name, token_hash, enabled, allowed_vault_ids, created_at, updated_at
         )
-        _insert_extension_audit(conn, client_id=client["id"], event_type="client_created", vault_id=None, detail="")
+        VALUES (:id, :name, :token_hash, :enabled, :allowed_vault_ids, :created_at, :updated_at)
+        """,
+        client,
+    )
+    _insert_extension_audit(conn, client_id=client["id"], event_type="client_created", vault_id=None, detail="")
     return {
         "id": client["id"],
         "name": client["name"],
@@ -244,33 +249,55 @@ def start_extension_pairing(payload: ExtensionPairingStartRequest) -> dict:
 
 @router.post("/pairing/{pairing_id}/approve", response_model=ExtensionClientCreateResponse)
 def approve_extension_pairing(pairing_id: str) -> dict:
+    expired = False
     with connect() as conn:
+        # Serialize the one-time claim and client creation. Without an immediate
+        # write lock, two approvers can both observe `pending` and mint separate
+        # credentials before either one marks the pairing complete.
+        conn.execute("BEGIN IMMEDIATE")
         pairing = conn.execute("SELECT * FROM extension_pairing_sessions WHERE id = ?", (pairing_id,)).fetchone()
         if pairing is None:
             raise HTTPException(status_code=404, detail="Extension pairing not found")
         if pairing["status"] != "pending":
             raise HTTPException(status_code=409, detail="Extension pairing is not pending")
-        if pairing["expires_at"] <= utc_now():
+        now = utc_now()
+        if pairing["expires_at"] <= now:
             conn.execute("UPDATE extension_pairing_sessions SET status = 'expired' WHERE id = ?", (pairing_id,))
-            raise HTTPException(status_code=409, detail="Extension pairing expired")
-    client = create_extension_client(
-        ExtensionClientCreate(
-            name=pairing["requested_name"],
-            allowed_vault_ids=_json_list(pairing["allowed_vault_ids"]),
-        )
-    )
-    with connect() as conn:
-        conn.execute(
-            "UPDATE extension_pairing_sessions SET status = 'approved', completed_at = ? WHERE id = ?",
-            (utc_now(), pairing_id),
-        )
-        _insert_extension_audit(
-            conn,
-            client_id=client["id"],
-            event_type="pairing_approved",
-            vault_id=None,
-            detail=json.dumps({"pairing_id": pairing_id}),
-        )
+            expired = True
+            client = None
+        else:
+            claimed = conn.execute(
+                """
+                UPDATE extension_pairing_sessions
+                SET status = 'approving'
+                WHERE id = ? AND status = 'pending' AND expires_at > ?
+                """,
+                (pairing_id, now),
+            )
+            if claimed.rowcount != 1:
+                raise HTTPException(status_code=409, detail="Extension pairing is not pending")
+            client = _create_extension_client_in_connection(
+                conn,
+                ExtensionClientCreate(
+                    name=pairing["requested_name"],
+                    allowed_vault_ids=_json_list(pairing["allowed_vault_ids"]),
+                ),
+            )
+            conn.execute(
+                "UPDATE extension_pairing_sessions SET status = 'approved', completed_at = ? WHERE id = ?",
+                (now, pairing_id),
+            )
+            _insert_extension_audit(
+                conn,
+                client_id=client["id"],
+                event_type="pairing_approved",
+                vault_id=None,
+                detail=json.dumps({"pairing_id": pairing_id}),
+            )
+    if expired:
+        # Raise after the context commits the terminal expiry state.
+        raise HTTPException(status_code=409, detail="Extension pairing expired")
+    assert client is not None
     return client
 
 
@@ -354,6 +381,7 @@ def capture_from_extension(
                 detail="vault_not_allowed",
             )
         raise HTTPException(status_code=403, detail="Extension client is not allowed to capture into this vault")
+    _reserve_extension_storage(client["id"], len(payload.text.encode("utf-8")))
     source = create_source(
         SourceCreate(
             vault_id=payload.vault_id,
@@ -414,7 +442,9 @@ def capture_uploaded_file_from_extension(
             )
         raise HTTPException(status_code=403, detail="Extension client is not allowed to capture into this vault")
 
-    source = _create_uploaded_extension_source(payload)
+    file_bytes = _decode_upload_bytes(payload.content_base64)
+    _reserve_extension_storage(client["id"], len(file_bytes))
+    source = _create_uploaded_extension_source(payload, file_bytes=file_bytes)
     now = utc_now()
     capture_id = f"extension-capture-{uuid4()}"
     with connect() as conn:
@@ -513,7 +543,7 @@ def _client_allows_vault(client, vault_id: str) -> bool:
         allowed = json.loads(client["allowed_vault_ids"] or "[]")
     except json.JSONDecodeError:
         allowed = []
-    return not allowed or vault_id in allowed
+    return bool(allowed) and vault_id in allowed
 
 
 def _json_list(raw: str | None) -> list[str]:
@@ -538,9 +568,9 @@ def _hash_token(token: str) -> str:
     return hashlib.sha256(token.encode("utf-8")).hexdigest()
 
 
-def _create_uploaded_extension_source(payload: ExtensionUploadCaptureRequest) -> dict:
+def _create_uploaded_extension_source(payload: ExtensionUploadCaptureRequest, *, file_bytes: bytes | None = None) -> dict:
     file_name = _safe_upload_file_name(payload.file_name, payload.mime_type, payload.capture_type)
-    file_bytes = _decode_upload_bytes(payload.content_base64)
+    file_bytes = file_bytes if file_bytes is not None else _decode_upload_bytes(payload.content_base64)
     suffix = Path(file_name).suffix.lower()
     with tempfile.TemporaryDirectory(prefix="cml-extension-upload-") as temp_dir:
         temp_path = Path(temp_dir) / file_name
@@ -593,6 +623,8 @@ def _create_uploaded_extension_source(payload: ExtensionUploadCaptureRequest) ->
 
 
 def _decode_upload_bytes(content_base64: str) -> bytes:
+    if len(content_base64) > 27_962_028:
+        raise HTTPException(status_code=413, detail="Uploaded file exceeds the 20 MB extension upload limit.")
     try:
         payload = base64.b64decode(content_base64, validate=True)
     except (binascii.Error, ValueError) as exc:
@@ -602,6 +634,23 @@ def _decode_upload_bytes(content_base64: str) -> bytes:
     if len(payload) > MAX_EXTENSION_UPLOAD_BYTES:
         raise HTTPException(status_code=413, detail="Uploaded file exceeds the 20 MB extension upload limit.")
     return payload
+
+
+def _reserve_extension_storage(client_id: str, byte_count: int) -> None:
+    try:
+        with connect() as conn:
+            enforce_rate_limit(
+                conn,
+                scope_type="extension_storage",
+                scope_id=client_id,
+                bucket="stored_bytes",
+                limit=10_000,
+                window_seconds=24 * 60 * 60,
+                byte_count=byte_count,
+                byte_limit=500 * 1024 * 1024,
+            )
+    except BridgeRateLimitError as exc:
+        raise HTTPException(status_code=429, detail="Extension storage quota exceeded") from exc
 
 
 def _safe_upload_file_name(file_name: str, mime_type: str, capture_type: str) -> str:
