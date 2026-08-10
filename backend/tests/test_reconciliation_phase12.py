@@ -225,6 +225,173 @@ class ReconciliationPhase12Tests(unittest.TestCase):
         self.assertEqual(int(run_count["count"] or 0), 3)
         self.assertEqual(int(item_counts["max_items"] or 0), 2)
 
+    def test_watched_refresh_checkpoints_and_yields_between_file_batches(self) -> None:
+        from backend.app.api.routes.integrations import refresh_integration_import
+        from backend.app.core.database import connect, utc_now
+
+        folder = Path(self.tmp.name) / "large-watch"
+        folder.mkdir()
+        expected = set()
+        for index in range(600):
+            path = folder / f"note-{index:04d}.md"
+            path.write_text(f"note {index}", encoding="utf-8")
+            expected.add(str(path))
+
+        now = utc_now()
+        with connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO integration_imports (
+                    id, vault_id, integration_type, root_path, status, supported_count,
+                    skipped_count, truncated, watch_enabled, watch_interval_seconds,
+                    next_watch_at, last_scan_at, created_at, updated_at
+                )
+                VALUES ('import-large-watch', 'vault-1', 'local_folder', ?, 'scanned',
+                        0, 0, 0, 1, 60, ?, ?, ?, ?)
+                """,
+                (str(folder), now, now, now, now),
+            )
+
+        processed: list[str] = []
+
+        def record_file(**kwargs):
+            processed.append(kwargs["file_path"])
+            return {"action": "unchanged", "source_id": None, "detail": {}}
+
+        responses = []
+        with patch(
+            "backend.app.api.routes.integrations._reconcile_single_supported_file",
+            side_effect=record_file,
+        ):
+            for _ in range(3):
+                responses.append(
+                    refresh_integration_import(
+                        "import-large-watch",
+                        import_files=True,
+                        tombstone_missing=True,
+                        trigger_source="watch_refresh",
+                    )
+                )
+
+        self.assertEqual([item["supported_count"] for item in responses], [250, 250, 100])
+        self.assertEqual([item["continuation_required"] for item in responses], [True, True, False])
+        self.assertEqual(len(processed), 600)
+        self.assertEqual(set(processed), expected)
+
+        with connect() as conn:
+            row = conn.execute(
+                """
+                SELECT status, supported_count, scan_cursor, scan_cycle_id, scan_phase,
+                       scan_processed_count, next_watch_at
+                FROM integration_imports WHERE id = 'import-large-watch'
+                """
+            ).fetchone()
+            seen_count = conn.execute(
+                "SELECT COUNT(*) AS count FROM integration_scan_seen WHERE import_id = 'import-large-watch'"
+            ).fetchone()["count"]
+
+        self.assertEqual(row["status"], "scanned")
+        self.assertEqual(row["supported_count"], 600)
+        self.assertEqual(row["scan_processed_count"], 600)
+        self.assertEqual(row["scan_cursor"], "")
+        self.assertEqual(row["scan_cycle_id"], "")
+        self.assertEqual(row["scan_phase"], "discovery")
+        self.assertGreater(row["next_watch_at"], now)
+        self.assertEqual(seen_count, 0)
+
+    def test_tombstones_are_batched_and_resume_without_rescanning(self) -> None:
+        from backend.app.api.routes.integrations import refresh_integration_import
+        from backend.app.core.database import connect, utc_now
+        from backend.app.core.local_integrations import scan_local_folder as real_scan_local_folder
+
+        folder = Path(self.tmp.name) / "tombstone-watch"
+        folder.mkdir()
+        root_text = str(folder.resolve())
+        now = utc_now()
+        with connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO integration_imports (
+                    id, vault_id, integration_type, root_path, status, supported_count,
+                    skipped_count, truncated, watch_enabled, watch_interval_seconds,
+                    next_watch_at, last_scan_at, created_at, updated_at
+                ) VALUES ('import-tombstones', 'vault-1', 'local_folder', ?, 'scanned',
+                          0, 0, 0, 1, 60, ?, ?, ?, ?)
+                """,
+                (root_text, now, now, now, now),
+            )
+            conn.executemany(
+                """
+                INSERT INTO sources (
+                    id, vault_id, title, source_type, state, original_path, import_root_path,
+                    checksum, created_at, updated_at
+                ) VALUES (?, 'vault-1', ?, 'note', 'indexed', ?, ?, ?, ?, ?)
+                """,
+                (
+                    (
+                        f"missing-{index:04d}",
+                        f"Missing {index}",
+                        str(folder / f"missing-{index:04d}.md"),
+                        root_text,
+                        f"missing-checksum-{index:04d}",
+                        now,
+                        now,
+                    )
+                    for index in range(251)
+                ),
+            )
+
+        deleted: list[str] = []
+
+        def mark_deleted(source_id: str) -> None:
+            deleted.append(source_id)
+            with connect() as conn:
+                conn.execute(
+                    "UPDATE sources SET deleted_at = ?, updated_at = ? WHERE id = ? AND deleted_at IS NULL",
+                    (utc_now(), utc_now(), source_id),
+                )
+
+        with patch("backend.app.api.routes.integrations.delete_source", side_effect=mark_deleted), patch(
+            "backend.app.api.routes.integrations.scan_local_folder",
+            wraps=real_scan_local_folder,
+        ) as scan:
+            first = refresh_integration_import(
+                "import-tombstones",
+                import_files=True,
+                tombstone_missing=True,
+                trigger_source="watch_refresh",
+            )
+            second = refresh_integration_import(
+                "import-tombstones",
+                import_files=True,
+                tombstone_missing=True,
+                trigger_source="watch_refresh",
+            )
+
+        self.assertTrue(first["continuation_required"])
+        self.assertEqual(first["tombstoned_count"], 250)
+        self.assertFalse(second["continuation_required"])
+        self.assertEqual(second["tombstoned_count"], 1)
+        self.assertEqual(len(deleted), 251)
+        self.assertEqual(scan.call_count, 1)
+
+        with connect() as conn:
+            row = conn.execute(
+                """
+                SELECT status, scan_cycle_id, scan_phase, tombstoned_count
+                FROM integration_imports WHERE id = 'import-tombstones'
+                """
+            ).fetchone()
+            remaining = conn.execute(
+                "SELECT COUNT(*) AS count FROM sources WHERE import_root_path = ? AND deleted_at IS NULL",
+                (root_text,),
+            ).fetchone()["count"]
+        self.assertEqual(row["status"], "scanned")
+        self.assertEqual(row["scan_cycle_id"], "")
+        self.assertEqual(row["scan_phase"], "discovery")
+        self.assertEqual(row["tombstoned_count"], 251)
+        self.assertEqual(remaining, 0)
+
     def _create_vault(self, vault_id: str) -> None:
         from backend.app.core.database import connect, utc_now
 

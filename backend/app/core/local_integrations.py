@@ -16,7 +16,7 @@ WATCHED_FOLDER_SCAN_LIMIT = 1000
 WATCHED_FOLDER_BACKPRESSURE_THRESHOLD = 1000
 
 
-def scan_local_folder(path: str, max_files: int = DEFAULT_SCAN_LIMIT) -> dict:
+def scan_local_folder(path: str, max_files: int = DEFAULT_SCAN_LIMIT, *, cursor: str = "") -> dict:
     root = Path(path).expanduser()
     if not root.exists() or not root.is_dir():
         raise FileNotFoundError(f"Folder does not exist: {root}")
@@ -25,12 +25,18 @@ def scan_local_folder(path: str, max_files: int = DEFAULT_SCAN_LIMIT) -> dict:
     skipped = 0
     truncated = False
 
+    normalized_cursor = str(cursor or "").replace("\\", "/")
+    last_relative_path = normalized_cursor
     for candidate in _walk(root):
+        relative_path = candidate.relative_to(root).as_posix()
+        if normalized_cursor and relative_path <= normalized_cursor:
+            continue
         if len(supported) >= max_files:
             truncated = True
             break
         if candidate.suffix.lower() in SUPPORTED_SOURCE_EXTENSIONS:
             supported.append(str(candidate))
+            last_relative_path = relative_path
         else:
             skipped += 1
 
@@ -43,6 +49,8 @@ def scan_local_folder(path: str, max_files: int = DEFAULT_SCAN_LIMIT) -> dict:
         "truncated": truncated,
         "backpressure_required": truncated or len(supported) >= WATCHED_FOLDER_BACKPRESSURE_THRESHOLD,
         "scan_limit": max_files,
+        "scan_cursor": last_relative_path if truncated else "",
+        "scan_complete": not truncated,
     }
 
 
@@ -58,22 +66,19 @@ def watched_folder_limits() -> dict:
 
 
 def _walk(root: Path):
-    stack = [root]
-    while stack:
-        current = stack.pop()
-        try:
-            entries = list(current.iterdir())
-        except OSError:
+    try:
+        entries = sorted(root.iterdir(), key=lambda value: (value.name.casefold(), value.name))
+    except OSError:
+        return
+    for entry in entries:
+        if entry.is_symlink():
             continue
-        for entry in sorted(entries, key=lambda value: value.name.lower(), reverse=True):
-            if entry.is_symlink():
+        if entry.is_dir():
+            if entry.name in SKIPPED_FOLDER_NAMES:
                 continue
-            if entry.is_dir():
-                if entry.name in SKIPPED_FOLDER_NAMES:
-                    continue
-                stack.append(entry)
-            elif entry.is_file():
-                yield entry
+            yield from _walk(entry)
+        elif entry.is_file():
+            yield entry
 
 
 def _integration_type(root: Path) -> str:
