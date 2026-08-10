@@ -42,7 +42,7 @@ test("new profile starts fresh and resumes durable setup progress", async () => 
   assert.equal(resumed.phase, "profile_complete");
   assert.equal(resumed.profile.display_name, "Ada");
   assert.equal(resumed.tour.status, "pending");
-  assert.equal(resumed.schema_version, 2);
+  assert.equal(resumed.schema_version, 3);
   assert.equal(resumed.revision, 1);
   assert.ok(resumed.completed_capabilities.includes("profile"));
   assert.equal(resumed.next_required_action, "choose_library");
@@ -104,6 +104,40 @@ test("partial profile updates preserve the onboarding name and saved avatar", as
   });
 });
 
+test("concurrent setup patches serialize without losing fields", async () => {
+  const root = await temporaryUserData();
+
+  await Promise.all([
+    updateSetupState(root, { profile: { display_name: "Ada" } }),
+    updateSetupState(root, { model_storage: { download_root: "D:\\Models" } }),
+  ]);
+
+  const state = await readSetupState(root);
+  assert.equal(state.profile.display_name, "Ada");
+  assert.equal(state.model_storage.download_root, "D:\\Models");
+  assert.equal(state.revision, 2);
+});
+
+test("setup revision compare-and-swap rejects stale writers", async () => {
+  const root = await temporaryUserData();
+  const initial = await readSetupState(root);
+  await updateSetupState(root, {
+    expected_revision: initial.revision,
+    profile: { display_name: "Ada" },
+  });
+
+  await assert.rejects(
+    updateSetupState(root, {
+      expected_revision: initial.revision,
+      profile: { avatar_path: "stale.png" },
+    }),
+    (error) => error?.code === "setup_revision_conflict",
+  );
+  const state = await readSetupState(root);
+  assert.equal(state.profile.display_name, "Ada");
+  assert.equal(state.profile.avatar_path, "");
+});
+
 test("setup state rejects accidental backward transitions", () => {
   const current = {
     ...defaultSetupState(),
@@ -157,7 +191,7 @@ test("version one setup state migrates to the authoritative capability snapshot"
 
   const migrated = await readSetupState(root);
 
-  assert.equal(migrated.schema_version, 2);
+  assert.equal(migrated.schema_version, 3);
   assert.equal(migrated.phase, "models_complete");
   assert.deepEqual(
     migrated.completed_capabilities,
@@ -166,4 +200,37 @@ test("version one setup state migrates to the authoritative capability snapshot"
   assert.equal(migrated.next_required_action, "choose_memory_search");
   assert.equal(migrated.security_setup.status, "not_started");
   assert.equal(migrated.model_discovery.status, "not_started");
+});
+
+test("onboarding vault journal is durable and cannot regress within an operation", async () => {
+  const root = await temporaryUserData();
+  await updateSetupState(root, {
+    phase: "vault_prepared",
+    onboarding_vault: {
+      operation_id: "operation-1",
+      stage: "prepared",
+      path_identity: "identity-1",
+      name: "Library",
+      path: "C:\\Library",
+    },
+  });
+  await updateSetupState(root, {
+    onboarding_vault: { stage: "created", vault_id: "vault-1" },
+  });
+  const resumed = await readSetupState(root);
+  assert.equal(resumed.schema_version, 3);
+  assert.equal(resumed.onboarding_vault.stage, "created");
+  assert.equal(resumed.onboarding_vault.path_identity, "identity-1");
+  assert.equal(resumed.onboarding_vault.vault_id, "vault-1");
+
+  await assert.rejects(
+    updateSetupState(root, { onboarding_vault: { stage: "prepared" } }),
+    /cannot move backward/,
+  );
+  await assert.rejects(
+    updateSetupState(root, {
+      onboarding_vault: { operation_id: "operation-2", stage: "prepared" },
+    }),
+    /must be resumed or reset/,
+  );
 });

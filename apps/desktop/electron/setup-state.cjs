@@ -2,8 +2,11 @@ const fs = require("node:fs/promises");
 const path = require("node:path");
 const { randomUUID } = require("node:crypto");
 
-const SETUP_SCHEMA_VERSION = 2;
+const SETUP_SCHEMA_VERSION = 3;
 const LEGACY_SETUP_SCHEMA_VERSION = 1;
+const PREVIOUS_SETUP_SCHEMA_VERSION = 2;
+const SETUP_LOCK_STALE_MS = 30_000;
+const SETUP_LOCK_TIMEOUT_MS = 5_000;
 const SETUP_PHASES = Object.freeze([
   "fresh",
   "profile_complete",
@@ -15,9 +18,20 @@ const SETUP_PHASES = Object.freeze([
   "complete",
   "recovery",
 ]);
+const ONBOARDING_VAULT_STAGES = Object.freeze([
+  "none",
+  "prepared",
+  "created",
+  "path_set",
+  "setup_complete",
+]);
 
 function setupStatePath(userDataPath) {
   return path.join(userDataPath, "setup-state.json");
+}
+
+function setupStateLockPath(userDataPath) {
+  return `${setupStatePath(userDataPath)}.lock`;
 }
 
 function defaultSetupState() {
@@ -30,6 +44,14 @@ function defaultSetupState() {
     next_required_action: "complete_profile",
     profile: { display_name: "", avatar_path: "" },
     vault: { id: "", name: "", path: "" },
+    onboarding_vault: {
+      operation_id: "",
+      stage: "none",
+      path_identity: "",
+      vault_id: "",
+      name: "",
+      path: "",
+    },
     chat_setup: { status: "pending", model_id: "" },
     model_storage: { download_root: "" },
     memory_setup: { status: "pending", model_id: "" },
@@ -49,7 +71,7 @@ function normalizeSetupState(value) {
   if (!value || typeof value !== "object") {
     throw new Error("Setup state must be an object.");
   }
-  if (![LEGACY_SETUP_SCHEMA_VERSION, SETUP_SCHEMA_VERSION].includes(value.schema_version)) {
+  if (![LEGACY_SETUP_SCHEMA_VERSION, PREVIOUS_SETUP_SCHEMA_VERSION, SETUP_SCHEMA_VERSION].includes(value.schema_version)) {
     throw new Error(`Unsupported setup-state schema version: ${value.schema_version}`);
   }
   if (!SETUP_PHASES.includes(value.phase)) {
@@ -90,6 +112,7 @@ function normalizeSetupState(value) {
       status: capabilityStatus(value.memory_setup?.status),
       model_id: stringValue(value.memory_setup?.model_id),
     },
+    onboarding_vault: normalizeOnboardingVault(value.onboarding_vault),
     security_setup: {
       status: capabilityStatus(
         value.security_setup?.status,
@@ -139,6 +162,29 @@ function mergeSetupState(current, patch) {
     patch || {},
     "next_required_action",
   );
+  const nextOnboardingVault = normalizeOnboardingVault({
+    ...base.onboarding_vault,
+    ...(patch?.onboarding_vault || {}),
+  });
+  const currentJournalIndex = ONBOARDING_VAULT_STAGES.indexOf(base.onboarding_vault.stage);
+  const nextJournalIndex = ONBOARDING_VAULT_STAGES.indexOf(nextOnboardingVault.stage);
+  if (
+    base.onboarding_vault.operation_id
+    && nextOnboardingVault.operation_id === base.onboarding_vault.operation_id
+    && nextJournalIndex < currentJournalIndex
+  ) {
+    throw new Error(
+      `Onboarding vault journal cannot move backward from ${base.onboarding_vault.stage} to ${nextOnboardingVault.stage}.`,
+    );
+  }
+  if (
+    base.onboarding_vault.operation_id
+    && nextOnboardingVault.operation_id
+    && nextOnboardingVault.operation_id !== base.onboarding_vault.operation_id
+    && !["none", "setup_complete"].includes(base.onboarding_vault.stage)
+  ) {
+    throw new Error("An incomplete onboarding vault operation must be resumed or reset.");
+  }
   return normalizeSetupState({
     ...base,
     ...patch,
@@ -161,6 +207,7 @@ function mergeSetupState(current, patch) {
         : base.next_required_action,
     profile: { ...base.profile, ...(patch?.profile || {}) },
     vault: { ...base.vault, ...(patch?.vault || {}) },
+    onboarding_vault: nextOnboardingVault,
     chat_setup: { ...base.chat_setup, ...(patch?.chat_setup || {}) },
     model_storage: { ...base.model_storage, ...(patch?.model_storage || {}) },
     memory_setup: { ...base.memory_setup, ...(patch?.memory_setup || {}) },
@@ -205,6 +252,10 @@ async function readSetupState(userDataPath, options = {}) {
 }
 
 async function writeSetupState(userDataPath, nextState) {
+  return withSetupStateLock(userDataPath, () => writeSetupStateUnlocked(userDataPath, nextState));
+}
+
+async function writeSetupStateUnlocked(userDataPath, nextState) {
   const normalized = normalizeSetupState({
     ...nextState,
     updated_at: new Date().toISOString(),
@@ -214,18 +265,80 @@ async function writeSetupState(userDataPath, nextState) {
 }
 
 async function updateSetupState(userDataPath, patch, options = {}) {
-  const current = await readSetupState(userDataPath, options);
-  return writeSetupState(userDataPath, mergeSetupState(current, patch));
+  return withSetupStateLock(userDataPath, async () => {
+    const current = await readSetupState(userDataPath, options);
+    const requestedRevision = Number.isInteger(patch?.expected_revision)
+      ? patch.expected_revision
+      : Number.isInteger(options.expectedRevision)
+        ? options.expectedRevision
+        : null;
+    if (requestedRevision !== null && requestedRevision !== current.revision) {
+      const error = new Error(
+        `Setup state changed from revision ${requestedRevision} to ${current.revision}. Reload and retry.`,
+      );
+      error.code = "setup_revision_conflict";
+      throw error;
+    }
+    const { expected_revision: _expectedRevision, ...statePatch } = patch || {};
+    return writeSetupStateUnlocked(userDataPath, mergeSetupState(current, statePatch));
+  });
 }
 
 async function resetSetupState(userDataPath) {
-  const target = setupStatePath(userDataPath);
-  try {
-    await fs.unlink(target);
-  } catch (error) {
-    if (error?.code !== "ENOENT") throw error;
+  return withSetupStateLock(userDataPath, async () => {
+    const target = setupStatePath(userDataPath);
+    try {
+      await fs.unlink(target);
+    } catch (error) {
+      if (error?.code !== "ENOENT") throw error;
+    }
+    return defaultSetupState();
+  });
+}
+
+async function withSetupStateLock(userDataPath, operation) {
+  const lockPath = setupStateLockPath(userDataPath);
+  await fs.mkdir(path.dirname(lockPath), { recursive: true });
+  const deadline = Date.now() + SETUP_LOCK_TIMEOUT_MS;
+  let handle;
+  while (!handle) {
+    try {
+      handle = await fs.open(lockPath, "wx");
+      await handle.writeFile(`${process.pid}\n${new Date().toISOString()}\n`, "utf8");
+      await handle.sync();
+    } catch (error) {
+      if (error?.code !== "EEXIST") throw error;
+      try {
+        const stat = await fs.stat(lockPath);
+        if (Date.now() - stat.mtimeMs > SETUP_LOCK_STALE_MS) {
+          await fs.unlink(lockPath);
+          continue;
+        }
+      } catch (statError) {
+        if (statError?.code === "ENOENT") continue;
+        throw statError;
+      }
+      if (Date.now() >= deadline) {
+        const timeout = new Error("Timed out waiting for setup-state lock.");
+        timeout.code = "setup_state_lock_timeout";
+        throw timeout;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
   }
-  return defaultSetupState();
+  try {
+    return await operation();
+  } finally {
+    try {
+      await handle.close();
+    } finally {
+      try {
+        await fs.unlink(lockPath);
+      } catch (error) {
+        if (error?.code !== "ENOENT") throw error;
+      }
+    }
+  }
 }
 
 async function atomicWriteJson(targetPath, value) {
@@ -316,6 +429,18 @@ function normalizeRecoverableError(value) {
   };
 }
 
+function normalizeOnboardingVault(value) {
+  const stage = stringValue(value?.stage);
+  return {
+    operation_id: stringValue(value?.operation_id),
+    stage: ONBOARDING_VAULT_STAGES.includes(stage) ? stage : "none",
+    path_identity: stringValue(value?.path_identity),
+    vault_id: stringValue(value?.vault_id),
+    name: stringValue(value?.name),
+    path: stringValue(value?.path),
+  };
+}
+
 function tourStatus(value, fallback = "pending") {
   const status = stringValue(value);
   return ["pending", "completed", "skipped"].includes(status) ? status : fallback;
@@ -328,13 +453,16 @@ function validTimestamp(value) {
 module.exports = {
   SETUP_PHASES,
   SETUP_SCHEMA_VERSION,
+  ONBOARDING_VAULT_STAGES,
   atomicWriteJson,
   defaultSetupState,
   mergeSetupState,
   normalizeSetupState,
   readSetupState,
   resetSetupState,
+  setupStateLockPath,
   setupStatePath,
   updateSetupState,
+  withSetupStateLock,
   writeSetupState,
 };

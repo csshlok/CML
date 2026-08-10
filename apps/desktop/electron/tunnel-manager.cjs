@@ -388,10 +388,15 @@ class TunnelManager {
       ready: false,
       detail: "Reconnecting...",
     });
-    this.restartTimer = setTimeout(() => {
+    this.restartTimer = setTimeout(async () => {
       this.restartTimer = null;
       const configuration = this.activeConfiguration;
       if (!configuration || this.manualStop) return;
+      const credentials = await this._readCredentials().catch(() => null);
+      if (credentials?.runtimeApiKey && credentials?.bridgeToken) {
+        configuration.runtimeApiKey = credentials.runtimeApiKey;
+        configuration.bridgeToken = credentials.bridgeToken;
+      }
       void this.connect(configuration, { automatic: true }).catch(() => {
         // connect publishes a safe actionable state; process exits schedule the next retry.
       });

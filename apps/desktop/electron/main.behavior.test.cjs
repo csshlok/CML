@@ -32,7 +32,7 @@ function loadMainModule() {
   const filePath = path.join(__dirname, "main.cjs");
   const source =
     fs.readFileSync(filePath, "utf8") +
-    "\nmodule.exports = { repairActionForPhase, isAllowedExternalUrl, isCurrentBackend, backendIdentityMatches, rendererSecurityHeaders, sanitizeRendererBody, imageMimeType, imageDimensions, resolveApprovedMediaTarget, setActiveVaultPath, prepareActiveVaultPath, commitActiveVaultPath, getActiveVaultPath, getInitialRendererPath, resolveSetupLaunchState, collectSupportedFiles, findOpenPort, loadStartupProgress, loadStartupFailure, loadRendererFailure, truncateDesktopLogValue, tryServeStaticAsset, verifyRendererUp, waitForBackend, resolvePackagedServerEntry, assertSafeVaultMoveRoots, verifyCopiedVault, finalizeActiveVaultDeletion, reconcilePendingVaultDeletion, shutdownApplication, __setMainWindow: (value) => { mainWindow = value; }, __setTunnelManager: (value) => { tunnelManager = value; }, __setStopBackendDependents: (value) => { stopBackendDependents = value; }, __setBackendProcess: (value) => { backendProcess = value; }, __getPendingActiveVaultPath: () => pendingActiveVaultPath, __setBackendUrl: (value) => { backendUrl = value; }, __setRestartBackend: (value) => { restartBackend = value; }, __setEnsureBackend: (value) => { ensureBackend = value; } };";
+    "\nmodule.exports = { repairActionForPhase, isAllowedExternalUrl, isSafeOpenPath, isCurrentBackend, backendIdentityMatches, rendererSecurityHeaders, sanitizeRendererBody, imageMimeType, imageDimensions, resolveApprovedMediaTarget, setActiveVaultPath, prepareActiveVaultPath, commitActiveVaultPath, vaultPathIdentity, getActiveVaultPath, getInitialRendererPath, resolveSetupLaunchState, collectSupportedFiles, findOpenPort, loadStartupProgress, loadStartupFailure, loadRendererFailure, truncateDesktopLogValue, tryServeStaticAsset, verifyRendererUp, waitForBackend, resolvePackagedServerEntry, assertSafeVaultMoveRoots, verifyCopiedVault, finalizeActiveVaultDeletion, reconcilePendingVaultDeletion, shutdownApplication, __setMainWindow: (value) => { mainWindow = value; }, __setTunnelManager: (value) => { tunnelManager = value; }, __setStopBackendDependents: (value) => { stopBackendDependents = value; }, __setBackendProcess: (value) => { backendProcess = value; }, __getPendingActiveVaultPath: () => pendingActiveVaultPath, __setBackendUrl: (value) => { backendUrl = value; }, __setRestartBackend: (value) => { restartBackend = value; }, __setEnsureBackend: (value) => { ensureBackend = value; } };";
 
   const appHandlers = {};
   const dialogCalls = [];
@@ -263,14 +263,17 @@ test("image dimensions are read from headers without decoding untrusted pixels",
   assert.equal(exported.imageDimensions(Buffer.from("not an image"), "image/png"), null);
 });
 
-test("vault deletion tombstones data before clearing the active pointer", async () => {
+test("vault deletion tombstones data even when graceful model stop fails", async () => {
   const { exported, userDataDir } = loadMainModule();
   const tunnelEvents = [];
   const shutdownEvents = [];
   exported.__setTunnelManager({
     disconnect: async (options) => tunnelEvents.push(options),
   });
-  exported.__setStopBackendDependents(async () => shutdownEvents.push("model-runtime-stopped"));
+  exported.__setStopBackendDependents(async () => {
+    shutdownEvents.push("model-stop-failed");
+    throw new Error("model stop exceeded its graceful deadline");
+  });
   const vaultRoot = await makeTempDirAsync("cml-delete-vault-");
   await exported.setActiveVaultPath(vaultRoot);
   await fs.promises.writeFile(path.join(vaultRoot, ".vault", "cml.sqlite3"), "fixture");
@@ -295,7 +298,18 @@ test("vault deletion tombstones data before clearing the active pointer", async 
   assert.equal(fs.existsSync(path.join(vaultRoot, ".vault")), false);
   assert.equal(fs.existsSync(path.join(userDataDir, "vault-deletion.json")), false);
   assert.equal(JSON.stringify(tunnelEvents), JSON.stringify([{ forget: true }]));
-  assert.deepEqual(shutdownEvents, ["model-runtime-stopped"]);
+  assert.deepEqual(shutdownEvents, ["model-stop-failed"]);
+});
+
+test("open-path rejects executable source files but permits passive documents", async () => {
+  const { exported } = loadMainModule();
+  const directory = makeTempDir("cml-open-path-");
+  const script = path.join(directory, "imported.ps1");
+  const document = path.join(directory, "notes.pdf");
+  fs.writeFileSync(script, "Write-Output unsafe");
+  fs.writeFileSync(document, "%PDF-1.4");
+  assert.equal(await exported.isSafeOpenPath(script), false);
+  assert.equal(await exported.isSafeOpenPath(document), true);
 });
 
 test("vault deletion restores data, pointer, and setup state when pre-vault restart fails", async () => {
@@ -360,6 +374,29 @@ test("application shutdown stops the managed model before the backend", async ()
   assert.deepEqual(events, ["model-runtime-stopped", "backend-stopped"]);
 });
 
+test("backend restart and shutdown continue when graceful model stop fails", async () => {
+  const { exported } = loadMainModule();
+  const events = [];
+  const child = new EventEmitter();
+  child.exitCode = null;
+  child.killed = false;
+  child.kill = () => {
+    events.push("backend-stopped");
+    child.killed = true;
+    queueMicrotask(() => child.emit("exit", 0));
+    return true;
+  };
+  exported.__setBackendProcess(child);
+  exported.__setStopBackendDependents(async () => {
+    events.push("model-stop-failed");
+    throw new Error("model stop exceeded its graceful deadline");
+  });
+
+  await exported.shutdownApplication();
+
+  assert.deepEqual(events, ["model-stop-failed", "backend-stopped"]);
+});
+
 test("prepared vault folder does not become active until committed", async () => {
   const { exported } = loadMainModule();
   const targetRoot = makeTempDir("cml-prepared-vault-");
@@ -384,6 +421,18 @@ test("prepared vault folder does not become active until committed", async () =>
   assert.equal(await exported.getActiveVaultPath(), vaultPath);
   assert.equal(await exported.getInitialRendererPath(), "/home");
   assert.equal(restarts, 1);
+});
+
+test("vault folder identity is stable but detects directory replacement", async () => {
+  const { exported } = loadMainModule();
+  const parent = makeTempDir("cml-vault-identity-");
+  const vaultPath = path.join(parent, "library");
+  fs.mkdirSync(vaultPath);
+  const first = await exported.vaultPathIdentity(vaultPath);
+  assert.equal(await exported.vaultPathIdentity(vaultPath), first);
+  fs.rmSync(vaultPath, { recursive: true });
+  fs.mkdirSync(vaultPath);
+  assert.notEqual(await exported.vaultPathIdentity(vaultPath), first);
 });
 
 test("vault move rejects drive roots and overlapping folders", () => {

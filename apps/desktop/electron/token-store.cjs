@@ -6,9 +6,13 @@ class FileTokenStore {
   constructor(userDataPath, safeStorage = null) {
     this.tokenPath = path.join(userDataPath, "backend-token");
     this.safeStorage = safeStorage;
+    this.memoryToken = null;
   }
 
   async get() {
+    if (!this.safeStorage?.isEncryptionAvailable?.()) {
+      return this.memoryToken;
+    }
     try {
       const persisted = (await fs.readFile(this.tokenPath, "utf8")).trim();
       const token = this.decodePersistedToken(persisted);
@@ -19,12 +23,22 @@ class FileTokenStore {
   }
 
   async set(token) {
+    if (!this.safeStorage?.isEncryptionAvailable?.()) {
+      this.memoryToken = token;
+      await this.clearPersistedToken();
+      return;
+    }
     await fs.mkdir(path.dirname(this.tokenPath), { recursive: true });
     const persisted = this.encodeTokenForStorage(token);
     await fs.writeFile(this.tokenPath, persisted, { encoding: "utf8", mode: 0o600 });
   }
 
   async clear() {
+    this.memoryToken = null;
+    await this.clearPersistedToken();
+  }
+
+  async clearPersistedToken() {
     try {
       await fs.unlink(this.tokenPath);
     } catch {
@@ -37,29 +51,14 @@ class FileTokenStore {
       const encrypted = this.safeStorage.encryptString(token).toString("base64");
       return `safe:v1:${encrypted}`;
     }
-    const nonce = crypto.randomBytes(16);
-    const key = crypto.scryptSync(path.dirname(this.tokenPath), nonce, 32);
-    const cipher = crypto.createCipheriv("aes-256-gcm", key, nonce);
-    const ciphertext = Buffer.concat([cipher.update(token, "utf8"), cipher.final()]);
-    return `local:v1:${nonce.toString("base64")}:${cipher.getAuthTag().toString("base64")}:${ciphertext.toString("base64")}`;
+    throw new Error("Secure credential storage is unavailable");
   }
 
   decodePersistedToken(persisted) {
     if (persisted.startsWith("safe:v1:") && this.safeStorage?.isEncryptionAvailable?.()) {
       return this.safeStorage.decryptString(Buffer.from(persisted.slice("safe:v1:".length), "base64"));
     }
-    if (persisted.startsWith("local:v1:")) {
-      const [, , nonceValue, tagValue, ciphertextValue] = persisted.split(":");
-      const nonce = Buffer.from(nonceValue, "base64");
-      const key = crypto.scryptSync(path.dirname(this.tokenPath), nonce, 32);
-      const decipher = crypto.createDecipheriv("aes-256-gcm", key, nonce);
-      decipher.setAuthTag(Buffer.from(tagValue, "base64"));
-      return Buffer.concat([
-        decipher.update(Buffer.from(ciphertextValue, "base64")),
-        decipher.final(),
-      ]).toString("utf8");
-    }
-    return persisted;
+    return "";
   }
 }
 

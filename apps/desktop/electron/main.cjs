@@ -68,6 +68,7 @@ let stopBackendDependents = stopManagedRuntimeBeforeBackendStop;
 let shutdownPromise = null;
 let shutdownComplete = false;
 const desktopRuntimeLogValueLimit = 8000;
+const managedRuntimeStopTimeoutMs = 120000;
 
 function normalizeApiPrefix(value) {
   const raw = String(value || "/api/v1").trim();
@@ -83,6 +84,10 @@ const supportedSourceExtensions = new Set([
   ".ts", ".tsv", ".tsx", ".txt", ".wav", ".webm", ".webp", ".xml", ".yaml", ".yml",
 ]);
 const supportedOpenExtensions = new Set([...supportedSourceExtensions, ".png", ".jpg", ".jpeg", ".webp", ".gif"]);
+const executableSourceExtensions = new Set([
+  ".bat", ".cmd", ".com", ".exe", ".js", ".jsx", ".lua", ".msi", ".ps1",
+  ".py", ".rb", ".sh", ".ts", ".tsx", ".vbs", ".wsf",
+]);
 const skippedFolderNames = new Set([".git", "node_modules", ".venv", "dist", "build"]);
 
 let mainWindow = null;
@@ -819,6 +824,10 @@ if (gotSingleInstanceLock) {
       await prepareActiveVaultPath(targetPath);
       return backendUrl;
     });
+    ipcMain.handle("cml:get-vault-path-identity", async (_event, targetPath) => {
+      if (typeof targetPath !== "string" || targetPath.trim().length === 0) return null;
+      return vaultPathIdentity(targetPath);
+    });
 
     void createWindow().catch((error) => {
       writeDesktopRuntimeLog("createWindow failed", error);
@@ -1225,6 +1234,7 @@ async function restartBackend() {
 }
 
 async function prepareActiveVaultPath(targetPath) {
+  assertSafeNewVaultRoot(path.resolve(targetPath));
   const previousPendingPath = pendingActiveVaultPath;
   pendingActiveVaultPath = targetPath;
   await fs.mkdir(path.join(targetPath, ".vault"), { recursive: true });
@@ -1242,6 +1252,7 @@ async function prepareActiveVaultPath(targetPath) {
 }
 
 async function commitActiveVaultPath(targetPath) {
+  assertSafeNewVaultRoot(path.resolve(targetPath));
   await setActiveVaultPath(targetPath);
   if (pendingActiveVaultPath === targetPath) {
     pendingActiveVaultPath = null;
@@ -1388,7 +1399,16 @@ async function finalizeActiveVaultDeletion() {
     updated_at: new Date().toISOString(),
   });
   try {
-    await stopBackendDependents();
+    try {
+      await stopBackendDependents();
+    } catch (error) {
+      // Deletion must still be able to stop the backend and tombstone the
+      // vault when graceful model shutdown is slow or already unavailable.
+      writeDesktopRuntimeLog(
+        "managed runtime did not stop cleanly before vault deletion; continuing backend shutdown",
+        error,
+      );
+    }
     await stopBackendProcess(5000, false);
     if (await pathExists(vaultData)) {
       await fs.rename(vaultData, tombstone);
@@ -1540,9 +1560,12 @@ async function stopBackendProcess(timeoutMs = 5000, stopDependents = true) {
     try {
       await stopBackendDependents();
     } catch (error) {
-      writeDesktopRuntimeLog("managed runtime did not stop before backend shutdown", error);
-      backendProcess = child;
-      throw error;
+      // A graceful dependent shutdown is best-effort. The backend must still
+      // stop so restart, deletion, and app exit cannot be held hostage by it.
+      writeDesktopRuntimeLog(
+        "managed runtime did not stop cleanly before backend shutdown; continuing",
+        error,
+      );
     }
   }
   await new Promise((resolve, reject) => {
@@ -1981,9 +2004,31 @@ async function stopManagedRuntimeBeforeBackendStop() {
   const token = await getBackendApiToken();
   await httpPostJson(
     `${backendUrl}${apiPrefix}/models/runtime/stop`,
-    12000,
+    managedRuntimeStopTimeoutMs,
     token,
   );
+}
+
+function assertSafeNewVaultRoot(candidate) {
+  const parsed = path.parse(candidate);
+  if (!path.isAbsolute(candidate) || candidate === parsed.root) {
+    throw new Error("A library location must be an absolute folder below a drive root.");
+  }
+}
+
+async function vaultPathIdentity(targetPath) {
+  const resolved = path.resolve(targetPath);
+  assertSafeNewVaultRoot(resolved);
+  const canonical = await fs.realpath(resolved);
+  const stat = await fs.stat(canonical);
+  if (!stat.isDirectory()) {
+    throw new Error("The library location is not a directory.");
+  }
+  const normalized = process.platform === "win32" ? canonical.toLowerCase() : canonical;
+  return crypto
+    .createHash("sha256")
+    .update(`${normalized}\n${stat.dev}\n${stat.ino}`)
+    .digest("hex");
 }
 
 class HttpStatusError extends Error {
@@ -2086,7 +2131,8 @@ async function isExistingLocalPath(targetPath) {
 
 async function isSafeOpenPath(targetPath) {
   if (!(await isExistingLocalPath(targetPath))) return false;
-  return supportedOpenExtensions.has(path.extname(targetPath).toLowerCase());
+  const extension = path.extname(targetPath).toLowerCase();
+  return supportedOpenExtensions.has(extension) && !executableSourceExtensions.has(extension);
 }
 
 app.on("window-all-closed", () => {

@@ -13,7 +13,7 @@ declare global {
     | "recovery";
 
   interface DesktopSetupState {
-    schema_version: 2;
+    schema_version: 3;
     revision: number;
     phase: DesktopSetupPhase;
     editable_step: number;
@@ -22,6 +22,14 @@ declare global {
     recovery_reason?: "missing_vault_data" | "setup_state_invalid";
     profile: { display_name: string; avatar_path?: string };
     vault: { id: string; name: string; path: string };
+    onboarding_vault: {
+      operation_id: string;
+      stage: "none" | "prepared" | "created" | "path_set" | "setup_complete";
+      path_identity: string;
+      vault_id: string;
+      name: string;
+      path: string;
+    };
     chat_setup: { status: string; model_id: string };
     model_storage: { download_root: string };
     memory_setup: { status: string; model_id: string };
@@ -41,11 +49,12 @@ declare global {
     Omit<
       DesktopSetupState,
       "profile" | "vault" | "chat_setup" | "model_storage" | "memory_setup" |
-      "security_setup" | "model_discovery" | "tour"
+      "security_setup" | "model_discovery" | "onboarding_vault" | "tour"
     >
   > & {
     profile?: Partial<DesktopSetupState["profile"]>;
     vault?: Partial<DesktopSetupState["vault"]>;
+    onboarding_vault?: Partial<DesktopSetupState["onboarding_vault"]>;
     chat_setup?: Partial<DesktopSetupState["chat_setup"]>;
     model_storage?: Partial<DesktopSetupState["model_storage"]>;
     memory_setup?: Partial<DesktopSetupState["memory_setup"]>;
@@ -111,6 +120,7 @@ declare global {
       selectModelCheckpoint: () => Promise<string | null>;
       selectVaultFolder: () => Promise<string | null>;
       prepareActiveVaultFolder: (targetPath: string) => Promise<string | null>;
+      getVaultPathIdentity: (targetPath: string) => Promise<string | null>;
       setActiveVaultFolder: (targetPath: string) => Promise<string | null>;
       moveActiveVaultFolder: (targetPath: string) => Promise<{
         backend_url: string | null;

@@ -99,6 +99,7 @@ contextBridge.exposeInMainWorld("cmlDesktop", {
   selectModelCheckpoint: () => ipcRenderer.invoke("cml:select-model-checkpoint"),
   selectVaultFolder: () => ipcRenderer.invoke("cml:select-vault-folder"),
   prepareActiveVaultFolder: (targetPath) => ipcRenderer.invoke("cml:prepare-active-vault-folder", targetPath),
+  getVaultPathIdentity: (targetPath) => ipcRenderer.invoke("cml:get-vault-path-identity", targetPath),
   setActiveVaultFolder: (targetPath) => ipcRenderer.invoke("cml:set-active-vault-folder", targetPath),
   moveActiveVaultFolder: (targetPath) => ipcRenderer.invoke("cml:move-active-vault-folder", targetPath),
   clearActiveVaultFolder: () => ipcRenderer.invoke("cml:clear-active-vault-folder"),

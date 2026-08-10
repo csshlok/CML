@@ -39,8 +39,23 @@ test("large projects are represented as folders in Sources", () => {
   assert.match(route, /listSourceFolders/);
   assert.match(route, /folderRoots/);
   assert.match(route, /search: \{ folder: folder\.root_path \}/);
-  assert.match(route, /excludeGroupedProjects: !projectId/);
+  assert.match(
+    route,
+    /excludeGroupedProjects: !clusterId && !projectId && !folderPath && !unclusteredOnly/,
+  );
   assert.match(route, /search: \{ project: project\.id \}/);
   assert.match(backend, /exclude_grouped_projects/);
   assert.match(backend, /project_id/);
+});
+
+test("command palette uses bounded cancellable server search", () => {
+  const palette = read("components/CommandPalette.tsx");
+  const backend = read("lib/backend.ts");
+
+  assert.match(palette, /listClustersPage\(vault\.id, \{ limit: 20, query, signal:/);
+  assert.match(palette, /listSourcesPage\(vault\.id, \{ limit: 20, query, signal:/);
+  assert.match(palette, /controller\.abort\(\)/);
+  assert.doesNotMatch(palette, /listClusters\(vault\.id\)/);
+  assert.doesNotMatch(palette, /listSources\(vault\.id\)/);
+  assert.match(backend, /query\?: string; signal\?: AbortSignal/);
 });
