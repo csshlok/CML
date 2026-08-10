@@ -51,10 +51,12 @@ if ($JunitPath) {
 
 $previousHashSeed = $env:PYTHONHASHSEED
 $previousScaleGate = $env:ODIN_RUN_SCALE_TESTS
+$previousRemediationScaleGate = $env:CML_RUN_REMEDIATION_SCALE
 try {
   $env:PYTHONHASHSEED = "0"
   if ($Tier -eq "scale") {
     $env:ODIN_RUN_SCALE_TESTS = "1"
+    $env:CML_RUN_REMEDIATION_SCALE = "1"
   }
   Push-Location $repoRoot
   try {
@@ -71,4 +73,5 @@ try {
 finally {
   $env:PYTHONHASHSEED = $previousHashSeed
   $env:ODIN_RUN_SCALE_TESTS = $previousScaleGate
+  $env:CML_RUN_REMEDIATION_SCALE = $previousRemediationScaleGate
 }

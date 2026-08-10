@@ -163,19 +163,39 @@ try {
     -Headers $headers `
     -TimeoutSec 60
   $jobDeadline = (Get-Date).AddSeconds(60)
-  while (($jobStatus.queued -gt 0 -or $jobStatus.running -gt 0) -and (Get-Date) -lt $jobDeadline) {
+  $reindexJobs = @()
+  do {
     Start-Sleep -Milliseconds 250
     $jobStatus = Invoke-RestMethod `
       -Uri "$baseUrl/api/v1/jobs/status" `
       -Method Get `
       -Headers $headers `
       -TimeoutSec 10
-  }
-  if ($jobStatus.queued -gt 0 -or $jobStatus.running -gt 0) {
+    $jobPage = Invoke-RestMethod `
+      -Uri "$baseUrl/api/v1/jobs?limit=200" `
+      -Method Get `
+      -Headers $headers `
+      -TimeoutSec 10
+    $reindexJobs = @(
+      $jobPage.items | Where-Object {
+        $_.job_type -eq "reindex_source" -and $_.scope_id -eq $source.id
+      }
+    )
+    $reindexActive = @(
+      $reindexJobs | Where-Object { $_.status -in @("queued", "running", "deferred", "blocked_by_dependency") }
+    )
+  } while (($reindexJobs.Count -eq 0 -or $reindexActive.Count -gt 0) -and (Get-Date) -lt $jobDeadline)
+  if ($reindexJobs.Count -eq 0 -or $reindexActive.Count -gt 0) {
     throw "Packaged full-vault reindex job did not finish before the timeout."
   }
-  if ($jobStatus.failed -gt 0) {
+  $failedReindexJobs = @(
+    $reindexJobs | Where-Object { $_.status -in @("failed", "cancelled", "manual_review", "partial_success") }
+  )
+  if ($failedReindexJobs.Count -gt 0) {
     throw "Packaged full-vault reindex job failed."
+  }
+  if (@($reindexJobs | Where-Object { $_.status -eq "succeeded" }).Count -lt 1) {
+    throw "Packaged full-vault reindex job did not publish a successful result."
   }
 
   $search = Invoke-RestMethod `

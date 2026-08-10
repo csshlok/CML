@@ -1,6 +1,6 @@
 {
   "name": "cml",
-  "version": "0.1.13",
+  "version": "0.1.14",
   "private": true,
   "packageManager": "npm@11.6.2",
   "engines": {
@@ -28,6 +28,6 @@
     "lockfile:check": "node scripts/dev/check-lockfile-policy.cjs"
   },
   "devDependencies": {
-    "@openai/codex-security": "^0.1.7"
+    "@openai/codex-security": "^0.1.8"
   }
 }
