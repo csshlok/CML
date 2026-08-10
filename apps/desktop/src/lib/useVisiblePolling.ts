@@ -1,7 +1,7 @@
 import { useEffect, useRef } from "react";
 
 export function useVisiblePolling(
-  task: () => void | Promise<void>,
+  task: (signal?: AbortSignal) => void | Promise<void>,
   intervalMs: number,
   enabled = true,
   onError?: (error: unknown) => void,
@@ -19,6 +19,7 @@ export function useVisiblePolling(
     let running = false;
     let rerunRequested = false;
     let consecutiveFailures = 0;
+    let controller: AbortController | null = null;
 
     const schedule = () => {
       if (cancelled) return;
@@ -40,14 +41,16 @@ export function useVisiblePolling(
         timer = null;
       }
       running = true;
+      controller = new AbortController();
       try {
-        await taskRef.current();
+        await taskRef.current(controller.signal);
         consecutiveFailures = 0;
       } catch (error) {
         consecutiveFailures += 1;
         errorRef.current?.(error);
         window.dispatchEvent(new CustomEvent("vault:poll-error", { detail: { error } }));
       } finally {
+        controller = null;
         running = false;
         if (rerunRequested) {
           rerunRequested = false;
@@ -69,6 +72,7 @@ export function useVisiblePolling(
     window.addEventListener("focus", onFocus);
     return () => {
       cancelled = true;
+      controller?.abort();
       if (timer !== null) window.clearTimeout(timer);
       document.removeEventListener("visibilitychange", onVisibility);
       window.removeEventListener("focus", onFocus);

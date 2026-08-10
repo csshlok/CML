@@ -15,7 +15,9 @@ const BACKEND_CANDIDATES = Array.from(
 );
 let resolvedBackendUrl: string | null = null;
 let resolvedBackendToken: string | null = CONFIGURED_BACKEND_TOKEN || null;
+let backendTokenPromise: Promise<string | null> | null = null;
 let backendGeneration = 0;
+const backendGenerationListeners = new Set<() => void>();
 let healthCheckPromise: Promise<void> | null = null;
 const desktopManagedBackend = typeof window !== "undefined" && Boolean(window.cmlDesktop);
 
@@ -40,13 +42,17 @@ if (typeof window !== "undefined") {
       }
     }
   });
+  const initialTokenGeneration = backendGeneration;
   void window.cmlDesktop?.getBackendToken?.().then((token) => {
-    if (token) resolvedBackendToken = token;
+    if (backendGeneration === initialTokenGeneration && token) resolvedBackendToken = token;
   });
   window.cmlDesktop?.onBackendUrlChanged?.((nextUrl) => {
     const trustedUrl = safeRuntimeBackendUrl(nextUrl);
     backendGeneration += 1;
+    backendGenerationListeners.forEach((listener) => listener());
     resolvedBackendUrl = trustedUrl;
+    resolvedBackendToken = CONFIGURED_BACKEND_TOKEN || null;
+    backendTokenPromise = null;
     discoveryPromise = null;
     lastDiscoveryAttempt = 0;
     publishHealth({
@@ -221,9 +227,28 @@ async function getBackendUrl() {
 
 async function getBackendToken() {
   if (resolvedBackendToken) return resolvedBackendToken;
-  const token = await window.cmlDesktop?.getBackendToken?.();
-  if (token) resolvedBackendToken = token;
-  return resolvedBackendToken;
+  if (!backendTokenPromise) {
+    const generation = backendGeneration;
+    backendTokenPromise = Promise.resolve(window.cmlDesktop?.getBackendToken?.()).then((token) => {
+      if (generation !== backendGeneration) return resolvedBackendToken;
+      if (token) resolvedBackendToken = token;
+      return resolvedBackendToken;
+    }).finally(() => {
+      if (generation === backendGeneration) backendTokenPromise = null;
+    });
+  }
+  return backendTokenPromise;
+}
+
+export function useBackendGeneration() {
+  return useSyncExternalStore(
+    (listener) => {
+      backendGenerationListeners.add(listener);
+      return () => backendGenerationListeners.delete(listener);
+    },
+    () => backendGeneration,
+    () => 0,
+  );
 }
 
 export type BridgeStatus = {
@@ -570,6 +595,7 @@ export type ProjectGraphNode = {
   end_line: number | null;
   signature: string;
   source_id: string | null;
+  matched_terms?: string[];
   centrality?: number;
   in_degree?: number;
   out_degree?: number;
@@ -882,6 +908,7 @@ export type SemanticSearchResponse = {
 };
 
 export type ChatContextResponse = {
+  generation_id?: string | null;
   session_id: string | null;
   user_message_id: string | null;
   assistant_message_id: string | null;
@@ -966,6 +993,37 @@ export type DiagnosticBundleResponse = {
   backend_version: string;
   schema_version: number;
   included_files: string[];
+};
+
+export type SecurityScanCheck = {
+  id: string;
+  label: string;
+  status: "passed" | "attention" | "failed" | "unavailable";
+  detail: string;
+  affected_records?: number;
+  affected_clients?: number;
+  exit_code?: number;
+};
+
+export type SecurityScanSummary = {
+  scan_type: "antivirus" | "full";
+  trigger: "manual" | "scheduled";
+  status: "passed" | "attention" | "failed";
+  checks: SecurityScanCheck[];
+  started_at: string;
+  completed_at: string;
+};
+
+export type SecurityScanStatus = {
+  enabled: boolean;
+  interval_days: number;
+  last_started_at: string | null;
+  last_completed_at: string | null;
+  last_scan_type: "antivirus" | "full" | null;
+  last_status: "never_run" | "running" | "passed" | "attention" | "failed";
+  last_summary: Partial<SecurityScanSummary>;
+  next_run_at: string | null;
+  active_job: Pick<AppJobRecord, "id" | "status" | "status_detail" | "created_at" | "started_at"> | null;
 };
 
 export type ChatMessageRecord = {
@@ -1648,7 +1706,7 @@ export async function updateBridgeClient(
       | "allow_raw_snippets"
       | "allow_cluster_profile"
     >
-  > & { rotate_token?: boolean },
+  > & { rotate_token?: boolean; expected_updated_at?: string },
 ) {
   return request<BridgeClientCreateResponse | BridgeClientRecord>(
     `/api/v1/bridge/clients/${encodeURIComponent(clientId)}`,
@@ -1696,6 +1754,32 @@ export async function createDiagnosticBundle() {
   return parseJobResult<DiagnosticBundleResponse>(completed.result_json);
 }
 
+export async function getSecurityScanStatus() {
+  return request<SecurityScanStatus>("/api/v1/diagnostics/security-scans");
+}
+
+export async function updateSecurityScanSchedule(payload: {
+  enabled?: boolean;
+  interval_days?: number;
+}) {
+  return request<SecurityScanStatus>("/api/v1/diagnostics/security-scans/schedule", {
+    method: "PATCH",
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function runSecurityScan(scanType: "antivirus" | "full") {
+  const queued = await request<AppJobRecord>("/api/v1/diagnostics/security-scans", {
+    method: "POST",
+    body: JSON.stringify({ scan_type: scanType }),
+  });
+  const completed = await waitForAppJob(queued.id);
+  if (completed.status !== "succeeded") {
+    throw new Error(completed.last_error || "The security scan did not finish.");
+  }
+  return parseJobResult<SecurityScanSummary>(completed.result_json);
+}
+
 export async function listVaults() {
   return request<VaultRecord[]>("/api/v1/vaults");
 }
@@ -1728,7 +1812,7 @@ export async function listClusters(vaultId?: string, options: { limit?: number; 
 
 export async function listClustersPage(
   vaultId?: string,
-  options: { limit?: number; cursor?: string | null; query?: string } = {},
+  options: { limit?: number; cursor?: string | null; query?: string; signal?: AbortSignal } = {},
 ) {
   const params = new URLSearchParams();
   if (vaultId) params.set("vault_id", vaultId);
@@ -1736,7 +1820,9 @@ export async function listClustersPage(
   if (options.cursor) params.set("cursor", options.cursor);
   if (options.query?.trim()) params.set("q", options.query.trim());
   const query = params.size ? `?${params.toString()}` : "";
-  return request<CursorPage<ClusterRecord>>(`/api/v1/clusters/page${query}`);
+  return request<CursorPage<ClusterRecord>>(`/api/v1/clusters/page${query}`, {
+    signal: options.signal,
+  });
 }
 
 export async function createCluster(payload: {
@@ -2284,6 +2370,7 @@ export async function listSourcesPage(
     importRelativePrefix?: string;
     importDirectOnly?: boolean;
     excludeGroupedProjects?: boolean;
+    signal?: AbortSignal;
   } = {},
 ) {
   const params = new URLSearchParams();
@@ -2301,7 +2388,9 @@ export async function listSourcesPage(
   if (options.excludeGroupedProjects) params.set("exclude_grouped_projects", "true");
   if (options.query?.trim()) params.set("q", options.query.trim());
   const query = params.size ? `?${params.toString()}` : "";
-  return request<CursorPage<SourceRecord>>(`/api/v1/sources/page${query}`);
+  return request<CursorPage<SourceRecord>>(`/api/v1/sources/page${query}`, {
+    signal: options.signal,
+  });
 }
 
 export async function getLatestSourcesByCluster(vaultId: string) {
@@ -2660,6 +2749,13 @@ export async function buildChatContext(payload: {
   });
 }
 
+export async function cancelChatGeneration(generationId: string) {
+  return request<{ generation_id: string; state: string }>(
+    `/api/v1/chat/generations/${encodeURIComponent(generationId)}/cancel`,
+    { method: "POST" },
+  );
+}
+
 export class ChatStreamInterruptedError extends Error {
   constructor() {
     super("The answer connection closed before Vault confirmed the result.");
@@ -2686,6 +2782,7 @@ export async function streamChatContext(
     onMeta?: (
       payload: Pick<
         ChatContextResponse,
+        | "generation_id"
         | "clusters_used"
         | "citations"
         | "coverage_ledger"
@@ -2731,6 +2828,7 @@ export async function streamChatContext(
         handlers.onMeta?.(
           event.data as Pick<
             ChatContextResponse,
+            | "generation_id"
             | "clusters_used"
             | "citations"
             | "coverage_ledger"
@@ -2814,26 +2912,28 @@ function parseSseEvent(block: string): { event: string; data: Record<string, unk
 
 export async function listChatSessions(
   vaultId?: string,
-  options: { saved?: boolean; limit?: number; offset?: number } = {},
+  options: { saved?: boolean; limit?: number; offset?: number; clusterId?: string } = {},
 ) {
   const params = new URLSearchParams();
   if (vaultId) params.set("vault_id", vaultId);
   if (options.saved !== undefined) params.set("saved", String(options.saved));
   if (options.limit) params.set("limit", String(options.limit));
   if (options.offset) params.set("offset", String(options.offset));
+  if (options.clusterId) params.set("cluster_id", options.clusterId);
   const query = params.size ? `?${params.toString()}` : "";
   return request<ChatSessionRecord[]>(`/api/v1/chat/sessions${query}`);
 }
 
 export async function listChatSessionsPage(
   vaultId?: string,
-  options: { saved?: boolean; limit?: number; cursor?: string | null } = {},
+  options: { saved?: boolean; limit?: number; cursor?: string | null; clusterId?: string } = {},
 ) {
   const params = new URLSearchParams();
   if (vaultId) params.set("vault_id", vaultId);
   if (options.saved !== undefined) params.set("saved", String(options.saved));
   if (options.limit !== undefined) params.set("limit", String(options.limit));
   if (options.cursor) params.set("cursor", options.cursor);
+  if (options.clusterId) params.set("cluster_id", options.clusterId);
   const query = params.size ? `?${params.toString()}` : "";
   return request<CursorPage<ChatSessionRecord>>(`/api/v1/chat/sessions/page${query}`);
 }
@@ -2990,6 +3090,10 @@ export async function authorizeVaultDeletion(
     {
       method: "POST",
       body: JSON.stringify(payload),
+      // Passphrase verification can be intentionally expensive and the active
+      // vault may be finishing a database write. Do not apply the generic
+      // interactive-request deadline to a destructive authorization.
+      timeoutMs: 120_000,
     },
   );
 }

@@ -147,5 +147,29 @@ test("sidebar and startup use the same Vault wordmark asset", () => {
   assert.match(brandSource, /VAULT_OPENING_WORDMARK\s*=\s*"\/brand\/Container\.svg"/);
   assert.doesNotMatch(brandSource, /brand\/logo\.svg|variant/);
   assert.match(shellSource, /<BrandLogo/);
+  assert.match(shellSource, /w-\[180px\]/);
+  assert.doesNotMatch(shellSource, /w-\[132px\]/);
   assert.match(startupSource, /brand\/Container\.svg/);
+});
+
+test("long-lived views invalidate data when the desktop backend generation changes", () => {
+  const backendSource = fs.readFileSync(
+    path.join(desktopRoot, "src", "lib", "backend.ts"),
+    "utf8",
+  );
+  const timelineSource = fs.readFileSync(
+    path.join(desktopRoot, "src", "routes", "_app.timeline.tsx"),
+    "utf8",
+  );
+  const bridgeSource = fs.readFileSync(
+    path.join(desktopRoot, "src", "routes", "_app.bridge.tsx"),
+    "utf8",
+  );
+
+  assert.match(backendSource, /backendGenerationListeners\.forEach/);
+  assert.match(homeSource, /useBackendGeneration\(\)/);
+  assert.match(homeSource, /overviewSequence/);
+  assert.match(timelineSource, /\[backendGeneration\]/);
+  assert.match(bridgeSource, /loadSequence/);
+  assert.match(bridgeSource, /backendGeneration/);
 });

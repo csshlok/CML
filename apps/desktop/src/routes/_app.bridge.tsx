@@ -1,5 +1,5 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   Cable,
   Copy,
@@ -53,6 +53,7 @@ import {
   updateBridgeSettings,
   updateExtensionClient,
   useBackendHealth,
+  useBackendGeneration,
   BACKEND_API_PREFIX,
   type BridgeApprovalRequest,
   type BridgeAuditEvent,
@@ -68,6 +69,7 @@ import {
   type ExtensionPermissionAuditRecord,
   type ExtensionPairingRecord,
   type VaultRecord,
+  VaultRequestError,
 } from "@/lib/backend";
 import { displayPath } from "@/lib/displayPath";
 import { useVisiblePolling } from "@/lib/useVisiblePolling";
@@ -79,6 +81,8 @@ export const Route = createFileRoute("/_app/bridge")({
 
 function BridgeView() {
   const backend = useBackendHealth();
+  const backendGeneration = useBackendGeneration();
+  const loadSequence = useRef(0);
   const [bridgeView, setBridgeView] = useState<
     "overview" | "clients" | "reviews" | "history" | "advanced"
   >("overview");
@@ -97,6 +101,7 @@ function BridgeView() {
   const [clientName, setClientName] = useState("Local MCP client");
   const [clientToken, setClientToken] = useState<string | null>(null);
   const [clientTokenClientId, setClientTokenClientId] = useState<string | null>(null);
+  const [clientNotice, setClientNotice] = useState<string | null>(null);
   const [vaults, setVaults] = useState<VaultRecord[]>([]);
   const [clusters, setClusters] = useState<ClusterRecord[]>([]);
   const [saving, setSaving] = useState(false);
@@ -136,6 +141,7 @@ function BridgeView() {
 
   async function loadBridgeState() {
     if (backend.status !== "online") return;
+    const sequence = ++loadSequence.current;
     const [
       statusResult,
       requestsResult,
@@ -167,6 +173,7 @@ function BridgeView() {
       listExtensionPairings(),
       listExtensionPermissionAudit(),
     ] as const);
+    if (sequence !== loadSequence.current) return;
     const nextVaults = vaultsResult.status === "fulfilled" ? vaultsResult.value : vaults;
     const nextClusters = clustersResult.status === "fulfilled" ? clustersResult.value : clusters;
     if (statusResult.status === "fulfilled") {
@@ -208,7 +215,13 @@ function BridgeView() {
     }
   }
 
-  useVisiblePolling(loadBridgeState, 60_000, backend.status === "online");
+  useVisiblePolling(
+    loadBridgeState,
+    60_000,
+    backend.status === "online",
+    undefined,
+    backendGeneration,
+  );
 
   useEffect(() => {
     void window.cmlDesktop?.getMcpFeatureFlags().then((next) => {
@@ -253,7 +266,7 @@ function BridgeView() {
     return () => {
       window.removeEventListener("vault:bridge-captures-changed", refresh);
     };
-  }, [backend.status]);
+  }, [backend.status, backendGeneration]);
 
   async function patchSettings(payload: Parameters<typeof updateBridgeSettings>[0]) {
     setSaving(true);
@@ -309,8 +322,12 @@ function BridgeView() {
     payload: Parameters<typeof updateBridgeClient>[1],
   ) {
     setSaving(true);
+    setClientNotice(null);
     try {
-      const updated = await updateBridgeClient(client.id, payload);
+      const updated = await updateBridgeClient(client.id, {
+        ...payload,
+        expected_updated_at: client.updated_at,
+      });
       if ("token" in updated) {
         setClientToken(updated.token);
         setClientTokenClientId(updated.id);
@@ -320,6 +337,13 @@ function BridgeView() {
         }
       }
       await loadBridgeState();
+    } catch (error) {
+      if (error instanceof VaultRequestError && error.status === 409) {
+        await loadBridgeState();
+        setClientNotice("This client changed in another window. The latest settings were reloaded; review them before saving again.");
+        return;
+      }
+      throw error;
     } finally {
       setSaving(false);
     }
@@ -1711,6 +1735,11 @@ function BridgeView() {
               >
                 {clientToken}
               </button>
+            </div>
+          )}
+          {clientNotice && (
+            <div role="status" className="mt-4 rounded-md border border-amber-500/35 bg-amber-500/10 px-3 py-2 text-xs">
+              {clientNotice}
             </div>
           )}
           <div className="mt-4 divide-y divide-border border-y border-border">

@@ -55,6 +55,7 @@ function TasksView() {
   const [jobRows, setJobRows] = useState<AppJobRecord[]>([]);
   const [nextJobCursor, setNextJobCursor] = useState<string | null>(null);
   const [loadingMore, setLoadingMore] = useState(false);
+  const [hasLoadedOlderJobs, setHasLoadedOlderJobs] = useState(false);
   const [hasLoaded, setHasLoaded] = useState(false);
 
   async function load() {
@@ -68,8 +69,8 @@ function TasksView() {
       setJobs(status);
     }
     if (jobsResult.status === "fulfilled") {
-      setJobRows(jobsResult.value.items);
-      setNextJobCursor(jobsResult.value.next_cursor);
+      setJobRows((current) => mergePolledJobs(current, jobsResult.value.items, 100));
+      if (!hasLoadedOlderJobs) setNextJobCursor(jobsResult.value.next_cursor);
     }
     if (summaryResult.status === "fulfilled") {
       setProjectTasks(
@@ -128,6 +129,7 @@ function TasksView() {
       const page = await listJobsPage({ limit: 100, cursor: nextJobCursor });
       setJobRows((current) => uniqueJobs([...current, ...page.items]));
       setNextJobCursor(page.next_cursor);
+      setHasLoadedOlderJobs(true);
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "Could not load more tasks.");
     } finally {
@@ -555,6 +557,18 @@ function TasksView() {
       ) : null}
     </div>
   );
+}
+
+function mergePolledJobs(
+  current: AppJobRecord[],
+  firstPage: AppJobRecord[],
+  pageSize: number,
+) {
+  const firstPageIds = new Set(firstPage.map((job) => job.id));
+  return uniqueJobs([
+    ...firstPage,
+    ...current.slice(pageSize).filter((job) => !firstPageIds.has(job.id)),
+  ]);
 }
 
 function ImportFailures({

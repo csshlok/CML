@@ -40,6 +40,7 @@ type SourceImportContextValue = {
   actionError: string | null;
   start: (payload: {
     vaultId: string;
+    clusterId?: string | null;
     paths: string[];
     truncatedAt?: number | null;
     folderRoots?: string[];
@@ -95,11 +96,13 @@ export function SourceImportProvider({ children }: { children: ReactNode }) {
   const start = useCallback(
     async ({
       vaultId,
+      clusterId = null,
       paths,
       truncatedAt = null,
       folderRoots = [],
     }: {
       vaultId: string;
+      clusterId?: string | null;
       paths: string[];
       truncatedAt?: number | null;
       folderRoots?: string[];
@@ -109,6 +112,7 @@ export function SourceImportProvider({ children }: { children: ReactNode }) {
       try {
         const next = await startSourceImportJob({
           vault_id: vaultId,
+          cluster_id: clusterId,
           paths,
           truncated_at: truncatedAt,
           folder_roots: folderRoots,

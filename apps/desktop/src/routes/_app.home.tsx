@@ -1,5 +1,5 @@
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
-import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
   ArrowDown,
   ArrowUp,
@@ -56,6 +56,7 @@ import {
   listVaults,
   sourceCountsByCluster,
   sourceCountsByType,
+  useBackendGeneration,
   type ActivityRecord,
   type ChatSessionRecord,
   type JobQueueStatus,
@@ -119,6 +120,8 @@ const sectionLabels: Record<HomeSectionId, string> = {
 
 function HomeView() {
   const navigate = useNavigate();
+  const backendGeneration = useBackendGeneration();
+  const overviewSequence = useRef(0);
   const [preferences, setPreferences] = useState<HomePreferences>(() => readHomePreferences(null));
   const [preferencesProfileId, setPreferencesProfileId] = useState<string | null>(null);
   const [vault, setVault] = useState<VaultRecord | null>(null);
@@ -157,8 +160,10 @@ function HomeView() {
   }, [vault?.id]);
 
   const loadOverview = useCallback(async () => {
+    const sequence = ++overviewSequence.current;
     try {
       const activeVault = (await listVaults())[0] ?? null;
+      if (sequence !== overviewSequence.current) return;
       setVault(activeVault);
       if (!activeVault) {
         setSources([]);
@@ -199,6 +204,7 @@ function HomeView() {
         jobsResult,
         suggestionsResult,
       ] = results;
+      if (sequence !== overviewSequence.current) return;
       if (unsortedResult.status === "fulfilled") {
         setUnsortedSources(unsortedResult.value.map(sourceFromRecord));
       }
@@ -230,7 +236,7 @@ function HomeView() {
     } catch {
       setLoadError(true);
     }
-  }, []);
+  }, [backendGeneration]);
 
   const loadFilteredSources = useCallback(
     async (vaultId: string, nextPreferences: HomePreferences) => {
@@ -253,7 +259,7 @@ function HomeView() {
     [],
   );
 
-  useVisiblePolling(loadOverview, 30_000, true);
+  useVisiblePolling(loadOverview, 30_000, true, undefined, backendGeneration);
   useVisiblePolling(
     () => (vault ? loadFilteredSources(vault.id, preferences) : undefined),
     30_000,
@@ -763,7 +769,7 @@ type AttentionItem = {
   title: string;
   detail: string;
   href: "/sources" | "/tasks" | "/settings";
-  search?: { filter: "unsorted" } | { section: "health" };
+  search?: { filter: "unsorted" | "unclustered" } | { section: "health" };
 };
 
 function AttentionSection({ items, dense }: { items: AttentionItem[]; dense: boolean }) {
@@ -1069,7 +1075,7 @@ function SourcesSection({
         action={
           <Link
             to="/sources"
-            search={inbox ? { filter: "unsorted" } : undefined}
+            search={inbox ? { filter: "unclustered" } : undefined}
             className="text-sm text-primary hover:underline"
           >
             {inbox ? "Review" : "View all"}
@@ -1337,7 +1343,7 @@ function buildAttentionItems({
       title: `${unsortedCount} ${unsortedCount === 1 ? "source is" : "sources are"} not organized`,
       detail: "Move them from the inbox into a cluster.",
       href: "/sources",
-      search: { filter: "unsorted" },
+      search: { filter: "unclustered" },
     });
   }
   if ((jobs?.paused ?? 0) > 0) {

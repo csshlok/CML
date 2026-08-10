@@ -286,9 +286,12 @@ export function AppShell() {
       ]);
       const pairingVault = activeVaults[0];
       if (!pairingVault) return;
+      const pendingIds = new Set(challenges.map((challenge) => challenge.id));
+      for (const notifiedId of notifiedOdinPairingIdsRef.current) {
+        if (!pendingIds.has(notifiedId)) notifiedOdinPairingIdsRef.current.delete(notifiedId);
+      }
       for (const challenge of challenges) {
         if (notifiedOdinPairingIdsRef.current.has(challenge.id)) continue;
-        notifiedOdinPairingIdsRef.current.add(challenge.id);
         const scopes = challenge.requested_scopes
           .map((scope) => scope.replaceAll("_", " "))
           .join(", ");
@@ -301,6 +304,12 @@ export function AppShell() {
           actionLabel: "Approve",
           onAction: () => void decideOdinPairing(challenge, true, pairingVault.id),
         });
+        notifiedOdinPairingIdsRef.current.add(challenge.id);
+        while (notifiedOdinPairingIdsRef.current.size > 100) {
+          const oldest = notifiedOdinPairingIdsRef.current.values().next().value;
+          if (!oldest) break;
+          notifiedOdinPairingIdsRef.current.delete(oldest);
+        }
       }
     } catch {
       // Code Connections remains available if a background pairing check is interrupted.
@@ -557,7 +566,7 @@ export function AppShell() {
               className="inline-flex rounded-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
             >
               <BrandLogo
-                className="h-auto w-[132px] select-none"
+                className="h-auto w-[180px] select-none"
               />
             </Link>
             <button

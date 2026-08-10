@@ -7,6 +7,7 @@ import { PageHeader } from "@/components/layout/WindowAware";
 import {
   listActivity,
   listVaults,
+  useBackendGeneration,
   type ActivityRecord,
 } from "@/lib/backend";
 
@@ -22,6 +23,7 @@ const PAGE_SIZE = 100;
 const TIMELINE_REFRESH_INTERVAL_MS = 60_000;
 
 function TimelineRoute() {
+  const backendGeneration = useBackendGeneration();
   const [activities, setActivities] = useState<ActivityItem[]>([]);
   const [activityTotal, setActivityTotal] = useState(0);
   const [vaultId, setVaultId] = useState("");
@@ -49,7 +51,12 @@ function TimelineRoute() {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [backendGeneration]);
+
+  useEffect(() => {
+    setPage(1);
+    setSelected(null);
+  }, [backendGeneration, vaultId]);
 
   useEffect(() => {
     if (!vaultId) {
