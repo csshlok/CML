@@ -140,6 +140,76 @@ class ManagedModelRuntimeTests(unittest.TestCase):
         self.assertEqual(start.call_count, 2)
         self.assertEqual(start.call_args_list[1].kwargs["attempts"][0]["runtime_backend"], "cuda")
 
+    def test_model_swap_publishes_replacement_before_draining_busy_runtime(self) -> None:
+        from backend.app.core import model_runtime_supervisor as supervisor
+
+        class Process:
+            def __init__(self, pid: int):
+                self.pid = pid
+
+            @staticmethod
+            def poll():
+                return None
+
+        old_process = Process(101)
+        new_process = Process(202)
+        previous = {
+            "state": "ready",
+            "available": True,
+            "model_id": "old-model",
+            "model_path": str(self.model_path),
+            "base_url": "http://127.0.0.1:7101/v1",
+        }
+        events: list[str] = []
+
+        def start_replacement(**_kwargs):
+            events.append("replacement-ready")
+            supervisor._PROCESS = new_process
+            return {
+                "state": "ready",
+                "available": True,
+                "model_id": "new-model",
+                "base_url": "http://127.0.0.1:7102/v1",
+            }
+
+        def drain(_base_url):
+            events.append("old-drained")
+            return True
+
+        def terminate(process):
+            self.assertIs(process, old_process)
+            events.append("old-stopped")
+
+        supervisor._PROCESS = old_process
+        try:
+            with (
+                patch.object(supervisor, "_runtime_candidates", return_value=[("cpu", sys.executable)]),
+                patch.object(supervisor, "_load_state_locked", return_value=previous),
+                patch.object(supervisor, "_runtime_request_count", return_value=1),
+                patch.object(
+                    supervisor,
+                    "_terminate_verified_orphans_locked",
+                    return_value={"count": 0, "pids": []},
+                ) as cleanup,
+                patch.object(supervisor, "_start_locked", side_effect=start_replacement),
+                patch.object(supervisor, "_wait_for_runtime_drain", side_effect=drain),
+                patch.object(supervisor, "_terminate_process", side_effect=terminate),
+                patch.object(supervisor, "_persist_state_locked"),
+                patch.object(supervisor, "_stop_locked") as stop,
+            ):
+                result = supervisor.activate_managed_model("new-model", str(self.model_path))
+        finally:
+            supervisor._PROCESS = None
+
+        self.assertEqual(result["model_id"], "new-model")
+        self.assertEqual(events, ["replacement-ready", "old-drained", "old-stopped"])
+        stop.assert_not_called()
+        cleanup.assert_called_once_with(
+            runtime_binaries={sys.executable},
+            model_paths={str(self.model_path.resolve())},
+            exclude_pids={101},
+        )
+
     def test_orphan_cleanup_requires_exact_binary_model_and_loopback_host(self) -> None:
         from backend.app.core.model_runtime_supervisor import (
             _terminate_verified_orphans_locked,

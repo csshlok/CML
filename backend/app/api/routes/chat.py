@@ -8,7 +8,7 @@ from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
 from starlette.concurrency import iterate_in_threadpool, run_in_threadpool
 
-from backend.app.core.background_jobs import enqueue_job, wake_background_worker
+from backend.app.core.background_jobs import cancel_jobs_for_scope, enqueue_job, wake_background_worker
 from backend.app.core.chat_attachment_retrieval import (
     build_attachment_bundle,
     session_attachment_source_ids,
@@ -105,12 +105,17 @@ from backend.app.schemas import (
 router = APIRouter(prefix="/chat", tags=["chat"])
 
 
+class ChatGenerationCancelled(RuntimeError):
+    pass
+
+
 @router.get("/sessions", response_model=list[ChatSessionRead])
 def list_chat_sessions(
     vault_id: str | None = None,
     saved: bool | None = None,
     limit: int = 100,
     offset: int = 0,
+    cluster_id: str | None = None,
 ) -> list[dict]:
     clauses: list[str] = []
     params: list[object] = []
@@ -120,6 +125,9 @@ def list_chat_sessions(
     if saved is not None:
         clauses.append("saved = ?")
         params.append(1 if saved else 0)
+    if cluster_id:
+        clauses.append("scope_cluster_id = ?")
+        params.append(cluster_id)
     where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
     bounded_limit = max(1, min(limit, 200))
     bounded_offset = max(offset, 0)
@@ -151,6 +159,7 @@ def list_chat_sessions_page(
     saved: bool | None = None,
     limit: int = 100,
     cursor: str | None = None,
+    cluster_id: str | None = None,
 ) -> dict:
     clauses: list[str] = []
     params: list[object] = []
@@ -160,6 +169,9 @@ def list_chat_sessions_page(
     if saved is not None:
         clauses.append("saved = ?")
         params.append(1 if saved else 0)
+    if cluster_id:
+        clauses.append("scope_cluster_id = ?")
+        params.append(cluster_id)
     decoded = decode_cursor(cursor)
     if decoded:
         updated_at, item_id = decoded
@@ -371,6 +383,56 @@ def list_recent_chat_generations(vault_id: str, limit: int = 30) -> dict:
             (vault_id, max(1, min(limit, 100))),
         ).fetchall()
     return {"items": [dict_from_row(row) for row in rows]}
+
+
+@router.post("/generations/{generation_id}/cancel")
+def cancel_chat_generation(generation_id: str) -> dict:
+    now = utc_now()
+    with connect() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        generation = conn.execute(
+            "SELECT id, session_id, state FROM chat_generations WHERE id = ?",
+            (generation_id,),
+        ).fetchone()
+        if generation is None:
+            raise HTTPException(status_code=404, detail="Chat answer not found")
+        state = str(generation["state"] or "")
+        if state in {"completed", "stopped"}:
+            return {"generation_id": generation_id, "state": state}
+        if state not in {"in_flight", "retriable"}:
+            raise HTTPException(status_code=409, detail="Chat answer cannot be cancelled")
+        changed = conn.execute(
+            """
+            UPDATE chat_generations
+            SET state = 'stopped', lease_owner = '',
+                error = 'Generation cancelled by the client.',
+                cancellation_requested_at = ?, completed_at = ?, updated_at = ?
+            WHERE id = ? AND state IN ('in_flight', 'retriable')
+            """,
+            (now, now, now, generation_id),
+        )
+        if changed.rowcount != 1:
+            current = conn.execute(
+                "SELECT state FROM chat_generations WHERE id = ?", (generation_id,)
+            ).fetchone()
+            return {"generation_id": generation_id, "state": str(current["state"])}
+        conn.execute(
+            """
+            UPDATE app_jobs
+            SET status = CASE WHEN status = 'running' THEN status ELSE 'cancelled' END,
+                cancellation_requested = 1,
+                cancellation_requested_at = ?,
+                status_detail = 'Chat answer cancellation requested.',
+                completed_at = CASE WHEN status = 'running' THEN completed_at ELSE ? END,
+                updated_at = ?
+            WHERE job_type = 'chat_answer_generation'
+              AND json_extract(payload, '$.generation_id') = ?
+              AND status IN ('queued', 'running', 'paused', 'blocked_by_dependency',
+                             'blocked_setup_required', 'deferred')
+            """,
+            (now, now, now, generation_id),
+        )
+    return {"generation_id": generation_id, "state": "stopped"}
 
 
 @router.post("/retrieval-snapshots/compact")
@@ -961,8 +1023,14 @@ def stream_durable_chat_context(payload: ChatContextRequest) -> StreamingRespons
                 yield _sse(
                     "error",
                     {
-                        "message": "Vault could not finish this answer.",
-                        "detail": "Retry it from the conversation.",
+                        "message": (
+                            "This answer was stopped."
+                            if state == "stopped"
+                            else "Vault could not finish this answer."
+                        ),
+                        "detail": (
+                            "" if state == "stopped" else "Retry it from the conversation."
+                        ),
                     },
                 )
                 return
@@ -2692,7 +2760,9 @@ def run_durable_chat_generation(
     expanded_analysis: bool = False,
     complete_analysis: bool = False,
 ) -> None:
+    lease_owner = f"generation-lease-{uuid4()}"
     with connect() as conn:
+        conn.execute("BEGIN IMMEDIATE")
         row = conn.execute(
             """
             SELECT generations.*, sessions.scope_cluster_id, sessions.scope_project_id,
@@ -2722,14 +2792,17 @@ def run_durable_chat_generation(
                 (row["user_message_id"],),
             ).fetchall()
         ]
-        conn.execute(
+        claimed = conn.execute(
             """
             UPDATE chat_generations
-            SET state = 'in_flight', heartbeat_at = ?, updated_at = ?, error = ''
-            WHERE id = ?
+            SET state = 'in_flight', lease_owner = ?, heartbeat_at = ?, updated_at = ?, error = ''
+            WHERE id = ? AND state IN ('in_flight', 'retriable')
+            RETURNING id
             """,
-            (utc_now(), utc_now(), generation_id),
-        )
+            (lease_owner, utc_now(), utc_now(), generation_id),
+        ).fetchone()
+        if claimed is None:
+            raise ChatGenerationCancelled("Chat answer is no longer active.")
     payload = ChatContextRequest(
         vault_id=str(generation["vault_id"]),
         prompt=str(generation["prompt"]),
@@ -2747,6 +2820,18 @@ def run_durable_chat_generation(
             synthesize=True,
             attachment_source_ids=attachment_source_ids,
         )
+        with connect() as conn:
+            heartbeat = conn.execute(
+                """
+                UPDATE chat_generations
+                SET heartbeat_at = ?, updated_at = ?
+                WHERE id = ? AND state = 'in_flight' AND lease_owner = ?
+                RETURNING id
+                """,
+                (utc_now(), utc_now(), generation_id, lease_owner),
+            ).fetchone()
+            if heartbeat is None:
+                raise ChatGenerationCancelled("Chat answer was cancelled.")
         _complete_chat_generation(
             generation_id=generation_id,
             session_id=str(generation["session_id"]),
@@ -2763,6 +2848,7 @@ def run_durable_chat_generation(
             token_budget=context["coverage_ledger"].get("token_budget"),
             retrieval_telemetry=context["coverage_ledger"],
             warnings=list(context["warnings"]),
+            lease_owner=lease_owner,
         )
     except Exception as exc:
         _mark_chat_generation_retriable(generation_id, str(exc))
@@ -2822,6 +2908,7 @@ def _start_chat_generation(
     now = utc_now()
     title = _title_from_prompt(prompt)
     with connect() as conn:
+        conn.execute("BEGIN IMMEDIATE")
         _ensure_vault(conn, vault_id)
         if request_id:
             existing_request = conn.execute(
@@ -2888,6 +2975,20 @@ def _start_chat_generation(
             ).fetchone()
             if session is None:
                 raise HTTPException(status_code=404, detail="Chat session not found")
+
+        active_generation = conn.execute(
+            """
+            SELECT id FROM chat_generations
+            WHERE session_id = ? AND state = 'in_flight'
+            LIMIT 1
+            """,
+            (session_id,),
+        ).fetchone()
+        if active_generation is not None:
+            raise HTTPException(
+                status_code=409,
+                detail="This conversation already has an answer in progress.",
+            )
 
         user_message_id = (
             str(retry_target["user_message_id"]) if retry_target is not None else f"msg-{uuid4()}"
@@ -3013,9 +3114,21 @@ def _complete_chat_generation(
     token_budget: int | None,
     warnings: list[str],
     retrieval_telemetry: dict | None = None,
+    lease_owner: str | None = None,
 ) -> None:
     now = utc_now()
     with connect() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        active = conn.execute(
+            "SELECT state, lease_owner FROM chat_generations WHERE id = ?",
+            (generation_id,),
+        ).fetchone()
+        if (
+            active is None
+            or str(active["state"] or "") != "in_flight"
+            or (lease_owner is not None and str(active["lease_owner"] or "") != lease_owner)
+        ):
+            raise ChatGenerationCancelled("Chat answer was cancelled or superseded.")
         stored_answer = store_chat_message_fields(
             conn,
             vault_id=vault_id,
@@ -3057,14 +3170,18 @@ def _complete_chat_generation(
                 retrieval_telemetry=retrieval_telemetry or {},
                 now=now,
             )
-        conn.execute(
+        completed = conn.execute(
             """
             UPDATE chat_generations
-            SET state = 'completed', assistant_message_id = ?, completed_at = ?, updated_at = ?
-            WHERE id = ?
+            SET state = 'completed', lease_owner = '', assistant_message_id = ?,
+                completed_at = ?, updated_at = ?
+            WHERE id = ? AND state = 'in_flight'
+              AND (? IS NULL OR lease_owner = ?)
             """,
-            (assistant_message_id, now, now, generation_id),
+            (assistant_message_id, now, now, generation_id, lease_owner, lease_owner),
         )
+        if completed.rowcount != 1:
+            raise ChatGenerationCancelled("Chat answer was cancelled or superseded.")
         conn.execute(
             "UPDATE chat_sessions SET memory_status = 'indexing', memory_updated_at = ? WHERE id = ?",
             (now, session_id),

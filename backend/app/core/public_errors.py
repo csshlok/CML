@@ -141,12 +141,20 @@ def public_validation_exception(
     exc: RequestValidationError,
 ) -> JSONResponse:
     diagnostic_id = f"diag-{uuid4()}"
+    sanitized_errors = [
+        {
+            "type": str(item.get("type") or "validation_error"),
+            "loc": [str(part) for part in item.get("loc") or ()],
+            "msg": str(item.get("msg") or "")[:240],
+        }
+        for item in exc.errors()
+    ]
     logger.info(
         "public_validation_error diagnostic_id=%s method=%s path=%s errors=%r",
         diagnostic_id,
         request.method,
         request.url.path,
-        exc.errors(),
+        sanitized_errors,
     )
     message = "Check the highlighted information and try again."
     return JSONResponse(

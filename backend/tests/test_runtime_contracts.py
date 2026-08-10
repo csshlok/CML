@@ -8,6 +8,67 @@ from zipfile import ZipFile
 
 
 class RuntimeContractTests(unittest.TestCase):
+    def test_existing_integration_imports_gain_restartable_scan_cycle_state(self) -> None:
+        import sqlite3
+        import tempfile
+
+        from backend.app.core.config import get_settings
+        from backend.app.core.database import init_db
+
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as temporary:
+            root = Path(temporary)
+            database_path = root / "legacy-integration.sqlite3"
+            with sqlite3.connect(database_path) as conn:
+                conn.execute(
+                    """
+                    CREATE TABLE integration_imports (
+                        id TEXT PRIMARY KEY,
+                        vault_id TEXT,
+                        integration_type TEXT NOT NULL,
+                        root_path TEXT NOT NULL,
+                        status TEXT NOT NULL,
+                        supported_count INTEGER NOT NULL DEFAULT 0,
+                        skipped_count INTEGER NOT NULL DEFAULT 0,
+                        truncated INTEGER NOT NULL DEFAULT 0,
+                        last_scan_at TEXT NOT NULL,
+                        created_at TEXT NOT NULL,
+                        updated_at TEXT NOT NULL
+                    )
+                    """
+                )
+                conn.execute(
+                    """
+                    INSERT INTO integration_imports (
+                        id, integration_type, root_path, status, last_scan_at, created_at, updated_at
+                    ) VALUES ('legacy-watch', 'local_folder', ?, 'scanned', 'now', 'now', 'now')
+                    """,
+                    (str(root),),
+                )
+            with patch.dict(
+                os.environ,
+                {"CML_DATA_DIR": str(root), "CML_DATABASE_PATH": str(database_path)},
+            ):
+                get_settings.cache_clear()
+                init_db()
+                with sqlite3.connect(database_path) as conn:
+                    columns = {row[1] for row in conn.execute("PRAGMA table_info(integration_imports)")}
+                    row = conn.execute(
+                        """
+                        SELECT scan_cursor, scan_cycle_id, scan_phase, scan_processed_count
+                        FROM integration_imports WHERE id = 'legacy-watch'
+                        """
+                    ).fetchone()
+                    seen_table = conn.execute(
+                        "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'integration_scan_seen'"
+                    ).fetchone()
+            get_settings.cache_clear()
+
+        self.assertTrue(
+            {"scan_cursor", "scan_cycle_id", "scan_phase", "scan_processed_count"} <= columns
+        )
+        self.assertEqual(row, ("", "", "discovery", 0))
+        self.assertIsNotNone(seen_table)
+
     def test_existing_chat_generation_table_is_upgraded_before_request_index(self) -> None:
         import sqlite3
         import tempfile

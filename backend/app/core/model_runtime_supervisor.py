@@ -21,9 +21,11 @@ class ManagedRuntimeError(RuntimeError):
 
 
 _LOCK = threading.RLock()
+_SWAP_LOCK = threading.Lock()
 _PROCESS: subprocess.Popen[bytes] | None = None
 _STATE: dict[str, Any] = {}
 _STATE_PATH: Path | None = None
+_RUNTIME_LEASES: dict[str, int] = {}
 
 
 def managed_runtime_state_path() -> Path:
@@ -66,6 +68,27 @@ def effective_runtime_config() -> dict[str, str] | None:
     }
 
 
+def acquire_managed_runtime() -> dict[str, str] | None:
+    """Atomically pin the currently published managed endpoint for one request."""
+    with _LOCK:
+        config = effective_runtime_config()
+        if config is None:
+            return None
+        key = _runtime_key(config["base_url"])
+        _RUNTIME_LEASES[key] = _RUNTIME_LEASES.get(key, 0) + 1
+        return config
+
+
+def release_managed_runtime(config: dict[str, str]) -> None:
+    with _LOCK:
+        key = _runtime_key(config.get("base_url", ""))
+        remaining = max(0, _RUNTIME_LEASES.get(key, 0) - 1)
+        if remaining:
+            _RUNTIME_LEASES[key] = remaining
+        else:
+            _RUNTIME_LEASES.pop(key, None)
+
+
 def activate_managed_model(model_id: str, model_path: str) -> dict[str, Any]:
     candidate = Path(model_path).resolve()
     if not candidate.is_file() or candidate.suffix.casefold() != ".gguf":
@@ -77,65 +100,115 @@ def activate_managed_model(model_id: str, model_path: str) -> dict[str, Any]:
             "The local model engine is missing. Reinstall Vault or repair the packaged runtime."
         )
 
-    with _LOCK:
-        previous = dict(_load_state_locked())
-        previous_model_id = str(previous.get("model_id") or "")
-        previous_model_path = str(previous.get("model_path") or "")
-        _stop_locked(mark_stopped=False)
-        cleanup = _terminate_verified_orphans_locked(
-            runtime_binaries={binary for _, binary in runtime_candidates},
-            model_paths={
-                path
-                for path in (str(candidate), previous_model_path)
-                if path
-            },
-        )
-        attempts: list[dict[str, str]] = []
-        last_error: Exception | None = None
-        for runtime_backend, runtime_binary in runtime_candidates:
-            try:
-                return _start_locked(
-                    model_id=model_id,
-                    model_path=str(candidate),
-                    runtime_binary=runtime_binary,
-                    runtime_backend=runtime_backend,
-                    cleanup=cleanup,
-                    attempts=attempts,
-                )
-            except Exception as exc:
-                last_error = exc
-                attempts.append({"runtime_backend": runtime_backend, "error": str(exc)})
-
-        final_error = str(last_error or "The local model engine could not start.")
-        failure = {
-            **previous,
-            "state": "failed",
-            "available": False,
-            "pid": None,
-            "attempted_model_id": model_id,
-            "error": final_error,
-            "detail": f"Vault could not start {model_id}.",
-            "runtime_attempts": attempts,
-            "orphan_cleanup": cleanup,
-            "updated_at": utc_now(),
-        }
-        _persist_state_locked(failure)
-        if previous_model_id and previous_model_path and Path(previous_model_path).is_file():
+    with _SWAP_LOCK:
+        previous_process: subprocess.Popen[bytes] | None = None
+        previous_base_url = ""
+        with _LOCK:
+            global _PROCESS
+            previous = dict(_load_state_locked())
+            previous_model_id = str(previous.get("model_id") or "")
+            previous_model_path = str(previous.get("model_path") or "")
+            previous_base_url = str(previous.get("base_url") or "")
+            previous_process = _PROCESS
+            keep_previous_running = (
+                previous_process is not None
+                and previous_process.poll() is None
+                and _runtime_request_count(previous_base_url) > 0
+            )
+            if keep_previous_running:
+                # _start_locked publishes the replacement through _PROCESS. Keep
+                # the old handle locally until requests pinned to its URL drain.
+                _PROCESS = None
+            else:
+                _stop_locked(mark_stopped=False)
+                previous_process = None
+            cleanup = _terminate_verified_orphans_locked(
+                runtime_binaries={binary for _, binary in runtime_candidates},
+                model_paths={
+                    path
+                    for path in (str(candidate), previous_model_path)
+                    if path
+                },
+                exclude_pids=(
+                    {int(previous_process.pid)} if previous_process is not None else set()
+                ),
+            )
+            attempts: list[dict[str, str]] = []
+            last_error: Exception | None = None
+            activated: dict[str, Any] | None = None
             for runtime_backend, runtime_binary in runtime_candidates:
                 try:
-                    _start_locked(
-                        model_id=previous_model_id,
-                        model_path=previous_model_path,
+                    activated = _start_locked(
+                        model_id=model_id,
+                        model_path=str(candidate),
                         runtime_binary=runtime_binary,
                         runtime_backend=runtime_backend,
-                        cleanup={"count": 0, "pids": []},
-                        attempts=[],
+                        cleanup=cleanup,
+                        attempts=attempts,
                     )
                     break
-                except Exception as rollback_exc:
-                    failure["rollback_error"] = str(rollback_exc)
+                except Exception as exc:
+                    last_error = exc
+                    attempts.append({"runtime_backend": runtime_backend, "error": str(exc)})
+
+            if activated is None:
+                final_error = str(last_error or "The local model engine could not start.")
+                if previous_process is not None and previous_process.poll() is None:
+                    _PROCESS = previous_process
+                    previous.update(
+                        {
+                            "state": "ready",
+                            "available": True,
+                            "pid": previous_process.pid,
+                            "attempted_model_id": model_id,
+                            "error": final_error,
+                            "detail": f"Vault kept {previous_model_id} active because {model_id} could not start.",
+                            "runtime_attempts": attempts,
+                            "updated_at": utc_now(),
+                        }
+                    )
+                    _persist_state_locked(previous)
+                else:
+                    failure = {
+                        **previous,
+                        "state": "failed",
+                        "available": False,
+                        "pid": None,
+                        "attempted_model_id": model_id,
+                        "error": final_error,
+                        "detail": f"Vault could not start {model_id}.",
+                        "runtime_attempts": attempts,
+                        "orphan_cleanup": cleanup,
+                        "updated_at": utc_now(),
+                    }
                     _persist_state_locked(failure)
-        raise ManagedRuntimeError(final_error) from last_error
+                    if previous_model_id and previous_model_path and Path(previous_model_path).is_file():
+                        for runtime_backend, runtime_binary in runtime_candidates:
+                            try:
+                                _start_locked(
+                                    model_id=previous_model_id,
+                                    model_path=previous_model_path,
+                                    runtime_binary=runtime_binary,
+                                    runtime_backend=runtime_backend,
+                                    cleanup={"count": 0, "pids": []},
+                                    attempts=[],
+                                )
+                                break
+                            except Exception as rollback_exc:
+                                failure["rollback_error"] = str(rollback_exc)
+                                _persist_state_locked(failure)
+                raise ManagedRuntimeError(final_error) from last_error
+
+        if previous_process is not None:
+            drained = _wait_for_runtime_drain(previous_base_url)
+            _terminate_process(previous_process)
+            with _LOCK:
+                current = dict(_load_state_locked())
+                current["previous_runtime_drained"] = drained
+                current["previous_runtime_model_id"] = previous_model_id
+                current["updated_at"] = utc_now()
+                _persist_state_locked(current)
+        return dict(activated)
 
 
 def restore_selected_model(model_id: str, model_path: str) -> None:
@@ -150,7 +223,7 @@ def restore_selected_model(model_id: str, model_path: str) -> None:
 
 
 def stop_managed_runtime() -> None:
-    with _LOCK:
+    with _SWAP_LOCK, _LOCK:
         previous = dict(_load_state_locked())
         _stop_locked(mark_stopped=False)
         runtime_binary = str(previous.get("runtime_binary") or "")
@@ -295,6 +368,7 @@ def _terminate_verified_orphans_locked(
     *,
     runtime_binaries: set[str],
     model_paths: set[str],
+    exclude_pids: set[int] | None = None,
 ) -> dict[str, Any]:
     if not runtime_binaries or not model_paths:
         return {"count": 0, "pids": []}
@@ -306,8 +380,11 @@ def _terminate_verified_orphans_locked(
     expected_binaries = {_normalized_process_path(path) for path in runtime_binaries if path}
     expected_models = {_normalized_process_path(path) for path in model_paths if path}
     matched = []
+    excluded = exclude_pids or set()
     for process in psutil.process_iter(["pid", "exe", "cmdline"]):
         try:
+            if int(process.info.get("pid") or process.pid) in excluded:
+                continue
             executable = _normalized_process_path(str(process.info.get("exe") or ""))
             command = [str(value) for value in (process.info.get("cmdline") or [])]
             model_path = _command_option(command, "--model")
@@ -342,6 +419,29 @@ def _terminate_verified_orphans_locked(
             f"({', '.join(str(pid) for pid in survivor_ids)})."
         )
     return {"count": len(pids), "pids": pids}
+
+
+def _runtime_request_count(base_url: str) -> int:
+    with _LOCK:
+        return _RUNTIME_LEASES.get(_runtime_key(base_url), 0)
+
+
+def _runtime_key(base_url: str) -> str:
+    return str(base_url or "").rstrip("/").casefold()
+
+
+def _wait_for_runtime_drain(base_url: str) -> bool:
+    deadline = time.monotonic() + _bounded_int_env(
+        "CML_LLM_RUNTIME_DRAIN_TIMEOUT_SECONDS",
+        default=30,
+        minimum=1,
+        maximum=300,
+    )
+    while time.monotonic() < deadline:
+        if _runtime_request_count(base_url) == 0:
+            return True
+        time.sleep(0.05)
+    return _runtime_request_count(base_url) == 0
 
 
 def _command_option(command: list[str], option: str) -> str:

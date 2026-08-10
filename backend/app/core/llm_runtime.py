@@ -10,8 +10,10 @@ import threading
 from backend.app.core.config import get_settings
 from backend.app.core.context_packets import build_chat_context_packet, render_chat_context_packet
 from backend.app.core.model_runtime_supervisor import (
+    acquire_managed_runtime,
     effective_runtime_config,
     managed_runtime_status,
+    release_managed_runtime,
 )
 
 
@@ -28,6 +30,7 @@ class LLMRuntimeError(RuntimeError):
 
 _IN_FLIGHT_LOCK = threading.Lock()
 _IN_FLIGHT_GENERATIONS = 0
+_IN_FLIGHT_BY_RUNTIME: dict[str, int] = {}
 
 
 def runtime_status() -> dict[str, Any]:
@@ -99,29 +102,29 @@ def generate_grounded_answer(
     trusted_context: dict | None = None,
     synthesis_strategy: str = "grounded",
 ) -> LLMResult:
-    config = _runtime_config()
-    if config["provider"] == "none":
-        raise LLMRuntimeError("No local model runtime configured.")
-
-    messages = _grounded_messages(
-        prompt,
-        citations,
-        clusters_used,
-        recent_turns=recent_turns,
-        memory_items=memory_items,
-        working_memory=working_memory,
-        supported_claims=supported_claims,
-        trusted_context=trusted_context,
-        synthesis_strategy=synthesis_strategy,
-    )
-    payload = {
-        "model": config["model"],
-        "messages": messages,
-        "temperature": 0.2,
-        "stream": False,
-    }
-    with generation_in_flight():
-        response = _openai_post("/chat/completions", payload, timeout=_interactive_timeout())
+    with generation_in_flight() as config:
+        if config["provider"] == "none":
+            raise LLMRuntimeError("No local model runtime configured.")
+        messages = _grounded_messages(
+            prompt,
+            citations,
+            clusters_used,
+            recent_turns=recent_turns,
+            memory_items=memory_items,
+            working_memory=working_memory,
+            supported_claims=supported_claims,
+            trusted_context=trusted_context,
+            synthesis_strategy=synthesis_strategy,
+        )
+        payload = {
+            "model": config["model"],
+            "messages": messages,
+            "temperature": 0.2,
+            "stream": False,
+        }
+        response = _openai_post(
+            "/chat/completions", payload, timeout=_interactive_timeout(), config=config
+        )
     try:
         text = response["choices"][0]["message"]["content"].strip()
     except (KeyError, IndexError, TypeError) as exc:
@@ -139,23 +142,24 @@ def generate_direct_answer(
     trusted_context: dict | None = None,
     memory_items: list[dict] | None = None,
 ) -> LLMResult:
-    config = _runtime_config()
-    if config["provider"] == "none":
-        raise LLMRuntimeError("No local model runtime configured.")
-    payload = {
-        "model": config["model"],
-        "messages": _direct_messages(
-            prompt,
-            recent_turns=recent_turns,
-            display_name=display_name,
-            trusted_context=trusted_context,
-            memory_items=memory_items,
-        ),
-        "temperature": 0.4,
-        "stream": False,
-    }
-    with generation_in_flight():
-        response = _openai_post("/chat/completions", payload, timeout=_interactive_timeout())
+    with generation_in_flight() as config:
+        if config["provider"] == "none":
+            raise LLMRuntimeError("No local model runtime configured.")
+        payload = {
+            "model": config["model"],
+            "messages": _direct_messages(
+                prompt,
+                recent_turns=recent_turns,
+                display_name=display_name,
+                trusted_context=trusted_context,
+                memory_items=memory_items,
+            ),
+            "temperature": 0.4,
+            "stream": False,
+        }
+        response = _openai_post(
+            "/chat/completions", payload, timeout=_interactive_timeout(), config=config
+        )
     try:
         text = response["choices"][0]["message"]["content"].strip()
     except (KeyError, IndexError, TypeError) as exc:
@@ -183,36 +187,37 @@ def generate_local_structured_json(
 ) -> LLMResult:
     """Generate bounded JSON through a loopback-only model endpoint."""
     settings = get_settings()
-    config = _runtime_config()
-    if not local_runtime_configured():
-        raise LLMRuntimeError(
-            "Structured ingestion requires a configured loopback-only local model runtime."
-        )
-    selected_model = str(model or config["model"])
-    payload = {
-        "model": selected_model,
-        "messages": [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_prompt},
-        ],
-        "temperature": 0.0,
-        "stream": False,
-        "max_tokens": max(
-            64,
-            int(max_tokens or settings.atomic_semantic_max_output_tokens),
-        ),
-        "response_format": (
-            {"type": "json_object", "schema": json_schema}
-            if json_schema is not None
-            else {"type": "json_object"}
-        ),
-        "chat_template_kwargs": {"enable_thinking": False},
-    }
-    with generation_in_flight():
+    with generation_in_flight() as config:
+        hostname = (urlparse(config["base_url"]).hostname or "").casefold()
+        if config["provider"] == "none" or hostname not in {"127.0.0.1", "::1", "localhost"}:
+            raise LLMRuntimeError(
+                "Structured ingestion requires a configured loopback-only local model runtime."
+            )
+        selected_model = str(model or config["model"])
+        payload = {
+            "model": selected_model,
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+            "temperature": 0.0,
+            "stream": False,
+            "max_tokens": max(
+                64,
+                int(max_tokens or settings.atomic_semantic_max_output_tokens),
+            ),
+            "response_format": (
+                {"type": "json_object", "schema": json_schema}
+                if json_schema is not None
+                else {"type": "json_object"}
+            ),
+            "chat_template_kwargs": {"enable_thinking": False},
+        }
         response = _openai_post(
             "/chat/completions",
             payload,
             timeout=max(float(settings.atomic_semantic_timeout_seconds), 1.0),
+            config=config,
         )
     try:
         text = response["choices"][0]["message"]["content"].strip()
@@ -235,29 +240,29 @@ def stream_grounded_answer(
     trusted_context: dict | None = None,
     synthesis_strategy: str = "grounded",
 ):
-    config = _runtime_config()
-    if config["provider"] == "none":
-        raise LLMRuntimeError("No local model runtime configured.")
-
-    messages = _grounded_messages(
-        prompt,
-        citations,
-        clusters_used,
-        recent_turns=recent_turns,
-        memory_items=memory_items,
-        working_memory=working_memory,
-        supported_claims=supported_claims,
-        trusted_context=trusted_context,
-        synthesis_strategy=synthesis_strategy,
-    )
-    payload = {
-        "model": config["model"],
-        "messages": messages,
-        "temperature": 0.2,
-        "stream": True,
-    }
-    with generation_in_flight():
-        yield from _openai_stream("/chat/completions", payload, timeout=_interactive_timeout())
+    with generation_in_flight() as config:
+        if config["provider"] == "none":
+            raise LLMRuntimeError("No local model runtime configured.")
+        messages = _grounded_messages(
+            prompt,
+            citations,
+            clusters_used,
+            recent_turns=recent_turns,
+            memory_items=memory_items,
+            working_memory=working_memory,
+            supported_claims=supported_claims,
+            trusted_context=trusted_context,
+            synthesis_strategy=synthesis_strategy,
+        )
+        payload = {
+            "model": config["model"],
+            "messages": messages,
+            "temperature": 0.2,
+            "stream": True,
+        }
+        yield from _openai_stream(
+            "/chat/completions", payload, timeout=_interactive_timeout(), config=config
+        )
 
 
 def stream_direct_answer(
@@ -268,40 +273,62 @@ def stream_direct_answer(
     trusted_context: dict | None = None,
     memory_items: list[dict] | None = None,
 ):
-    config = _runtime_config()
-    if config["provider"] == "none":
-        raise LLMRuntimeError("No local model runtime configured.")
-    payload = {
-        "model": config["model"],
-        "messages": _direct_messages(
-            prompt,
-            recent_turns=recent_turns,
-            display_name=display_name,
-            trusted_context=trusted_context,
-            memory_items=memory_items,
-        ),
-        "temperature": 0.4,
-        "stream": True,
-    }
-    with generation_in_flight():
-        yield from _openai_stream("/chat/completions", payload, timeout=_interactive_timeout())
+    with generation_in_flight() as config:
+        if config["provider"] == "none":
+            raise LLMRuntimeError("No local model runtime configured.")
+        payload = {
+            "model": config["model"],
+            "messages": _direct_messages(
+                prompt,
+                recent_turns=recent_turns,
+                display_name=display_name,
+                trusted_context=trusted_context,
+                memory_items=memory_items,
+            ),
+            "temperature": 0.4,
+            "stream": True,
+        }
+        yield from _openai_stream(
+            "/chat/completions", payload, timeout=_interactive_timeout(), config=config
+        )
 
 
 @contextmanager
 def generation_in_flight():
     global _IN_FLIGHT_GENERATIONS
+    managed_config = acquire_managed_runtime()
+    config = managed_config or _runtime_config()
+    runtime_key = _runtime_key(config)
     with _IN_FLIGHT_LOCK:
         _IN_FLIGHT_GENERATIONS += 1
+        _IN_FLIGHT_BY_RUNTIME[runtime_key] = _IN_FLIGHT_BY_RUNTIME.get(runtime_key, 0) + 1
     try:
-        yield
+        yield config
     finally:
         with _IN_FLIGHT_LOCK:
             _IN_FLIGHT_GENERATIONS = max(0, _IN_FLIGHT_GENERATIONS - 1)
+            remaining = max(0, _IN_FLIGHT_BY_RUNTIME.get(runtime_key, 0) - 1)
+            if remaining:
+                _IN_FLIGHT_BY_RUNTIME[runtime_key] = remaining
+            else:
+                _IN_FLIGHT_BY_RUNTIME.pop(runtime_key, None)
+        if managed_config is not None:
+            release_managed_runtime(managed_config)
 
 
 def _in_flight_count() -> int:
     with _IN_FLIGHT_LOCK:
         return _IN_FLIGHT_GENERATIONS
+
+
+def runtime_in_flight(base_url: str) -> int:
+    """Return requests pinned to one immutable runtime endpoint."""
+    with _IN_FLIGHT_LOCK:
+        return _IN_FLIGHT_BY_RUNTIME.get(_runtime_key({"base_url": base_url}), 0)
+
+
+def _runtime_key(config: dict[str, str]) -> str:
+    return str(config.get("base_url") or "").rstrip("/").casefold()
 
 
 def _build_context_prompt(
@@ -470,8 +497,14 @@ def _openai_get(path: str, timeout: float) -> dict[str, Any]:
         raise LLMRuntimeError(f"Local model runtime is not reachable at {url}") from exc
 
 
-def _openai_post(path: str, payload: dict[str, Any], timeout: float) -> dict[str, Any]:
-    config = _runtime_config()
+def _openai_post(
+    path: str,
+    payload: dict[str, Any],
+    timeout: float,
+    *,
+    config: dict[str, str] | None = None,
+) -> dict[str, Any]:
+    config = config or _runtime_config()
     url = config["base_url"].rstrip("/") + path
     data = json.dumps(payload).encode("utf-8")
     request = Request(
@@ -493,8 +526,14 @@ def _openai_post(path: str, payload: dict[str, Any], timeout: float) -> dict[str
         raise LLMRuntimeError("Local model returned invalid JSON.") from exc
 
 
-def _openai_stream(path: str, payload: dict[str, Any], timeout: float):
-    config = _runtime_config()
+def _openai_stream(
+    path: str,
+    payload: dict[str, Any],
+    timeout: float,
+    *,
+    config: dict[str, str] | None = None,
+):
+    config = config or _runtime_config()
     url = config["base_url"].rstrip("/") + path
     data = json.dumps(payload).encode("utf-8")
     request = Request(
