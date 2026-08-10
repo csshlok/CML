@@ -4,7 +4,7 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import numpy as np
 from fastapi.testclient import TestClient
@@ -391,6 +391,24 @@ class TurbovecRuntimeTests(unittest.TestCase):
         self.assertEqual(status_after["status"], "published")
         self.assertEqual(status_after["derived_state_epoch"], 2)
 
+        sidecar_root = self.vault_dir / ".cml" / "derived-artifacts" / "vectors"
+        with connect() as conn:
+            dry_run = turbovec_runtime.prune_turbovec_sidecar_epochs(
+                conn,
+                cutoff_timestamp=float("inf"),
+                dry_run=True,
+            )
+        self.assertEqual(dry_run["eligible"], 1)
+        self.assertTrue((sidecar_root / "epoch-1").exists())
+        with connect() as conn:
+            pruned = turbovec_runtime.prune_turbovec_sidecar_epochs(
+                conn,
+                cutoff_timestamp=float("inf"),
+            )
+        self.assertEqual(pruned["deleted"], 1)
+        self.assertFalse((sidecar_root / "epoch-1").exists())
+        self.assertTrue((sidecar_root / "epoch-2").exists())
+
     def test_delete_source_removes_chunk_from_published_sidecar(self) -> None:
         from backend.app.api.routes.sources import create_source, delete_source
         from backend.app.core.database import connect, dict_from_row, utc_now
@@ -534,6 +552,74 @@ class TurbovecRuntimeTests(unittest.TestCase):
         self.assertEqual(after.status_code, 200)
         self.assertEqual(after.json()["backend"], "turbovec")
 
+    def test_phase_c_approval_expires_when_the_eligible_corpus_changes(self) -> None:
+        from backend.app.api.routes.sources import create_source
+        from backend.app.core.config import get_settings
+        from backend.app.core.database import connect, dict_from_row, utc_now
+        from backend.app.core.embeddings import reindex_source_chunks
+        from backend.app.schemas import SourceCreate
+        import backend.app.core.turbovec_runtime as turbovec_runtime
+
+        os.environ["CML_VECTOR_SEARCH_BACKEND"] = "auto"
+        os.environ["CML_TURBOVEC_MIN_CHUNK_COUNT"] = "1"
+        get_settings.cache_clear()
+        now = utc_now()
+        with connect() as conn:
+            conn.execute(
+                "INSERT INTO vaults (id, name, path, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+                ("vault-1", "Vault", str(self.vault_dir), now, now),
+            )
+        first = create_source(
+            SourceCreate(
+                vault_id="vault-1",
+                title="Alpha",
+                source_type="note",
+                raw_text="alpha beta gamma delta",
+            )
+        )
+        with connect() as conn:
+            row = conn.execute("SELECT * FROM sources WHERE id = ?", (first["id"],)).fetchone()
+            reindex_source_chunks(conn, dict_from_row(row))
+
+        with patch.object(turbovec_runtime, "IdMapIndex", FakeIdMapIndex):
+            turbovec_runtime.build_turbovec_sidecar("vault-1", rebuild_reason="test")
+            with connect() as conn:
+                snapshot = turbovec_runtime._active_snapshot(conn, "vault-1")
+                eligible_count = turbovec_runtime._eligible_chunk_count(
+                    conn, "vault-1", snapshot, cluster_id=None
+                )
+            turbovec_runtime._write_phase_c_result(
+                "vault-1",
+                snapshot=snapshot,
+                report={
+                    "approved": True,
+                    "eligible_chunk_count": eligible_count,
+                    "detail": "approved for test",
+                    "checks": [{"id": "test", "ok": True}],
+                    "benchmark": {"overlap": {"average_overlap_ratio": 1.0}},
+                },
+            )
+            self.assertTrue(turbovec_runtime.turbovec_phase_c_status("vault-1")["approved"])
+
+            second = create_source(
+                SourceCreate(
+                    vault_id="vault-1",
+                    title="Bridge",
+                    source_type="note",
+                    raw_text="bridge approval token flow",
+                )
+            )
+            with connect() as conn:
+                row = conn.execute(
+                    "SELECT * FROM sources WHERE id = ?", (second["id"],)
+                ).fetchone()
+                reindex_source_chunks(conn, dict_from_row(row))
+
+            status = turbovec_runtime.turbovec_phase_c_status("vault-1")
+            self.assertFalse(status["approved"])
+            self.assertIsNone(status["benchmark"])
+            self.assertIn("phase_c_benchmark_not_approved", status["reasons"])
+
     def test_exact_search_reuses_cached_snapshot_and_only_hydrates_top_hits(self) -> None:
         from backend.app.core.database import connect
         import backend.app.core.turbovec_runtime as turbovec_runtime
@@ -626,6 +712,60 @@ class TurbovecRuntimeTests(unittest.TestCase):
         self.assertEqual(hydrate_calls, [["chunk-a", "chunk-b"], ["chunk-a", "chunk-b"]])
         self.assertEqual([item["chunk_id"] for item in first], ["chunk-a", "chunk-b"])
         self.assertEqual([item["chunk_id"] for item in second], ["chunk-a", "chunk-b"])
+
+    def test_exact_snapshot_cache_evicts_by_bytes_not_vault_count(self) -> None:
+        from backend.app.core.database import connect
+        import backend.app.core.turbovec_runtime as turbovec_runtime
+
+        turbovec_runtime._EXACT_SEARCH_CACHE.clear()
+        snapshot = {
+            "epoch": 1,
+            "embedding_model_id": "hash",
+            "index_version": "v1",
+            "normalization_version": "norm-v1",
+            "extraction_version": "extract-v1",
+        }
+        built = turbovec_runtime.ExactSearchSnapshot(
+            chunk_ids=["chunk"],
+            vectors=np.ones((1, 8), dtype=np.float32),
+            trust_weights=np.ones((1,), dtype=np.float32),
+        )
+        with (
+            patch.object(turbovec_runtime, "EXACT_CACHE_MAX_BYTES", 50),
+            patch.object(turbovec_runtime, "_build_exact_search_snapshot", return_value=built),
+            connect() as conn,
+        ):
+            turbovec_runtime._exact_search_snapshot(
+                conn, "vault-a", snapshot=snapshot, cluster_id=None, expected_dim=8
+            )
+            turbovec_runtime._exact_search_snapshot(
+                conn, "vault-b", snapshot=snapshot, cluster_id=None, expected_dim=8
+            )
+        self.assertEqual(len(turbovec_runtime._EXACT_SEARCH_CACHE), 1)
+
+    def test_sidecar_index_cache_reuses_an_immutable_epoch_load(self) -> None:
+        import backend.app.core.turbovec_runtime as turbovec_runtime
+
+        index_path = self.vault_dir / "cached.tvim"
+        index_path.write_bytes(b"cached-index")
+        manifest = {
+            "tvim_path": str(index_path),
+            "tvim_size_bytes": index_path.stat().st_size,
+            "derived_state_epoch": 7,
+            "embedding_model_id": "model-a",
+            "index_version": "v2",
+            "updated_at": "2026-08-10T00:00:00+00:00",
+        }
+        turbovec_runtime._SIDECAR_INDEX_CACHE.clear()
+        loaded = object()
+        fake_runtime = Mock()
+        fake_runtime.load.return_value = loaded
+        with patch.object(turbovec_runtime, "IdMapIndex", fake_runtime):
+            first = turbovec_runtime._load_index(manifest)
+            second = turbovec_runtime._load_index(manifest)
+        self.assertIs(first, loaded)
+        self.assertIs(second, loaded)
+        fake_runtime.load.assert_called_once_with(str(index_path))
 
     def _client(self) -> TestClient:
         from backend.app.core.config import get_settings

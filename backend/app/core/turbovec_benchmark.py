@@ -250,6 +250,7 @@ def benchmark_turbovec_scan(
         raise RuntimeError(f"turbovec requires embedding dimensions to be a positive multiple of 8, got {vectors.shape[1]}")
     ids = np.ascontiguousarray(np.array([stable_u64(row.chunk_id) for row in rows], dtype=np.uint64))
     id_lookup = {stable_u64(row.chunk_id): row.chunk_id for row in rows}
+    row_index_by_id = {stable_u64(row.chunk_id): index for index, row in enumerate(rows)}
 
     build_started = time.perf_counter()
     index = IdMapIndex(dim=vectors.shape[1], bit_width=bit_width)
@@ -280,13 +281,30 @@ def benchmark_turbovec_scan(
         query_array = np.ascontiguousarray(np.array([embed_text(query)], dtype=np.float32))
         embedding_ms = round((time.perf_counter() - embed_started) * 1000, 3)
         started = time.perf_counter()
-        scores, result_ids = index.search(query_array, k=top_k, allowlist=allowlist)
+        candidate_k = min(
+            int(len(allowlist)) if allowlist is not None else len(rows),
+            max(top_k * 25, 50),
+        )
+        _scores, result_ids = index.search(
+            query_array, k=candidate_k, allowlist=allowlist
+        )
+        approximate_ids = result_ids[0].tolist() if len(result_ids) > 0 else []
+        reranked: list[tuple[float, int]] = []
+        for value in approximate_ids:
+            stable_id = int(value)
+            row_index = row_index_by_id.get(stable_id)
+            if row_index is None:
+                continue
+            score = cosine_similarity(query_array[0].tolist(), vectors[row_index].tolist())
+            if score > 0:
+                reranked.append((score, stable_id))
+        reranked.sort(key=lambda item: item[0], reverse=True)
+        top_ids = [id_lookup[value] for _score, value in reranked[:top_k]]
         search_ms = round((time.perf_counter() - started) * 1000, 3)
         total_ms = round(embedding_ms + search_ms, 3)
         search_latencies_ms.append(search_ms)
         total_latencies_ms.append(total_ms)
         embedding_latencies_ms.append(embedding_ms)
-        top_ids = [id_lookup[int(value)] for value in result_ids[0].tolist()] if len(result_ids) > 0 else []
         results.append(
             {
                 "query": query,
@@ -294,7 +312,9 @@ def benchmark_turbovec_scan(
                 "search_ms": search_ms,
                 "total_ms": total_ms,
                 "top_chunk_ids": top_ids,
-                "score_count": len(scores[0].tolist()) if len(scores) > 0 else 0,
+                "score_count": len(reranked),
+                "candidate_count": len(reranked),
+                "approximate_candidate_count": len(approximate_ids),
             }
         )
     summary = _benchmark_summary("turbovec", search_latencies_ms, total_latencies_ms, embedding_latencies_ms, results)

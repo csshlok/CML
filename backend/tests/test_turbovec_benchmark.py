@@ -91,6 +91,8 @@ class TurbovecBenchmarkTests(unittest.TestCase):
         self.assertEqual(report["query_count"], 1)
         self.assertGreaterEqual(report["persisted_index_bytes"], 1)
         self.assertGreaterEqual(len(report["results"][0]["top_chunk_ids"]), 1)
+        self.assertEqual(report["results"][0]["approximate_candidate_count"], 3)
+        self.assertGreaterEqual(report["results"][0]["candidate_count"], 1)
 
     def test_real_vault_benchmark_script_mentions_turbovec_and_pdfs(self) -> None:
         repo_root = Path(__file__).resolve().parents[2]

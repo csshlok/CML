@@ -13,6 +13,7 @@ from backend.app.core.retrieval_scoring import (
 from backend.app.core.context_layer_eval import export_context_layer_report
 from backend.app.core.retrieval_cache import list_query_cache, prune_query_cache, put_query_cache
 from backend.app.core.vector_maintenance import (
+    EmbeddingIndexNotReady,
     activate_embedding_index,
     begin_embedding_index_transition,
     compact_vectors,
@@ -207,17 +208,46 @@ def get_vector_backend_policy(vault_id: str | None = None) -> dict:
 
 
 @router.post("/vectors/policy/begin-transition")
-def begin_vector_policy_transition(model_id: str) -> dict:
+def begin_vector_policy_transition(model_id: str, index_version: str = "v1") -> dict:
     if not model_id.strip():
         raise HTTPException(status_code=400, detail="model_id is required")
-    return begin_embedding_index_transition(model_id.strip())
+    return begin_embedding_index_transition(model_id.strip(), index_version.strip() or "v1")
 
 
 @router.post("/vectors/policy/activate")
 def activate_vector_policy(model_id: str, index_version: str = "v1") -> dict:
     if not model_id.strip():
         raise HTTPException(status_code=400, detail="model_id is required")
-    return activate_embedding_index(model_id.strip(), index_version.strip() or "v1")
+    try:
+        normalized_model = model_id.strip()
+        normalized_version = index_version.strip() or "v1"
+        activated = activate_embedding_index(normalized_model, normalized_version)
+        with connect() as conn:
+            vaults = conn.execute("SELECT id FROM vaults ORDER BY id").fetchall()
+            for vault in vaults:
+                enqueue_job(
+                    conn,
+                    job_type="vector_reconcile_incremental",
+                    payload={"vault_id": vault["id"], "rebuild_sidecar": True},
+                    dedupe_key=(
+                        f"vector-sidecar-activation:{vault['id']}:"
+                        f"{normalized_model}:{normalized_version}"
+                    ),
+                    scope_id=str(vault["id"]),
+                    user_initiated=False,
+                )
+        return {**activated, "sidecar_rebuilds_queued": len(vaults)}
+    except EmbeddingIndexNotReady as exc:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "embedding_index_not_ready",
+                "model_id": exc.model_id,
+                "index_version": exc.index_version,
+                "required_sources": exc.required_sources,
+                "ready_sources": exc.ready_sources,
+            },
+        ) from exc
 
 
 @router.get("/vectors/repair-plan")

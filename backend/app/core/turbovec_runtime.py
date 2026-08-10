@@ -1,14 +1,17 @@
 from __future__ import annotations
 
 import hashlib
+import heapq
 import json
 import math
+import shutil
 import threading
 import time
 from collections import OrderedDict
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 import numpy as np
 
@@ -40,7 +43,10 @@ PHASE_C_MIN_CLUSTER_OVERLAP = 0.88
 PHASE_C_MIN_LATENCY_IMPROVEMENT = 3.0
 PHASE_C_MAX_SIZE_RATIO = 0.25
 PHASE_C_MAX_COLD_LOAD_SECONDS = 1.5
-EXACT_CACHE_MAX_ITEMS = 8
+EXACT_CACHE_MAX_BYTES = 64 * 1024 * 1024
+SIDECAR_CACHE_MAX_BYTES = 256 * 1024 * 1024
+EXACT_STREAM_THRESHOLD = 10_000
+EXACT_STREAM_BLOCK_SIZE = 2_048
 UNCLUSTERED_SCOPE_ID = "__unclustered__"
 
 
@@ -53,6 +59,8 @@ class ExactSearchSnapshot:
 
 _EXACT_SEARCH_CACHE: "OrderedDict[tuple[Any, ...], ExactSearchSnapshot]" = OrderedDict()
 _EXACT_SEARCH_CACHE_LOCK = threading.Lock()
+_SIDECAR_INDEX_CACHE: "OrderedDict[tuple[Any, ...], tuple[Any, int]]" = OrderedDict()
+_SIDECAR_INDEX_CACHE_LOCK = threading.Lock()
 
 
 class TurbovecSidecarError(RuntimeError):
@@ -231,8 +239,12 @@ def turbovec_phase_c_status(vault_id: str) -> dict[str, Any]:
             raise KeyError("vault_not_found")
         snapshot = _active_snapshot(conn, vault_id)
         eligible_count = _eligible_chunk_count(conn, vault_id, snapshot, cluster_id=None)
-        sidecar = _sidecar_status_for_snapshot(conn, vault_id, snapshot)
-        approval = _current_phase_c_approval(vault_id, snapshot=snapshot)
+        sidecar = _sidecar_status_for_snapshot(
+            conn, vault_id, snapshot, eligible_count=eligible_count
+        )
+        approval = _current_phase_c_approval(
+            vault_id, snapshot=snapshot, eligible_count=eligible_count
+        )
         approved = bool(
             approval
             and approval.get("approved")
@@ -307,10 +319,14 @@ def benchmark_turbovec_phase_c(
             }
             _write_phase_c_result(vault_id, snapshot=snapshot, report=report)
             return report
-        sidecar = _sidecar_status_for_snapshot(conn, vault_id, snapshot)
+        sidecar = _sidecar_status_for_snapshot(
+            conn, vault_id, snapshot, eligible_count=eligible_count
+        )
         if sidecar.get("status") != "published":
             build_turbovec_sidecar(vault_id, rebuild_reason="phase-c-benchmark")
-            sidecar = _sidecar_status_for_snapshot(conn, vault_id, snapshot)
+            sidecar = _sidecar_status_for_snapshot(
+                conn, vault_id, snapshot, eligible_count=eligible_count
+            )
         queries = sampled_queries(benchmark_rows, limit=max(1, min(query_limit, 100)))
         query_source = {
             query: str(row.source_id) for query, row in zip(queries, benchmark_rows, strict=False)
@@ -486,6 +502,15 @@ def _semantic_search_exact(
     cluster_id: str | None,
     limit: int,
 ) -> list[dict[str, Any]]:
+    if _eligible_chunk_count(conn, vault_id, snapshot, cluster_id=cluster_id) > EXACT_STREAM_THRESHOLD:
+        return _semantic_search_exact_streaming(
+            conn,
+            vault_id,
+            query_vector,
+            snapshot=snapshot,
+            cluster_id=cluster_id,
+            limit=limit,
+        )
     snapshot_cache = _exact_search_snapshot(
         conn,
         vault_id,
@@ -523,6 +548,157 @@ def _semantic_search_exact(
         chunk_ids=chunk_ids,
         raw_score_by_chunk=raw_score_by_chunk,
         weighted_score_by_chunk=weighted_score_by_chunk,
+    )
+
+
+def prune_turbovec_sidecar_epochs(
+    conn,
+    *,
+    cutoff_timestamp: float,
+    limit: int = 25,
+    dry_run: bool = False,
+) -> dict[str, Any]:
+    """Remove aged, non-current epoch directories in bounded crash-recoverable steps."""
+    bounded_limit = max(1, min(int(limit), 100))
+    candidates: list[tuple[Path, Path, bool]] = []
+    errors: list[str] = []
+    vault_rows = conn.execute("SELECT id, path FROM vaults ORDER BY id").fetchall()
+    for row in vault_rows:
+        vault_id = str(row["id"])
+        root = Path(str(row["path"] or get_settings().data_dir)) / SIDECAR_DIR_NAME
+        if not root.is_dir():
+            continue
+        try:
+            active_epoch = int(_active_snapshot(conn, vault_id)["epoch"])
+            children = list(root.iterdir())
+        except (OSError, ValueError, TurbovecSidecarError) as exc:
+            errors.append(f"{vault_id}:{str(exc)[:200]}")
+            continue
+        for child in children:
+            if not child.is_dir():
+                continue
+            deleting = child.name.startswith(".deleting-epoch-")
+            if child.name.startswith("epoch-"):
+                try:
+                    epoch = int(child.name.removeprefix("epoch-"))
+                except ValueError:
+                    continue
+                if epoch == active_epoch:
+                    continue
+            elif not deleting:
+                continue
+            try:
+                if child.stat().st_mtime >= float(cutoff_timestamp):
+                    continue
+            except OSError as exc:
+                errors.append(f"{vault_id}:{child.name}:{str(exc)[:160]}")
+                continue
+            candidates.append((root, child, deleting))
+            if len(candidates) >= bounded_limit:
+                break
+        if len(candidates) >= bounded_limit:
+            break
+
+    deleted = 0
+    if not dry_run:
+        for root, child, deleting in candidates:
+            deleting_path = child
+            try:
+                if not deleting:
+                    deleting_path = root / f".deleting-{child.name}-{uuid4().hex}"
+                    child.rename(deleting_path)
+                shutil.rmtree(deleting_path)
+                deleted += 1
+            except OSError as exc:
+                errors.append(f"{child.name}:{str(exc)[:200]}")
+    return {
+        "eligible": len(candidates),
+        "deleted": deleted,
+        "batch_limited": len(candidates) == bounded_limit,
+        "errors": errors[:20],
+    }
+
+
+def _semantic_search_exact_streaming(
+    conn,
+    vault_id: str,
+    query_vector: list[float],
+    *,
+    snapshot: dict,
+    cluster_id: str | None,
+    limit: int,
+) -> list[dict[str, Any]]:
+    """Exact top-k with bounded peak memory for large or stale-sidecar vaults."""
+    params: list[Any] = [vault_id]
+    cluster_clause = ""
+    if cluster_id == UNCLUSTERED_SCOPE_ID:
+        cluster_clause = "AND chunks.cluster_id IS NULL"
+    elif cluster_id:
+        cluster_clause = "AND chunks.cluster_id = ?"
+        params.append(cluster_id)
+    tuple_clause, tuple_params = chunk_eligibility_sql("chunks", snapshot)
+    query = np.ascontiguousarray(np.array(query_vector, dtype=np.float32))
+    expected_dim = len(query_vector)
+    cursor_created = ""
+    cursor_id = ""
+    winners: list[tuple[float, str, float]] = []
+    top_limit = max(1, int(limit))
+    while True:
+        rows = conn.execute(
+            f"""
+            SELECT chunks.id AS chunk_id, chunks.created_at, chunks.embedding,
+                   sources.trust_tier, sources.security_labels
+            FROM source_chunks chunks
+            JOIN sources ON sources.id = chunks.source_id
+            WHERE chunks.vault_id = ?
+              AND sources.deleted_at IS NULL
+              {cluster_clause}
+              {tuple_clause}
+              AND (chunks.created_at > ? OR (chunks.created_at = ? AND chunks.id > ?))
+            ORDER BY chunks.created_at, chunks.id
+            LIMIT ?
+            """,
+            [*params, *tuple_params, cursor_created, cursor_created, cursor_id, EXACT_STREAM_BLOCK_SIZE],
+        ).fetchall()
+        if not rows:
+            break
+        vectors: list[list[float]] = []
+        metadata: list[tuple[str, float]] = []
+        for row in rows:
+            decoded = _decode_embedding(str(row["embedding"] or ""))
+            if len(decoded) != expected_dim:
+                continue
+            vectors.append(decoded)
+            metadata.append((str(row["chunk_id"]), float(trust_weight(row))))
+        if vectors:
+            matrix = np.ascontiguousarray(np.array(vectors, dtype=np.float32))
+            raw_scores = matrix @ query
+            for index, (chunk_id, weight) in enumerate(metadata):
+                raw = float(raw_scores[index])
+                weighted = raw * weight
+                if weighted <= 0:
+                    continue
+                entry = (weighted, chunk_id, raw)
+                if len(winners) < top_limit:
+                    heapq.heappush(winners, entry)
+                elif entry > winners[0]:
+                    heapq.heapreplace(winners, entry)
+        cursor_created = str(rows[-1]["created_at"] or "")
+        cursor_id = str(rows[-1]["chunk_id"])
+        if len(rows) < EXACT_STREAM_BLOCK_SIZE:
+            break
+    ordered = sorted(winners, reverse=True)
+    chunk_ids = [chunk_id for _weighted, chunk_id, _raw in ordered]
+    return _hydrate_scored_rows(
+        conn,
+        vault_id,
+        snapshot=snapshot,
+        cluster_id=cluster_id,
+        chunk_ids=chunk_ids,
+        raw_score_by_chunk={chunk_id: round(raw, 4) for _weighted, chunk_id, raw in ordered},
+        weighted_score_by_chunk={
+            chunk_id: round(weighted, 4) for weighted, chunk_id, _raw in ordered
+        },
     )
 
 
@@ -687,11 +863,25 @@ def _exact_search_snapshot(
         expected_dim=expected_dim,
     )
     with _EXACT_SEARCH_CACHE_LOCK:
-        _EXACT_SEARCH_CACHE[cache_key] = built
-        _EXACT_SEARCH_CACHE.move_to_end(cache_key)
-        while len(_EXACT_SEARCH_CACHE) > EXACT_CACHE_MAX_ITEMS:
-            _EXACT_SEARCH_CACHE.popitem(last=False)
+        built_bytes = _exact_snapshot_bytes(built)
+        if built_bytes <= EXACT_CACHE_MAX_BYTES:
+            _EXACT_SEARCH_CACHE[cache_key] = built
+            _EXACT_SEARCH_CACHE.move_to_end(cache_key)
+            while (
+                _EXACT_SEARCH_CACHE
+                and sum(_exact_snapshot_bytes(item) for item in _EXACT_SEARCH_CACHE.values())
+                > EXACT_CACHE_MAX_BYTES
+            ):
+                _EXACT_SEARCH_CACHE.popitem(last=False)
     return built
+
+
+def _exact_snapshot_bytes(snapshot: ExactSearchSnapshot) -> int:
+    return int(
+        snapshot.vectors.nbytes
+        + snapshot.trust_weights.nbytes
+        + sum(len(chunk_id.encode("utf-8")) for chunk_id in snapshot.chunk_ids)
+    )
 
 
 def _build_exact_search_snapshot(
@@ -980,7 +1170,13 @@ def _chunk_vector_rows(conn, vault_id: str, *, snapshot: dict) -> list[dict[str,
     return [dict_from_row(row) for row in rows]
 
 
-def _sidecar_status_for_snapshot(conn, vault_id: str, snapshot: dict) -> dict[str, Any]:
+def _sidecar_status_for_snapshot(
+    conn,
+    vault_id: str,
+    snapshot: dict,
+    *,
+    eligible_count: int | None = None,
+) -> dict[str, Any]:
     manifest, manifest_error = _read_manifest_with_validation(conn, vault_id, snapshot["epoch"])
     if manifest is None:
         return {
@@ -998,6 +1194,12 @@ def _sidecar_status_for_snapshot(conn, vault_id: str, snapshot: dict) -> dict[st
         status = "stale"
     elif not index_path.exists():
         status = "corrupt"
+    elif int(manifest.get("chunk_count") or 0) != int(
+        eligible_count
+        if eligible_count is not None
+        else _eligible_chunk_count(conn, vault_id, snapshot, cluster_id=None)
+    ):
+        status = "stale"
     else:
         status = str(manifest.get("status") or "unknown")
     return {
@@ -1021,7 +1223,30 @@ def _load_index(manifest: dict[str, Any]):
     index_path = Path(str(manifest["tvim_path"]))
     if not index_path.exists():
         raise TurbovecSidecarUnavailable("sidecar_index_missing")
-    return IdMapIndex.load(str(index_path))
+    size_bytes = max(1, int(manifest.get("tvim_size_bytes") or index_path.stat().st_size or 1))
+    cache_key = (
+        str(index_path.resolve()),
+        int(manifest.get("derived_state_epoch") or 0),
+        str(manifest.get("embedding_model_id") or ""),
+        str(manifest.get("index_version") or ""),
+        str(manifest.get("updated_at") or ""),
+        size_bytes,
+    )
+    with _SIDECAR_INDEX_CACHE_LOCK:
+        cached = _SIDECAR_INDEX_CACHE.get(cache_key)
+        if cached is not None:
+            _SIDECAR_INDEX_CACHE.move_to_end(cache_key)
+            return cached[0]
+    loaded = IdMapIndex.load(str(index_path))
+    if size_bytes <= SIDECAR_CACHE_MAX_BYTES:
+        with _SIDECAR_INDEX_CACHE_LOCK:
+            _SIDECAR_INDEX_CACHE[cache_key] = (loaded, size_bytes)
+            _SIDECAR_INDEX_CACHE.move_to_end(cache_key)
+            cached_bytes = sum(item[1] for item in _SIDECAR_INDEX_CACHE.values())
+            while _SIDECAR_INDEX_CACHE and cached_bytes > SIDECAR_CACHE_MAX_BYTES:
+                _key, (_index, removed_bytes) = _SIDECAR_INDEX_CACHE.popitem(last=False)
+                cached_bytes -= removed_bytes
+    return loaded
 
 
 def _write_index_atomically(index, index_path: Path) -> None:
@@ -1082,7 +1307,9 @@ def _resolve_backend(conn, vault_id: str, *, eligible_count: int) -> str:
             return "exact"
         snapshot = _active_snapshot(conn, vault_id)
         status = _sidecar_status_for_snapshot(conn, vault_id, snapshot)
-        approval = _current_phase_c_approval(vault_id, snapshot=snapshot)
+        approval = _current_phase_c_approval(
+            vault_id, snapshot=snapshot, eligible_count=eligible_count
+        )
         approved = bool(
             approval
             and approval.get("approved")
@@ -1142,6 +1369,7 @@ def _write_phase_c_result(vault_id: str, *, snapshot: dict, report: dict[str, An
             "approved_at": now if report.get("approved") else "",
             "updated_at": now,
             "derived_state_epoch": int(snapshot["epoch"]),
+            "eligible_chunk_count": int(report.get("eligible_chunk_count") or 0),
             "embedding_model_id": str(snapshot["embedding_model_id"]),
             "index_version": str(snapshot["index_version"]),
             "normalization_version": str(snapshot["normalization_version"]),
@@ -1158,12 +1386,18 @@ def _write_phase_c_result(vault_id: str, *, snapshot: dict, report: dict[str, An
     _write_phase_c_policy(policy)
 
 
-def _current_phase_c_approval(vault_id: str, *, snapshot: dict) -> dict[str, Any] | None:
+def _current_phase_c_approval(
+    vault_id: str, *, snapshot: dict, eligible_count: int | None = None
+) -> dict[str, Any] | None:
     policy = _read_phase_c_policy()
     vault = (policy.get("vaults") or {}).get(vault_id)
     if not isinstance(vault, dict):
         return None
     if int(vault.get("derived_state_epoch") or -1) != int(snapshot["epoch"]):
+        return None
+    if eligible_count is not None and int(vault.get("eligible_chunk_count") or -1) != int(
+        eligible_count
+    ):
         return None
     return vault
 

@@ -18,6 +18,7 @@ from backend.app.core.config import get_settings
 from backend.app.core.database import utc_now
 from backend.app.core.derived_state import chunk_tuple_values, query_epoch_snapshot_conn
 from backend.app.core.encrypted_storage import (
+    delete_encrypted_entity,
     delete_source_chunk_encrypted_content,
     page_from_encrypted_row,
     plaintext_column_for_text,
@@ -1230,12 +1231,54 @@ def _looks_like_tsv(source: dict, text: str) -> bool:
 
 
 def reindex_source_chunks(conn, source: dict) -> int:
+    from backend.app.core.vector_maintenance import embedding_index_policy
+
+    model_id = active_embedding_model_id()
+    policy = embedding_index_policy()
+    active_policy_model = str(policy.get("active_embedding_model_id") or model_id)
+    transition_building = policy.get("transition_state") == "building"
+    building_model = str(policy.get("building_embedding_model_id") or "")
+    stage_transition = transition_building and building_model == model_id and model_id != active_policy_model
+    if not transition_building and model_id != active_policy_model:
+        raise RuntimeError("embedding_runtime_policy_mismatch: begin an index transition before reindexing")
+    target_index_version = str(
+        (
+            policy.get("building_index_version")
+            if stage_transition
+            else policy.get("active_index_version")
+        )
+        or "v1"
+    )
     removed_chunk_ids = [
         str(row["id"])
-        for row in conn.execute("SELECT id FROM source_chunks WHERE source_id = ?", (source["id"],)).fetchall()
+        for row in conn.execute(
+            (
+                "SELECT id FROM source_chunks WHERE source_id = ? AND embedding_model_id = ? AND index_version = ?"
+                if stage_transition
+                else "SELECT id FROM source_chunks WHERE source_id = ?"
+            ),
+            (
+                (source["id"], model_id, target_index_version)
+                if stage_transition
+                else (source["id"],)
+            ),
+        ).fetchall()
     ]
-    delete_source_chunk_encrypted_content(conn, source_id=source["id"], vault_id=source.get("vault_id"))
-    conn.execute("DELETE FROM source_chunks WHERE source_id = ?", (source["id"],))
+    if stage_transition:
+        for chunk_id in removed_chunk_ids:
+            delete_encrypted_entity(
+                conn,
+                vault_id=source.get("vault_id"),
+                entity_type="source_chunk",
+                entity_id=chunk_id,
+            )
+        conn.execute(
+            "DELETE FROM source_chunks WHERE source_id = ? AND embedding_model_id = ? AND index_version = ?",
+            (source["id"], model_id, target_index_version),
+        )
+    else:
+        delete_source_chunk_encrypted_content(conn, source_id=source["id"], vault_id=source.get("vault_id"))
+        conn.execute("DELETE FROM source_chunks WHERE source_id = ?", (source["id"],))
     if source.get("vault_id"):
         row = conn.execute("SELECT * FROM sources WHERE id = ?", (source["id"],)).fetchone()
         if row is not None:
@@ -1252,12 +1295,11 @@ def reindex_source_chunks(conn, source: dict) -> int:
     now = utc_now()
     chunk_count = 0
     added_chunks: list[dict[str, str]] = []
-    model_id = active_embedding_model_id()
     tuple_snapshot = query_epoch_snapshot_conn(
         conn,
         source["vault_id"],
         embedding_model_id=model_id,
-        index_version="v1",
+        index_version=target_index_version,
     )
     tuple_values = chunk_tuple_values(tuple_snapshot)
     tokenizer = None
@@ -1315,7 +1357,7 @@ def reindex_source_chunks(conn, source: dict) -> int:
                     "chunk_strategy": chunk["chunk_strategy"],
                     "chunk_meta_json": chunk["chunk_meta_json"],
                     "content_hash": content_hash(chunk["text"]),
-                    "index_version": "v1",
+                    "index_version": target_index_version,
                     **tuple_values,
                     "indexed_at": now,
                     "created_at": now,
@@ -1323,7 +1365,7 @@ def reindex_source_chunks(conn, source: dict) -> int:
             )
             added_chunks.append({"chunk_id": chunk_id, "embedding": embedding})
             chunk_count += 1
-    if source.get("vault_id"):
+    if source.get("vault_id") and not stage_transition:
         apply_source_delta_to_sidecar(
             conn,
             vault_id=source["vault_id"],
