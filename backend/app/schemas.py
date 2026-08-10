@@ -539,15 +539,15 @@ class BridgeSettingsUpdate(BaseModel):
 
 
 class BridgeContextRequest(BaseModel):
-    vault_id: str | None = None
-    query: str = Field(min_length=1)
-    cluster_id: str | None = None
+    vault_id: str | None = Field(default=None, max_length=240)
+    query: str = Field(min_length=1, max_length=50_000)
+    cluster_id: str | None = Field(default=None, max_length=240)
     unclustered_only: bool = False
-    project_id: str | None = None
-    mode: str = "context"
-    client_name: str = "unknown"
+    project_id: str | None = Field(default=None, max_length=240)
+    mode: str = Field(default="context", max_length=64)
+    client_name: str = Field(default="unknown", max_length=120)
     limit: int = Field(default=5, ge=1, le=12)
-    context_request_id: str | None = None
+    context_request_id: str | None = Field(default=None, max_length=240)
     include_graph: bool = False
     graph_mode: str = Field(default="graph", pattern="^(graph|tree)$")
     graph_max_nodes: int = Field(default=120, ge=10, le=300)
@@ -572,11 +572,11 @@ class BridgeContextResponse(BaseModel):
 
 
 class BridgeContextExpandRequest(BaseModel):
-    vault_id: str | None = None
-    cluster_id: str | None = None
-    handle: str = Field(min_length=1)
-    mode: str = "full"
-    client_name: str = "unknown"
+    vault_id: str | None = Field(default=None, max_length=240)
+    cluster_id: str | None = Field(default=None, max_length=240)
+    handle: str = Field(min_length=1, max_length=500)
+    mode: str = Field(default="full", max_length=64)
+    client_name: str = Field(default="unknown", max_length=120)
 
 
 class BridgeContextExpandResponse(BaseModel):
@@ -593,24 +593,24 @@ class BridgeContextExpandResponse(BaseModel):
 
 
 class BridgeExternalTurnCapture(BaseModel):
-    vault_id: str | None = None
-    cluster_id: str | None = None
-    client_name: str = "unknown"
-    user_prompt: str = Field(min_length=1)
-    model_response: str = Field(min_length=1)
-    context_request_id: str | None = None
-    model_name: str | None = None
+    vault_id: str | None = Field(default=None, max_length=240)
+    cluster_id: str | None = Field(default=None, max_length=240)
+    client_name: str = Field(default="unknown", max_length=120)
+    user_prompt: str = Field(min_length=1, max_length=50_000)
+    model_response: str = Field(min_length=1, max_length=200_000)
+    context_request_id: str | None = Field(default=None, max_length=240)
+    model_name: str | None = Field(default=None, max_length=240)
     metadata: dict = Field(default_factory=dict)
     idempotency_key: str | None = Field(default=None, min_length=8, max_length=240, pattern=r"^[A-Za-z0-9._:-]+$")
 
 
 class BridgeArtifactCapture(BaseModel):
-    vault_id: str | None = None
-    cluster_id: str | None = None
-    client_name: str = "unknown"
+    vault_id: str | None = Field(default=None, max_length=240)
+    cluster_id: str | None = Field(default=None, max_length=240)
+    client_name: str = Field(default="unknown", max_length=120)
     title: str = Field(min_length=1, max_length=240)
-    content: str = Field(min_length=1)
-    artifact_type: str = "generated_text"
+    content: str = Field(min_length=1, max_length=500_000)
+    artifact_type: str = Field(default="generated_text", max_length=120)
     metadata: dict = Field(default_factory=dict)
     idempotency_key: str | None = Field(default=None, min_length=8, max_length=240, pattern=r"^[A-Za-z0-9._:-]+$")
 
@@ -664,6 +664,7 @@ class BridgeCaptureListItem(BaseModel):
 
 class BridgeRequestRead(BaseModel):
     id: str
+    vault_id: str | None = None
     client_id: str | None = None
     client_name: str
     query: str
@@ -693,6 +694,7 @@ class BridgeClientCreate(BaseModel):
 
 
 class BridgeClientUpdate(BaseModel):
+    expected_updated_at: str | None = Field(default=None, min_length=1, max_length=64)
     name: str | None = Field(default=None, min_length=1, max_length=120)
     enabled: bool | None = None
     capability_profile: Literal["read_only", "read_write"] | None = None
@@ -1116,6 +1118,15 @@ class DiagnosticBundleJobRequest(BaseModel):
     idempotency_key: str | None = Field(default=None, min_length=8, max_length=240)
 
 
+class SecurityScanRequest(BaseModel):
+    scan_type: Literal["antivirus", "full"]
+
+
+class SecurityScanScheduleUpdate(BaseModel):
+    enabled: bool | None = None
+    interval_days: int | None = Field(default=None, ge=1, le=365)
+
+
 class ModelActivateRequest(BaseModel):
     role: str = "chat"
 
@@ -1300,6 +1311,9 @@ class LocalFolderScanResponse(BaseModel):
     supported_count: int
     skipped_count: int
     truncated: bool
+    scan_cursor: str = ""
+    scan_complete: bool = True
+    continuation_required: bool = False
     imported_count: int = 0
     updated_count: int = 0
     moved_count: int = 0
@@ -1318,6 +1332,9 @@ class IntegrationImportRead(BaseModel):
     supported_count: int
     skipped_count: int
     truncated: bool
+    scan_cursor: str = ""
+    scan_phase: str = "discovery"
+    scan_processed_count: int = 0
     imported_count: int = 0
     updated_count: int = 0
     moved_count: int = 0
@@ -1399,12 +1416,12 @@ class ReconciliationItemRetryResponse(BaseModel):
 
 class ExtensionClientCreate(BaseModel):
     name: str = Field(min_length=1, max_length=120)
-    allowed_vault_ids: list[str] = []
+    allowed_vault_ids: list[str] = Field(min_length=1, max_length=100)
 
 
 class ExtensionClientUpdate(BaseModel):
     enabled: bool | None = None
-    allowed_vault_ids: list[str] | None = None
+    allowed_vault_ids: list[str] | None = Field(default=None, min_length=1, max_length=100)
 
 
 class ExtensionClientCreateResponse(BaseModel):
@@ -1455,12 +1472,12 @@ class ExtensionStatusResponse(BaseModel):
 
 
 class ExtensionCaptureRequest(BaseModel):
-    vault_id: str
-    cluster_id: str | None = None
-    capture_type: str = "page"
+    vault_id: str = Field(min_length=1, max_length=240)
+    cluster_id: str | None = Field(default=None, max_length=240)
+    capture_type: str = Field(default="page", max_length=64)
     title: str = Field(min_length=1, max_length=240)
-    url: str = ""
-    text: str = Field(min_length=1)
+    url: str = Field(default="", max_length=4_000)
+    text: str = Field(min_length=1, max_length=1_000_000)
 
 
 class ExtensionCaptureResponse(BaseModel):
@@ -1470,14 +1487,14 @@ class ExtensionCaptureResponse(BaseModel):
 
 
 class ExtensionUploadCaptureRequest(BaseModel):
-    vault_id: str
-    cluster_id: str | None = None
-    capture_type: str = "file"
+    vault_id: str = Field(min_length=1, max_length=240)
+    cluster_id: str | None = Field(default=None, max_length=240)
+    capture_type: str = Field(default="file", max_length=64)
     title: str = Field(min_length=1, max_length=240)
-    url: str = ""
+    url: str = Field(default="", max_length=4_000)
     file_name: str = Field(min_length=1, max_length=240)
-    mime_type: str = ""
-    content_base64: str = Field(min_length=1)
+    mime_type: str = Field(default="", max_length=240)
+    content_base64: str = Field(min_length=1, max_length=27_962_028)
 
 
 class ExtensionCaptureRead(BaseModel):
@@ -1494,7 +1511,7 @@ class ExtensionCaptureRead(BaseModel):
 
 class ExtensionPairingStartRequest(BaseModel):
     name: str = Field(min_length=1, max_length=120)
-    allowed_vault_ids: list[str] = []
+    allowed_vault_ids: list[str] = Field(min_length=1, max_length=100)
     ttl_seconds: int = Field(default=600, ge=60, le=1800)
 
 

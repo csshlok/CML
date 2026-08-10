@@ -44,6 +44,17 @@ def init_db() -> None:
         _add_column_if_missing_if_table_exists(conn, "source_chunks", "extraction_version", "TEXT NOT NULL DEFAULT 'extract-v1'")
         _add_column_if_missing_if_table_exists(conn, "source_chunks", "derived_state_epoch", "INTEGER NOT NULL DEFAULT 1")
         _add_column_if_missing_if_table_exists(conn, "temporal_facts", "cluster_id", "TEXT")
+        _add_column_if_missing_if_table_exists(conn, "cluster_merge_artifacts", "planned_source_ids", "TEXT NOT NULL DEFAULT '[]'")
+        _add_column_if_missing_if_table_exists(conn, "cluster_merge_artifacts", "planned_chat_session_ids", "TEXT NOT NULL DEFAULT '[]'")
+        _add_column_if_missing_if_table_exists(conn, "cluster_merge_artifacts", "source_cursor", "INTEGER NOT NULL DEFAULT 0")
+        _add_column_if_missing_if_table_exists(conn, "cluster_merge_artifacts", "chat_cursor", "INTEGER NOT NULL DEFAULT 0")
+        _add_column_if_missing_if_table_exists(conn, "cluster_merge_artifacts", "status", "TEXT NOT NULL DEFAULT 'completed'")
+        _add_column_if_missing_if_table_exists(conn, "cluster_merge_artifacts", "conflict_count", "INTEGER NOT NULL DEFAULT 0")
+        _add_column_if_missing_if_table_exists(conn, "cluster_merge_artifacts", "updated_at", "TEXT NOT NULL DEFAULT ''")
+        _add_column_if_missing_if_table_exists(conn, "integration_imports", "scan_cursor", "TEXT NOT NULL DEFAULT ''")
+        _add_column_if_missing_if_table_exists(conn, "integration_imports", "scan_cycle_id", "TEXT NOT NULL DEFAULT ''")
+        _add_column_if_missing_if_table_exists(conn, "integration_imports", "scan_phase", "TEXT NOT NULL DEFAULT 'discovery'")
+        _add_column_if_missing_if_table_exists(conn, "integration_imports", "scan_processed_count", "INTEGER NOT NULL DEFAULT 0")
         conn.executescript(
             """
             PRAGMA foreign_keys = ON;
@@ -177,6 +188,7 @@ def init_db() -> None:
 
             CREATE TABLE IF NOT EXISTS bridge_requests (
                 id TEXT PRIMARY KEY,
+                vault_id TEXT,
                 client_id TEXT,
                 client_name TEXT NOT NULL DEFAULT 'unknown',
                 query TEXT NOT NULL,
@@ -315,6 +327,10 @@ def init_db() -> None:
                 supported_count INTEGER NOT NULL DEFAULT 0,
                 skipped_count INTEGER NOT NULL DEFAULT 0,
                 truncated INTEGER NOT NULL DEFAULT 0,
+                scan_cursor TEXT NOT NULL DEFAULT '',
+                scan_cycle_id TEXT NOT NULL DEFAULT '',
+                scan_phase TEXT NOT NULL DEFAULT 'discovery',
+                scan_processed_count INTEGER NOT NULL DEFAULT 0,
                 last_scan_at TEXT NOT NULL,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL,
@@ -421,8 +437,34 @@ def init_db() -> None:
                 status_detail TEXT NOT NULL DEFAULT '',
                 cancellation_requested INTEGER NOT NULL DEFAULT 0,
                 cancellation_requested_at TEXT,
+                claim_token TEXT NOT NULL DEFAULT '',
+                heartbeat_at TEXT,
+                deadline_at TEXT,
                 started_at TEXT,
                 completed_at TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS integration_scan_seen (
+                import_id TEXT NOT NULL,
+                cycle_id TEXT NOT NULL,
+                normalized_path TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                PRIMARY KEY (import_id, cycle_id, normalized_path),
+                FOREIGN KEY (import_id) REFERENCES integration_imports(id) ON DELETE CASCADE
+            );
+
+            CREATE TABLE IF NOT EXISTS security_scan_settings (
+                id TEXT PRIMARY KEY CHECK (id = 'default'),
+                enabled INTEGER NOT NULL DEFAULT 1,
+                interval_days INTEGER NOT NULL DEFAULT 30 CHECK (interval_days BETWEEN 1 AND 365),
+                last_started_at TEXT,
+                last_completed_at TEXT,
+                last_scan_type TEXT,
+                last_status TEXT NOT NULL DEFAULT 'never_run',
+                last_summary_json TEXT NOT NULL DEFAULT '{}',
+                next_run_at TEXT,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL
             );
@@ -542,6 +584,17 @@ def init_db() -> None:
                 warnings TEXT NOT NULL DEFAULT '[]',
                 created_at TEXT NOT NULL,
                 FOREIGN KEY (session_id) REFERENCES chat_sessions(id) ON DELETE CASCADE
+            );
+
+            CREATE TABLE IF NOT EXISTS chat_transcript_memory_state (
+                session_id TEXT PRIMARY KEY,
+                vault_id TEXT NOT NULL,
+                last_message_rowid INTEGER NOT NULL DEFAULT 0,
+                source_message_count INTEGER NOT NULL DEFAULT 0,
+                summary_version TEXT NOT NULL DEFAULT 'bounded-v1',
+                updated_at TEXT NOT NULL,
+                FOREIGN KEY (session_id) REFERENCES chat_sessions(id) ON DELETE CASCADE,
+                FOREIGN KEY (vault_id) REFERENCES vaults(id) ON DELETE CASCADE
             );
 
             CREATE TABLE IF NOT EXISTS scheduler_prerequisites (
@@ -761,6 +814,8 @@ def init_db() -> None:
                 runtime_model TEXT NOT NULL DEFAULT '',
                 error TEXT NOT NULL DEFAULT '',
                 heartbeat_at TEXT,
+                lease_owner TEXT NOT NULL DEFAULT '',
+                cancellation_requested_at TEXT,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL,
                 completed_at TEXT,
@@ -1214,9 +1269,16 @@ def init_db() -> None:
                 target_cluster_snapshot TEXT NOT NULL DEFAULT '{}',
                 moved_source_ids TEXT NOT NULL DEFAULT '[]',
                 moved_chat_session_ids TEXT NOT NULL DEFAULT '[]',
+                planned_source_ids TEXT NOT NULL DEFAULT '[]',
+                planned_chat_session_ids TEXT NOT NULL DEFAULT '[]',
+                source_cursor INTEGER NOT NULL DEFAULT 0,
+                chat_cursor INTEGER NOT NULL DEFAULT 0,
+                status TEXT NOT NULL DEFAULT 'completed',
+                conflict_count INTEGER NOT NULL DEFAULT 0,
                 reversible INTEGER NOT NULL DEFAULT 1,
                 rolled_back_at TEXT,
                 created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL DEFAULT '',
                 FOREIGN KEY (vault_id) REFERENCES vaults(id) ON DELETE CASCADE
             );
 
@@ -1478,6 +1540,8 @@ def init_db() -> None:
         _add_column_if_missing(conn, "integration_imports", "watch_enabled", "INTEGER NOT NULL DEFAULT 0")
         _add_column_if_missing(conn, "integration_imports", "watch_interval_seconds", "INTEGER NOT NULL DEFAULT 900")
         _add_column_if_missing(conn, "integration_imports", "next_watch_at", "TEXT")
+        _add_column_if_missing(conn, "integration_imports", "watch_failure_count", "INTEGER NOT NULL DEFAULT 0")
+        _add_column_if_missing(conn, "integration_imports", "watch_last_error", "TEXT NOT NULL DEFAULT ''")
         _add_column_if_missing(conn, "chat_messages", "useful", "INTEGER")
         _add_column_if_missing(conn, "chat_messages", "saved", "INTEGER NOT NULL DEFAULT 0")
         _add_column_if_missing(conn, "retrieval_snapshots", "index_version", "TEXT NOT NULL DEFAULT 'v1'")
@@ -1542,6 +1606,7 @@ def init_db() -> None:
         _add_column_if_missing(conn, "bridge_settings", "bridge_token", "TEXT NOT NULL DEFAULT ''")
         _add_column_if_missing(conn, "bridge_settings", "schema_version", "INTEGER NOT NULL DEFAULT 1")
         _add_column_if_missing(conn, "bridge_requests", "client_id", "TEXT")
+        _add_column_if_missing(conn, "bridge_requests", "vault_id", "TEXT")
         _add_column_if_missing(conn, "bridge_requests", "decision", "TEXT NOT NULL DEFAULT 'allowed'")
         _add_column_if_missing(conn, "bridge_requests", "source_count", "INTEGER NOT NULL DEFAULT 0")
         _add_column_if_missing(conn, "bridge_requests", "response_bytes", "INTEGER NOT NULL DEFAULT 0")
@@ -1568,6 +1633,8 @@ def init_db() -> None:
         _add_column_if_missing(conn, "chat_generations", "request_id", "TEXT")
         _add_column_if_missing(conn, "chat_generations", "parent_generation_id", "TEXT")
         _add_column_if_missing(conn, "chat_generations", "attempt_number", "INTEGER NOT NULL DEFAULT 1")
+        _add_column_if_missing(conn, "chat_generations", "lease_owner", "TEXT NOT NULL DEFAULT ''")
+        _add_column_if_missing(conn, "chat_generations", "cancellation_requested_at", "TEXT")
         _add_column_if_missing(conn, "projects", "auto_sync_enabled", "INTEGER NOT NULL DEFAULT 1")
         _add_column_if_missing(conn, "projects", "sync_mode", "TEXT NOT NULL DEFAULT 'automatic'")
         _add_column_if_missing(conn, "projects", "change_fingerprint", "TEXT NOT NULL DEFAULT ''")
@@ -1575,11 +1642,16 @@ def init_db() -> None:
         _add_column_if_missing(conn, "sources", "metadata_quality", "TEXT NOT NULL DEFAULT 'fallback'")
         _add_column_if_missing(conn, "sources", "semantic_metadata_version", "INTEGER NOT NULL DEFAULT 0")
         _add_column_if_missing(conn, "sources", "semantic_metadata_updated_at", "TEXT")
+        _add_column_if_missing(conn, "sources", "import_root_path", "TEXT")
         _add_column_if_missing(conn, "sources", "ingestion_stage", "TEXT NOT NULL DEFAULT 'ready'")
         _add_column_if_missing(conn, "sources", "ingestion_generation", "INTEGER NOT NULL DEFAULT 1")
         _add_column_if_missing(conn, "sources", "ingestion_error_code", "TEXT NOT NULL DEFAULT ''")
         _add_column_if_missing(conn, "sources", "ingestion_status_detail", "TEXT NOT NULL DEFAULT ''")
         _add_column_if_missing(conn, "sources", "ingestion_updated_at", "TEXT")
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_sources_import_root_active "
+            "ON sources(vault_id, import_root_path, deleted_at, original_path)"
+        )
         conn.execute(
             """
             CREATE UNIQUE INDEX IF NOT EXISTS idx_chat_generations_request_id
@@ -1587,6 +1659,7 @@ def init_db() -> None:
             WHERE request_id IS NOT NULL AND request_id <> ''
             """
         )
+        _ensure_single_active_chat_generation(conn)
         _add_column_if_missing(conn, "source_chunks", "indexed_at", "TEXT")
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_sources_project_snapshot "
@@ -1617,6 +1690,9 @@ def init_db() -> None:
         _add_column_if_missing(conn, "app_jobs", "status_detail", "TEXT NOT NULL DEFAULT ''")
         _add_column_if_missing(conn, "app_jobs", "cancellation_requested", "INTEGER NOT NULL DEFAULT 0")
         _add_column_if_missing(conn, "app_jobs", "cancellation_requested_at", "TEXT")
+        _add_column_if_missing(conn, "app_jobs", "claim_token", "TEXT NOT NULL DEFAULT ''")
+        _add_column_if_missing(conn, "app_jobs", "heartbeat_at", "TEXT")
+        _add_column_if_missing(conn, "app_jobs", "deadline_at", "TEXT")
         _add_column_if_missing(conn, "app_jobs", "started_at", "TEXT")
         _add_column_if_missing(conn, "app_jobs", "completed_at", "TEXT")
         conn.execute(
@@ -1731,6 +1807,48 @@ def init_db() -> None:
                 ON derived_state_staged_artifacts(vault_id, status, updated_at);
             """
         )
+
+
+def _ensure_single_active_chat_generation(conn: sqlite3.Connection) -> None:
+    """Repair legacy duplicates before enforcing one active answer per chat."""
+    now = utc_now()
+    duplicate_sessions = conn.execute(
+        """
+        SELECT session_id
+        FROM chat_generations
+        WHERE state = 'in_flight'
+        GROUP BY session_id
+        HAVING COUNT(*) > 1
+        """
+    ).fetchall()
+    for duplicate in duplicate_sessions:
+        rows = conn.execute(
+            """
+            SELECT id
+            FROM chat_generations
+            WHERE session_id = ? AND state = 'in_flight'
+            ORDER BY COALESCE(heartbeat_at, updated_at, created_at) DESC, id DESC
+            """,
+            (duplicate["session_id"],),
+        ).fetchall()
+        for stale in rows[1:]:
+            conn.execute(
+                """
+                UPDATE chat_generations
+                SET state = 'retriable', lease_owner = '',
+                    error = 'Superseded while repairing duplicate active generations.',
+                    updated_at = ?
+                WHERE id = ? AND state = 'in_flight'
+                """,
+                (now, stale["id"]),
+            )
+    conn.execute(
+        """
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_chat_generations_one_active_session
+        ON chat_generations(session_id)
+        WHERE state = 'in_flight'
+        """
+    )
 
 
 def _backfill_cluster_rag_lifecycle(conn: sqlite3.Connection) -> None:

@@ -26,6 +26,7 @@ from backend.app.core.public_errors import (
     public_unhandled_exception,
     public_validation_exception,
 )
+from backend.app.core.request_security import RequestSecurityMiddleware
 from backend.app.core.startup_checks import StartupCheckError, verify_schema_version, verify_sqlite_integrity
 from backend.app.core.unlock_middleware import UnlockGateMiddleware
 from backend.app.core.startup_status import reset_startup_status_timing, write_startup_status
@@ -83,7 +84,9 @@ def startup() -> None:
             failure_status_written = True
             raise
         write_startup_status("job_recovery_running")
-        recover_interrupted_generations()
+        # A fresh process cannot own generations left by the previous process,
+        # so startup recovery intentionally has no staleness grace period.
+        recover_interrupted_generations(stale_after_seconds=0)
         start_background_worker()
         write_startup_status("core_ready", status="ready", message="Your library is ready.")
         start_startup_warming()
@@ -164,6 +167,7 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+app.add_middleware(RequestSecurityMiddleware)
 
 
 @app.get("/health", response_model=HealthResponse)

@@ -1,8 +1,11 @@
+import hashlib
+import json
 from collections.abc import Callable
+from uuid import uuid4
 
 from backend.app.core.database import connect, utc_now
 
-SCHEMA_VERSION = 30
+SCHEMA_VERSION = 37
 
 
 class MigrationError(RuntimeError):
@@ -10,6 +13,11 @@ class MigrationError(RuntimeError):
 
 
 Migration = Callable[[object], None]
+
+# SQLite schema migrations run inside one transaction. The registered migrations
+# are intentionally idempotent so an old, persisted ``running`` marker from a
+# previous app version can be retried. Unknown or renamed work is never guessed.
+RESTARTABLE_MIGRATION_VERSIONS = frozenset(range(1, SCHEMA_VERSION + 1))
 
 
 def _migration_001_baseline(conn) -> None:
@@ -1396,6 +1404,193 @@ def _migration_030_project_intelligence_layers(conn) -> None:
     )
 
 
+def _migration_031_snapshot_scoped_graph_communities(conn) -> None:
+    """Repair globally colliding community IDs written by graph intelligence v1."""
+    if not _table_exists(conn, "project_graph_communities"):
+        return
+    rows = conn.execute(
+        """SELECT id, project_id, snapshot_id, root_path
+           FROM project_graph_communities"""
+    ).fetchall()
+    for row in rows:
+        root = str(row["root_path"] or "") or "(project root)"
+        legacy_id = "community-" + hashlib.sha256(
+            root.casefold().encode("utf-8")
+        ).hexdigest()[:16]
+        if str(row["id"]) != legacy_id:
+            continue
+        scoped_id = "community-" + hashlib.sha256(
+            "\0".join(
+                (str(row["project_id"]), str(row["snapshot_id"]), root.casefold())
+            ).encode("utf-8")
+        ).hexdigest()[:16]
+        conn.execute(
+            """UPDATE project_graph_metrics SET community_id = ?
+               WHERE project_id = ? AND snapshot_id = ? AND community_id = ?""",
+            (scoped_id, row["project_id"], row["snapshot_id"], legacy_id),
+        )
+        existing = conn.execute(
+            "SELECT 1 FROM project_graph_communities WHERE id = ?", (scoped_id,)
+        ).fetchone()
+        if existing is None:
+            conn.execute(
+                "UPDATE project_graph_communities SET id = ? WHERE id = ?",
+                (scoped_id, legacy_id),
+            )
+        else:
+            conn.execute("DELETE FROM project_graph_communities WHERE id = ?", (legacy_id,))
+
+
+def _migration_032_security_scope_and_bridge_storage(conn) -> None:
+    """Freeze legacy allow-all clients to explicit existing-vault scopes."""
+    if _table_exists(conn, "bridge_requests"):
+        _add_column_if_missing(conn, "bridge_requests", "vault_id", "TEXT")
+        # Historical request rows had no vault association, so they cannot be
+        # safely migrated under vault-bound AAD. Purge rather than guess a key.
+        conn.execute("UPDATE bridge_requests SET query = ''")
+    vault_ids = (
+        [str(row["id"]) for row in conn.execute("SELECT id FROM vaults ORDER BY id").fetchall()]
+        if _table_exists(conn, "vaults")
+        else []
+    )
+    explicit_vault_scope = json.dumps(vault_ids, separators=(",", ":"))
+    now = utc_now()
+    if _table_exists(conn, "extension_clients"):
+        if vault_ids:
+            conn.execute(
+                """UPDATE extension_clients SET allowed_vault_ids = ?, updated_at = ?
+                   WHERE TRIM(COALESCE(allowed_vault_ids, '[]')) = '[]'""",
+                (explicit_vault_scope, now),
+            )
+        else:
+            conn.execute(
+                """UPDATE extension_clients SET enabled = 0, updated_at = ?
+                   WHERE TRIM(COALESCE(allowed_vault_ids, '[]')) = '[]'""",
+                (now,),
+            )
+    if _table_exists(conn, "bridge_clients"):
+        if vault_ids:
+            conn.execute(
+                """UPDATE bridge_clients SET allowed_vault_ids = ?, updated_at = ?
+                   WHERE TRIM(COALESCE(allowed_vault_ids, '[]')) = '[]'
+                     AND TRIM(COALESCE(allowed_cluster_ids, '[]')) = '[]'""",
+                (explicit_vault_scope, now),
+            )
+        else:
+            conn.execute(
+                """UPDATE bridge_clients SET enabled = 0, revoked_at = COALESCE(revoked_at, ?), updated_at = ?
+                   WHERE TRIM(COALESCE(allowed_vault_ids, '[]')) = '[]'
+                     AND TRIM(COALESCE(allowed_cluster_ids, '[]')) = '[]'""",
+                (now, now),
+            )
+    if _table_exists(conn, "bridge_context_packets") and _table_exists(conn, "vault_security_metadata"):
+        conn.execute(
+            """UPDATE bridge_context_packets
+               SET query = '', packet_text = ''
+               WHERE vault_id IN (SELECT vault_id FROM vault_security_metadata)"""
+        )
+
+
+def _migration_033_security_scan_schedule(conn) -> None:
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS security_scan_settings (
+            id TEXT PRIMARY KEY CHECK (id = 'default'),
+            enabled INTEGER NOT NULL DEFAULT 1,
+            interval_days INTEGER NOT NULL DEFAULT 30 CHECK (interval_days BETWEEN 1 AND 365),
+            last_started_at TEXT,
+            last_completed_at TEXT,
+            last_scan_type TEXT,
+            last_status TEXT NOT NULL DEFAULT 'never_run',
+            last_summary_json TEXT NOT NULL DEFAULT '{}',
+            next_run_at TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )
+        """
+    )
+
+
+def _migration_034_chat_generation_leases(conn) -> None:
+    if not _table_exists(conn, "chat_generations"):
+        return
+    _add_column_if_missing(conn, "chat_generations", "lease_owner", "TEXT NOT NULL DEFAULT ''")
+    _add_column_if_missing(conn, "chat_generations", "cancellation_requested_at", "TEXT")
+    now = utc_now()
+    duplicate_sessions = conn.execute(
+        """
+        SELECT session_id
+        FROM chat_generations
+        WHERE state = 'in_flight'
+        GROUP BY session_id
+        HAVING COUNT(*) > 1
+        """
+    ).fetchall()
+    for duplicate in duplicate_sessions:
+        rows = conn.execute(
+            """
+            SELECT id FROM chat_generations
+            WHERE session_id = ? AND state = 'in_flight'
+            ORDER BY COALESCE(heartbeat_at, updated_at, created_at) DESC, id DESC
+            """,
+            (duplicate["session_id"],),
+        ).fetchall()
+        for stale in rows[1:]:
+            conn.execute(
+                """
+                UPDATE chat_generations
+                SET state = 'retriable', lease_owner = '',
+                    error = 'Superseded while repairing duplicate active generations.',
+                    updated_at = ?
+                WHERE id = ? AND state = 'in_flight'
+                """,
+                (now, stale["id"]),
+            )
+    conn.execute(
+        """
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_chat_generations_one_active_session
+        ON chat_generations(session_id)
+        WHERE state = 'in_flight'
+        """
+    )
+
+
+def _migration_035_background_job_leases(conn) -> None:
+    if not _table_exists(conn, "app_jobs"):
+        return
+    _add_column_if_missing(conn, "app_jobs", "claim_token", "TEXT NOT NULL DEFAULT ''")
+    _add_column_if_missing(conn, "app_jobs", "heartbeat_at", "TEXT")
+    _add_column_if_missing(conn, "app_jobs", "deadline_at", "TEXT")
+
+
+def _migration_036_watched_folder_backoff(conn) -> None:
+    if _table_exists(conn, "integration_imports"):
+        _add_column_if_missing(conn, "integration_imports", "watch_failure_count", "INTEGER NOT NULL DEFAULT 0")
+        _add_column_if_missing(conn, "integration_imports", "watch_last_error", "TEXT NOT NULL DEFAULT ''")
+    if _table_exists(conn, "sources"):
+        source_columns = {row["name"] for row in conn.execute("PRAGMA table_info(sources)").fetchall()}
+        if {"vault_id", "import_root_path", "deleted_at", "original_path"} <= source_columns:
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_sources_import_root_active "
+                "ON sources(vault_id, import_root_path, deleted_at, original_path)"
+            )
+
+
+def _migration_037_maintenance_coordinator(conn) -> None:
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS maintenance_state (
+            id TEXT PRIMARY KEY CHECK (id = 'default'),
+            last_started_at TEXT,
+            last_completed_at TEXT,
+            status TEXT NOT NULL DEFAULT 'never_run',
+            last_report_json TEXT NOT NULL DEFAULT '{}',
+            updated_at TEXT NOT NULL
+        )
+        """
+    )
+
+
 MIGRATIONS: dict[int, Migration] = {
     1: _migration_001_baseline,
     2: _migration_002_vault_security_metadata,
@@ -1427,6 +1622,13 @@ MIGRATIONS: dict[int, Migration] = {
     28: _migration_028_project_sync_modes,
     29: _migration_029_project_intelligence_foundation,
     30: _migration_030_project_intelligence_layers,
+    31: _migration_031_snapshot_scoped_graph_communities,
+    32: _migration_032_security_scope_and_bridge_storage,
+    33: _migration_033_security_scan_schedule,
+    34: _migration_034_chat_generation_leases,
+    35: _migration_035_background_job_leases,
+    36: _migration_036_watched_folder_backoff,
+    37: _migration_037_maintenance_coordinator,
 }
 
 
@@ -1460,12 +1662,33 @@ def run_migrations() -> None:
             )
             """
         )
+        _add_column_if_missing(conn, "schema_migrations", "lease_owner", "TEXT NOT NULL DEFAULT ''")
+        _add_column_if_missing(conn, "schema_migrations", "heartbeat_at", "TEXT")
+        _add_column_if_missing(conn, "schema_migrations", "attempt_count", "INTEGER NOT NULL DEFAULT 0")
+        _add_column_if_missing(conn, "schema_migrations", "metadata_json", "TEXT NOT NULL DEFAULT '{}'")
         running = conn.execute(
             "SELECT version, name FROM schema_migrations WHERE status = 'running' ORDER BY version DESC LIMIT 1"
         ).fetchone()
         if running is not None:
-            raise MigrationError(
-                f"Previous migration did not finish: {running['version']} {running['name']}"
+            version = int(running["version"])
+            registered = MIGRATIONS.get(version)
+            expected_name = (
+                registered.__name__.removeprefix("_migration_") if registered is not None else ""
+            )
+            compatible_names = {expected_name, expected_name.split("_", 1)[-1]}
+            if version not in RESTARTABLE_MIGRATION_VERSIONS or running["name"] not in compatible_names:
+                raise MigrationError(
+                    "Previous migration cannot be retried automatically: "
+                    f"{version} {running['name']}. Preserve a database backup and use migration recovery."
+                )
+            conn.execute(
+                """
+                UPDATE schema_migrations
+                SET status = 'failed', finished_at = ?, lease_owner = '', heartbeat_at = ?,
+                    error = 'Interrupted migration detected; safe retry scheduled.'
+                WHERE version = ? AND status = 'running'
+                """,
+                (utc_now(), utc_now(), version),
             )
         current_row = conn.execute(
             "SELECT MAX(version) AS version FROM schema_migrations WHERE status = 'succeeded'"
@@ -1477,6 +1700,7 @@ def run_migrations() -> None:
                 raise MigrationError(f"No migration registered for schema version {version}")
             name = migration.__name__.removeprefix("_migration_")
             started_at = utc_now()
+            lease_owner = f"migration-{uuid4()}"
             previous = conn.execute(
                 "SELECT status FROM schema_migrations WHERE version = ?",
                 (version,),
@@ -1484,19 +1708,38 @@ def run_migrations() -> None:
             if previous is None:
                 conn.execute(
                     """
-                    INSERT INTO schema_migrations (version, name, started_at, status)
-                    VALUES (?, ?, ?, 'running')
+                    INSERT INTO schema_migrations (
+                        version, name, started_at, status, lease_owner, heartbeat_at,
+                        attempt_count, metadata_json
+                    )
+                    VALUES (?, ?, ?, 'running', ?, ?, 1, ?)
                     """,
-                    (version, name, started_at),
+                    (
+                        version,
+                        name,
+                        started_at,
+                        lease_owner,
+                        started_at,
+                        json.dumps({"restartable": version in RESTARTABLE_MIGRATION_VERSIONS}),
+                    ),
                 )
             elif previous["status"] == "failed":
                 conn.execute(
                     """
                     UPDATE schema_migrations
-                    SET name = ?, started_at = ?, finished_at = NULL, status = 'running', error = ''
+                    SET name = ?, started_at = ?, finished_at = NULL, status = 'running', error = '',
+                        lease_owner = ?, heartbeat_at = ?, attempt_count = attempt_count + 1,
+                        metadata_json = ?
                     WHERE version = ?
                     """,
-                    (name, started_at, version),
+                    (
+                        name,
+                        started_at,
+                        lease_owner,
+                        started_at,
+                        json.dumps({"restartable": version in RESTARTABLE_MIGRATION_VERSIONS}),
+                        version,
+                    ),
                 )
             else:
                 raise MigrationError(f"Unexpected migration state for version {version}: {previous['status']}")
@@ -1506,18 +1749,18 @@ def run_migrations() -> None:
                 conn.execute(
                     """
                     UPDATE schema_migrations
-                    SET status = 'failed', finished_at = ?, error = ?
-                    WHERE version = ?
+                    SET status = 'failed', finished_at = ?, heartbeat_at = ?, lease_owner = '', error = ?
+                    WHERE version = ? AND status = 'running' AND lease_owner = ?
                     """,
-                    (utc_now(), str(exc)[:1000], version),
+                    (utc_now(), utc_now(), str(exc)[:1000], version, lease_owner),
                 )
                 raise MigrationError(f"Migration {version} failed: {exc}") from exc
             conn.execute(
                 """
                 UPDATE schema_migrations
-                SET status = 'succeeded', finished_at = ?, error = ''
-                WHERE version = ?
+                SET status = 'succeeded', finished_at = ?, heartbeat_at = ?, lease_owner = '', error = ''
+                WHERE version = ? AND status = 'running' AND lease_owner = ?
                 """,
-                (utc_now(), version),
+                (utc_now(), utc_now(), version, lease_owner),
             )
         conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
