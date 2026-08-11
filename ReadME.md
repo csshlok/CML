@@ -14,6 +14,7 @@
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-1f2937.svg" alt="MIT license"></a>
   <img src="https://img.shields.io/badge/platform-Windows-1f2937.svg" alt="Windows">
   <img src="https://img.shields.io/badge/status-pre--release-b7791f.svg" alt="Pre-release">
+  <a href="https://github.com/csshlok/CML/releases/latest"><img src="https://img.shields.io/badge/release-v0.1.14-2563eb.svg" alt="Latest release v0.1.14"></a>
   <img src="https://img.shields.io/badge/storage-local--first-2f855a.svg" alt="Local-first storage">
 </p>
 
@@ -30,7 +31,10 @@ take control of the answer. Profile questions can use trusted local profile fact
 without treating previous assistant replies as personal memory.
 
 > [!IMPORTANT]
-> Vault is pre-release software. The repository is currently the supported way to run it; a public installer is not ready yet.
+> Vault is pre-release software. A Windows installer is available from the
+> [latest GitHub release](https://github.com/csshlok/CML/releases/latest), but it
+> is not yet code-signed or qualified on the full clean-machine matrix. Keep a
+> separate backup of important data.
 
 ## Why Vault exists
 
@@ -254,13 +258,27 @@ stored locally before reporting success.
 
 Startup and recovery screens use the same Vault identity as onboarding and the sidebar. If Vault cannot open, the recovery screen gives a short explanation, offers a safe next step, and keeps technical diagnostic details available to copy without placing them in the main message.
 
+## Install on Windows
+
+The current public build is **Vault v0.1.14**.
+
+1. Open the [latest GitHub release](https://github.com/csshlok/CML/releases/latest).
+2. Download `test-0.1.14-Setup.exe`.
+3. Run the installer and choose a user-writable installation folder.
+4. Create a new library or select an existing Vault library during onboarding.
+
+GitHub publishes the SHA-256 digest with the release asset. The release also
+contains the matching Electron blockmap used for update metadata. Windows may
+show an unknown-publisher warning because public code signing remains release
+work.
+
 ## Install from source
 
 ### Requirements
 
 - Windows 10 or later
-- Node.js 18 or later
-- Python 3.11 or later
+- Node.js 22
+- Python 3.11 through 3.14; Python 3.12 x64 is recommended
 - Git
 
 ### 1. Clone the repository
@@ -427,55 +445,30 @@ The core local workflow is implemented: vaults, durable ingestion, indexing,
 retrieval, grounded chat, clusters, source moves, memory, configurable Home
 workspaces, Bridge/MCP delivery, approved command-line access, and Odin projects.
 
+The latest tagged build is **v0.1.14**. The current security and stability
+remediation includes durable job recovery, bounded watched-folder reconciliation,
+Bridge scope enforcement, resumable encryption and embedding transitions, bounded
+retention, long-session UI ownership, scale gates, and packaged-runtime validation.
+
 Before a public V1 release, the project still needs:
 
-- clean-machine Windows installer validation
+- completion of the 72-hour mixed-workload soak qualification
+- clean-machine Windows installer validation across the supported account matrix
 - signed-installer and Windows account-separation proof
 - broader external graph-quality and parser-performance evaluation
 - additional accessibility and interaction QA
-- continued packaging and security hardening
+- continued release-candidate packaging and recovery testing
 
 Do not use this pre-release build as the only copy of important data.
 
 ## FAQ
 
-### Does Vault upload my entire library to an AI provider?
+The complete [Vault FAQ](FAQ.md) mirrors all **74 questions** available in the
+in-app **Help** screen, including setup, imports, search, chat, clusters, Odin,
+maps, tasks, models, OCR, backups, Bridge, privacy, security, and troubleshooting.
 
-No. Vault indexes explicitly added sources locally and builds focused context packets. Content only crosses a local boundary when you configure or approve an external integration that needs it.
-
-### Does Vault train a model on my files?
-
-No. The live architecture is retrieval-based. Vault finds relevant evidence and supplies it to the configured model for synthesis.
-
-### Can Vault use local models?
-
-Yes. Vault supports local model configuration. If no synthesis runtime is available, grounded retrieval can still return a retrieval-draft response instead of pretending a generated answer succeeded.
-
-### Can I leave Sources while a large import is running?
-
-Yes. Import progress remains visible across the app. You can dismiss the progress
-notice without cancelling the job, pause and resume the import, or stop it after
-confirmation. Files already confirmed as complete are retained.
-
-### Can I connect Vault to ChatGPT without sharing the complete library?
-
-Yes. Vault provides approved, bounded context through its authenticated MCP and
-Bridge surfaces. Connections have an explicit capability profile, and read-only
-access can retrieve context without changing the vault.
-
-### Does Odin modify or execute my repository?
-
-No. Odin reads approved project files to build its index. It does not execute imported code, and project removal only deletes Vault's imported state.
-
-### Is macOS or Linux supported?
-
-Not for V1. Windows is the current public target.
-
-### Is there a stable installer?
-
-Not yet. Pre-release Windows builds may be shared with repository collaborators
-through GitHub Releases, while source setup remains the supported path during
-packaging and clean-machine validation.
+For the most current interactive guidance, open **Help** inside Vault. The Markdown
+FAQ is maintained as the repository-readable equivalent for GitHub users.
 
 ## License
 

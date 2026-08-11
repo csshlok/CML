@@ -160,6 +160,8 @@ docs/ODIN_PROJECT_INTELLIGENCE_IMPLEMENTATION_PLAN_2026-07-31.md
 *.rst
 !/ReadME.md
 !/BENCHMARK.md
+!/FAQ.md
+!/PRODUCT.md
 
 # Code-backed product inventory maintained with the repository.
 !/docs/
