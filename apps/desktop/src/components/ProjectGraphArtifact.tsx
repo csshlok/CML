@@ -114,13 +114,33 @@ export function ProjectGraphWorkspace({
       return;
     }
     let cancelled = false;
-    void import("react-force-graph-2d").then((module) => {
-      if (!cancelled) setForceGraph(() => module.default as ComponentType<any>);
-    });
+    void import("react-force-graph-2d")
+      .then((module) => {
+        if (!cancelled) setForceGraph(() => module.default as ComponentType<any>);
+      })
+      .catch((reason) => {
+        if (!cancelled) {
+          setError(reason instanceof Error ? reason.message : "Could not load the interactive project map.");
+        }
+      });
     return () => {
       cancelled = true;
     };
   }, [mode]);
+
+  useEffect(() => {
+    const nextQuery = initialQuery.slice(0, MAX_QUERY_LENGTH);
+    setMode(initialMode);
+    setQuery(nextQuery);
+    setSubmittedQuery(nextQuery);
+    setMaxDepth(2);
+    setMaxNodes(initialMode === "tree" ? 180 : 90);
+    setSelectedId(null);
+    setPathSource("");
+    setPathTarget("");
+    setPathResult(null);
+    setPathError(null);
+  }, [initialMode, initialQuery, projectId]);
 
   useEffect(() => {
     if (!containerElement) return;
@@ -241,6 +261,15 @@ export function ProjectGraphWorkspace({
     }
   }
 
+  function selectMode(nextMode: "graph" | "tree") {
+    setMode(nextMode);
+    setMaxDepth(2);
+    setMaxNodes(nextMode === "tree" ? 180 : 90);
+    setSelectedId(null);
+    setPathResult(null);
+    setPathError(null);
+  }
+
   return (
     <div className="flex min-h-full flex-col bg-background">
       <PageHeader className="border-b border-border px-4 py-4 sm:px-6">
@@ -259,15 +288,17 @@ export function ProjectGraphWorkspace({
           <div className="flex items-center border border-border bg-card">
             <button
               type="button"
+              aria-pressed={mode === "graph"}
               className={`flex h-9 items-center gap-1.5 px-3 text-sm ${mode === "graph" ? "bg-accent" : "text-muted-foreground hover:text-foreground"}`}
-              onClick={() => setMode("graph")}
+              onClick={() => selectMode("graph")}
             >
               <Network className="h-4 w-4" /> Graph
             </button>
             <button
               type="button"
+              aria-pressed={mode === "tree"}
               className={`flex h-9 items-center gap-1.5 border-l border-border px-3 text-sm ${mode === "tree" ? "bg-accent" : "text-muted-foreground hover:text-foreground"}`}
-              onClick={() => setMode("tree")}
+              onClick={() => selectMode("tree")}
             >
               <ListTree className="h-4 w-4" /> Tree
             </button>
@@ -280,6 +311,9 @@ export function ProjectGraphWorkspace({
             setSubmittedQuery(query.trim());
             setMaxDepth(2);
             setMaxNodes(mode === "tree" ? 180 : 90);
+            setSelectedId(null);
+            setPathResult(null);
+            setPathError(null);
           }}
         >
           <div className="relative min-w-[240px] flex-1">
@@ -347,8 +381,8 @@ export function ProjectGraphWorkspace({
                 Enter two exact file, route, class, or function names to see whether indexed relationships connect them.
               </p>
               <div className="mt-3 grid gap-2 sm:grid-cols-[1fr_1fr_auto]">
-                <Input value={pathSource} list={`${projectId}-path-items`} onChange={(event) => setPathSource(event.target.value)} placeholder="Start item" aria-label="Path start item" />
-                <Input value={pathTarget} list={`${projectId}-path-items`} onChange={(event) => setPathTarget(event.target.value)} placeholder="End item" aria-label="Path end item" />
+                <Input value={pathSource} list={`${projectId}-path-items`} onChange={(event) => { setPathSource(event.target.value); setPathResult(null); setPathError(null); }} placeholder="Start item" aria-label="Path start item" />
+                <Input value={pathTarget} list={`${projectId}-path-items`} onChange={(event) => { setPathTarget(event.target.value); setPathResult(null); setPathError(null); }} placeholder="End item" aria-label="Path end item" />
                 <Button type="button" variant="outline" disabled={pathLoading || !pathSource.trim() || !pathTarget.trim()} onClick={() => void findPath()}>
                   {pathLoading ? "Tracing…" : "Trace"}
                 </Button>

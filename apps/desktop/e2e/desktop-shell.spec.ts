@@ -71,6 +71,90 @@ test.beforeEach(async ({ page }) => {
   await installBaseRoutes(page);
 });
 
+test("capture current Vault surfaces for the in-app help gallery", async ({ page }) => {
+  test.setTimeout(90_000);
+  const outputDirectory = process.env.CML_CAPTURE_HELP_DIR;
+  test.skip(!outputDirectory, "Set CML_CAPTURE_HELP_DIR to regenerate help screenshots.");
+  await page.setViewportSize({ width: 1280, height: 800 });
+  const now = "2026-08-10T10:00:00Z";
+  const vault = { id: "vault-help", name: "Research vault", path: "T:\\Research", created_at: now, updated_at: now };
+  const clusters = [
+    { id: "cluster-browser", vault_id: vault.id, name: "Browser Start Issues", description: "Startup diagnostics and fixes.", color: "terracotta", index_status: "ready", profile_status: "ready", cluster_summary: "Browser startup logs and recovery notes.", cluster_glossary: "[]", created_at: now, updated_at: now },
+    { id: "cluster-research", vault_id: vault.id, name: "Research notes", description: "Product and market research.", color: "sage", index_status: "ready", profile_status: "ready", cluster_summary: "Research reports and interview notes.", cluster_glossary: "[]", created_at: now, updated_at: now },
+  ];
+  const source = (id: string, title: string, clusterId: string | null, summary: string) => ({
+    id, vault_id: vault.id, cluster_id: clusterId, title, source_type: "file", state: "indexed",
+    ingestion_stage: "ready", ingestion_generation: 1, ingestion_error_code: null,
+    ingestion_status_detail: "Ready", ingestion_updated_at: now, original_path: `T:\\Research\\${title}`,
+    import_root_path: "T:\\Research", import_relative_path: title, url: null, raw_text: "",
+    extracted_text: summary, summary, tags: ["research"], metadata_quality: "semantic",
+    semantic_metadata_version: 2, semantic_metadata_updated_at: now, cover_image_url: null,
+    created_at: now, updated_at: now,
+  });
+  const sources = [
+    source("source-log", "browser-start.log", "cluster-browser", "Browser startup failure log and recovery trace."),
+    source("source-notes", "startup-notes.md", "cluster-browser", "Notes about renderer startup and authentication recovery."),
+    source("source-report", "market-research.pdf", "cluster-research", "Customer interviews and market research findings."),
+    source("source-unclustered", "meeting-notes.md", null, "Planning notes waiting for organization."),
+  ];
+  const makeJob = (id: string, jobType: string, status: string, detail: string) => ({
+    id, job_type: jobType, status, payload: "{}", result_json: null, dedupe_key: null,
+    priority: "normal", write_scope: "source", scope_id: vault.id, resource_cost: "normal",
+    user_visible: 1, cancellable: 1, preemptable: 1, timeout_seconds: 600,
+    started_at: status === "running" ? now : null, completed_at: null, elapsed_seconds: 18,
+    estimated_remaining_seconds: 42, status_detail: detail, cancellation_requested: 0,
+    cancellation_requested_at: null, attempts: 1, max_attempts: 3, last_error: "",
+    error_code: "", diagnostic_id: "", created_at: now, updated_at: now,
+  });
+  const runningJob = makeJob("job-import", "source_import_batch", "running", "Indexed 7 of 10 files.");
+  const queuedJob = makeJob("job-organize", "source_cluster_reconciliation", "queued", "Waiting to organize analyzed sources.");
+
+  await page.route(`${backendOrigin}/api/v1/vaults`, (route) => route.fulfill({ json: [vault] }));
+  await page.route(`${backendOrigin}/api/v1/sources/page*`, (route) => route.fulfill({ json: { items: sources, next_cursor: null, has_more: false, total: sources.length } }));
+  await page.route(`${backendOrigin}/api/v1/sources/count*`, (route) => route.fulfill({ json: { total: sources.length } }));
+  await page.route(`${backendOrigin}/api/v1/clusters/page*`, (route) => route.fulfill({ json: { items: clusters, next_cursor: null, has_more: false } }));
+  await page.route(`${backendOrigin}/api/v1/clusters/suggestions*`, (route) => route.fulfill({ json: [{ source_id: "source-report", source_title: "market-research.pdf", current_cluster_id: "cluster-research", suggested_cluster_id: "cluster-browser", suggested_cluster_name: "Browser Start Issues", confidence: 0.82, reason: "Source text is closer to this cluster's indexed context." }] }));
+  await page.route(`${backendOrigin}/api/v1/sources/counts-by-cluster*`, (route) => route.fulfill({ json: { items: [{ cluster_id: "cluster-browser", state: "indexed", total: 2 }, { cluster_id: "cluster-research", state: "indexed", total: 1 }, { cluster_id: null, state: "indexed", total: 1 }] } }));
+  await page.route(`${backendOrigin}/api/v1/sources/latest-by-cluster*`, (route) => route.fulfill({ json: { items: [{ cluster_id: "cluster-browser", state: "indexed", updated_at: now }, { cluster_id: "cluster-research", state: "indexed", updated_at: now }] } }));
+  await page.route(`${backendOrigin}/api/v1/projects/cluster-membership-summary*`, (route) => route.fulfill({ json: { cluster_ids: [] } }));
+  await page.route(`${backendOrigin}/api/v1/jobs/status`, (route) => route.fulfill({ json: { queued: 1, paused: 0, blocked_by_dependency: 0, blocked_setup_required: 0, blocked_local_model: 0, deferred: 0, running: 1, succeeded: 6, partial_success: 0, failed: 0, cancelled: 0, manual_review: 0, running_jobs: [runningJob], latest: [runningJob, queuedJob] } }));
+  await page.route((url) => url.origin === backendOrigin && url.pathname === "/api/v1/jobs", (route) => route.fulfill({ json: { items: [runningJob, queuedJob], next_cursor: null, has_more: false } }));
+  await page.route(`${backendOrigin}/api/v1/projects/project-run-summary*`, (route) => route.fulfill({ json: { items: [] } }));
+  await page.route(`${backendOrigin}/api/v1/map/overview*`, (route) => route.fulfill({ json: { vault_id: vault.id, nodes: clusters.map((cluster, index) => ({ id: cluster.id, kind: "cluster", label: cluster.name, summary: cluster.cluster_summary, color: cluster.color, state: "ready", source_count: index === 0 ? 2 : 1, fact_count: 0, updated_at: now })), edges: [{ id: "similarity:browser:research", source: "cluster-browser", target: "cluster-research", kind: "similarity", label: "64% similar", direction: "undirected", temporal_state: "current", provenance_ids: ["source-log", "source-report"], updated_at: now, relationship_basis: "semantic_similarity", similarity_score: 0.64, shared_terms: ["research", "recovery"], evidence_labels: ["Shared topics: research, recovery"] }], total: 2, cluster_total: 2, unclustered_count: 1, limit: 160, offset: 0, truncated: false, connection_mode: "similar", relationship_policy: "evidence_and_similarity" } }));
+
+  const capture = async (
+    name: string,
+    route: string,
+    target: ReturnType<typeof page.locator>,
+    populated?: ReturnType<typeof page.locator>,
+  ) => {
+    await page.goto(route);
+    await expect(page.locator(".vault-shell")).toBeVisible();
+    if (populated) await expect(populated).toBeVisible();
+    await expect(target).toBeVisible();
+    await target.scrollIntoViewIfNeeded();
+    await target.evaluate((element) => element.setAttribute("data-help-capture", ""));
+    await page.addStyleTag({ content: `[data-help-capture] { outline: 3px solid #82745f !important; outline-offset: 4px !important; box-shadow: 0 0 0 7px rgb(130 116 95 / 18%) !important; position: relative !important; z-index: 20 !important; }` });
+    await page.waitForTimeout(150);
+    await page.screenshot({ path: `${outputDirectory}/${name}.png`, fullPage: false });
+  };
+
+  await capture("sources-add-files", "/sources", page.getByRole("button", { name: "Add files" }), page.getByText("browser-start.log", { exact: true }));
+  await capture("sources-ready", "/sources", page.getByRole("row", { name: /browser-start\.log/ }));
+  await capture("clusters-refresh", "/clusters", page.getByRole("button", { name: "Refresh organization" }), page.getByText("Browser Start Issues", { exact: true }));
+  await capture("clusters-moves", "/clusters", page.getByRole("button", { name: "Check suggestions" }), page.getByText("Browser Start Issues", { exact: true }));
+  await capture("search-query", "/search", page.getByPlaceholder("Search sources, tags, summaries..."));
+  await capture("chat-scope", "/chat", page.getByRole("combobox"));
+  await capture("chat-send", "/chat", page.getByRole("button", { name: "Send" }));
+  await capture("project-add", "/projects", page.getByRole("button", { name: "Add project folder" }).first());
+  await capture("map-connections", "/map", page.getByRole("button", { name: "Connections" }));
+  await capture("tasks-active", "/tasks", page.getByRole("button", { name: /Active 2/ }));
+  await capture("models-manage", "/settings?section=models", page.getByRole("button", { name: "Manage models" }));
+  await capture("storage-library", "/settings?section=library", page.getByRole("button", { name: "Library & security" }));
+  await capture("connections-install", "/settings?section=connections", page.getByRole("button", { name: "Install Odin" }));
+  await capture("settings-health", "/settings?section=health", page.getByRole("button", { name: "System health" }));
+});
+
 test("Odin pairing is actionable outside Code Connections", async ({ page }) => {
   test.setTimeout(60_000);
   const consoleProblems: string[] = [];
@@ -221,14 +305,37 @@ test("Settings opens the searchable visual Help and FAQ workspace", async ({ pag
   await expect(
     page.getByRole("heading", { name: "What should I do in my first ten minutes?" }),
   ).toBeVisible();
-  await expect(page.getByText("Visual guide", { exact: true })).toBeVisible();
-  await expect(page.getByText("Add files", { exact: true })).toBeVisible();
-  expect(consoleProblems).toEqual([]);
-
+  await expect(page.getByText("See it in Vault", { exact: true })).toBeVisible();
+  await expect(page.getByText("1 of 5", { exact: true })).toBeVisible();
+  await expect(page.getByText("Add the first files", { exact: true })).toBeVisible();
   const search = page.getByLabel("Search help");
   await expect.poll(() =>
     search.evaluate((element) => Object.keys(element).some((key) => key.startsWith("__reactProps"))),
   ).toBe(true);
+  await page.getByRole("button", { name: "Next walkthrough image" }).click();
+  await expect(page.getByText("Confirm indexing", { exact: true })).toBeVisible();
+  const walkthroughImage = page
+    .getByRole("figure", { name: "Start in Sources walkthrough" })
+    .getByRole("img");
+  await expect.poll(() => walkthroughImage.evaluate((image: HTMLImageElement) => image.naturalWidth)).toBeGreaterThan(0);
+  const walkthroughBox = await walkthroughImage.boundingBox();
+  expect(walkthroughBox).not.toBeNull();
+  await page.mouse.move(
+    walkthroughBox!.x + walkthroughBox!.width * 0.75,
+    walkthroughBox!.y + walkthroughBox!.height / 2,
+  );
+  await page.mouse.down();
+  await page.mouse.move(
+    walkthroughBox!.x + walkthroughBox!.width * 0.25,
+    walkthroughBox!.y + walkthroughBox!.height / 2,
+  );
+  await page.mouse.up();
+  await expect(page.getByText("Look for moves between clusters", { exact: true })).toBeVisible();
+  if (process.env.CML_QA_HELP_GALLERY_SCREENSHOT) {
+    await page.screenshot({ path: process.env.CML_QA_HELP_GALLERY_SCREENSHOT, fullPage: false });
+  }
+  expect(consoleProblems).toEqual([]);
+
   await page.getByRole("button", { name: /Models & OCR/ }).click();
   await expect(
     page.getByRole("heading", { name: "Why does Vault need chat, embedding, and OCR models?" }),
@@ -934,7 +1041,14 @@ test("project chat displays its real retrieval scope and clears it explicitly", 
   });
 
   await page.goto(`/chat/${sessionId}`);
-  await expect(page.getByText("Ask Odin Analyzer.", { exact: true })).toBeVisible();
+  const newChatButton = page.getByRole("button", { name: "New chat" });
+  await expect.poll(
+    () => newChatButton.evaluate((element) =>
+      Object.keys(element).some((key) => key.startsWith("__reactProps")),
+    ),
+    { timeout: 20_000 },
+  ).toBe(true);
+  await expect(page.getByText("Ask Odin Analyzer.", { exact: true })).toBeVisible({ timeout: 15_000 });
   await expect(page.getByText("Scoped to the Odin Analyzer Odin project.")).toBeVisible();
   await expect(page.getByRole("combobox")).toContainText("Odin Analyzer");
   await expect(page.getByPlaceholder("Ask Odin Analyzer...")).toBeVisible();
@@ -1396,6 +1510,7 @@ test("Bridge presents connected AI write-back as a guided workflow", async ({ pa
 });
 
 test("project detail distinguishes Odin freshness from Git changes", async ({ page }) => {
+  test.setTimeout(90_000);
   const consoleProblems: string[] = [];
   page.on("console", (message) => {
     if (message.type() === "error" || message.type() === "warning") {
@@ -1480,6 +1595,89 @@ test("project detail distinguishes Odin freshness from Git changes", async ({ pa
     auto_sync_enabled: true,
     sync_mode: "automatic",
   };
+  const questionSession = {
+    id: "chat-project-question",
+    vault_id: project.vault_id,
+    title: "Snapshot semantics: How does request routing work?",
+    scope_cluster_id: project.primary_cluster_id,
+    scope_project_id: project.id,
+    scope_unclustered: false,
+    saved: false,
+    memory_status: "ready",
+    memory_updated_at: project.updated_at,
+    active_generation: false,
+    created_at: project.updated_at,
+    updated_at: project.updated_at,
+    messages: [],
+  };
+  let questionCreateAttempts = 0;
+  let createdQuestionPayload: Record<string, unknown> | null = null;
+  let streamedQuestionPayload: Record<string, unknown> | null = null;
+  await page.route(`${backendOrigin}/api/v1/vaults`, (route) =>
+    route.fulfill({
+      json: [{
+        id: project.vault_id,
+        name: "Rendered project vault",
+        path: "T:\\Rendered",
+        created_at: project.created_at,
+        updated_at: project.updated_at,
+      }],
+    }),
+  );
+  await page.route(
+    (url) => url.origin === backendOrigin && url.pathname === "/api/v1/chat/sessions",
+    async (route) => {
+      if (route.request().method() !== "POST") {
+        await route.fulfill({ json: [questionSession] });
+        return;
+      }
+      questionCreateAttempts += 1;
+      if (questionCreateAttempts === 1) {
+        await route.fulfill({
+          status: 503,
+          json: { detail: "Project question service temporarily unavailable." },
+        });
+        return;
+      }
+      createdQuestionPayload = route.request().postDataJSON() as Record<string, unknown>;
+      await route.fulfill({ json: questionSession });
+    },
+  );
+  await page.route(
+    `${backendOrigin}/api/v1/chat/sessions/${questionSession.id}/metadata`,
+    (route) => route.fulfill({ json: questionSession }),
+  );
+  await page.route(
+    `${backendOrigin}/api/v1/chat/sessions/${questionSession.id}/timeline*`,
+    (route) => route.fulfill({
+      json: {
+        session_id: questionSession.id,
+        items: [],
+        next_cursor: null,
+        latest_cursor: null,
+        has_more: false,
+      },
+    }),
+  );
+  await page.route(`${backendOrigin}/api/v1/chat/context/durable-stream`, async (route) => {
+    streamedQuestionPayload = route.request().postDataJSON() as Record<string, unknown>;
+    await route.fulfill({
+      status: 200,
+      contentType: "text/event-stream",
+      body: [
+        "event: meta",
+        `data: ${JSON.stringify({ generation_id: "generation-project-question", clusters_used: [], citations: [], coverage_ledger: null, attachments_stored: [], intent: "project_context", runtime_state: null, warnings: [] })}`,
+        "",
+        "event: token",
+        `data: ${JSON.stringify({ text: "The request enters the route and follows the indexed handler." })}`,
+        "",
+        "event: done",
+        `data: ${JSON.stringify({ session_id: questionSession.id, answer: "The request enters the route and follows the indexed handler.", memory_status: "indexed", intent: "project_context", warnings: [] })}`,
+        "",
+        "",
+      ].join("\n"),
+    });
+  });
   await page.route(`${backendOrigin}/api/v1/projects/${project.id}`, (route) =>
     route.fulfill({ json: project }),
   );
@@ -1522,19 +1720,28 @@ test("project detail distinguishes Odin freshness from Git changes", async ({ pa
   });
   await page.route(`${backendOrigin}/api/v1/clusters*`, (route) => route.fulfill({ json: [] }));
   const graphNodeLimits: number[] = [];
+  const graphRequests: Array<{ mode: string; query: string; direction: string; limit: number }> = [];
   await page.route(`${backendOrigin}/api/v1/projects/${project.id}/graph/view*`, (route) => {
     const requestUrl = new URL(route.request().url());
     const requestedLimit = Number(requestUrl.searchParams.get("max_nodes") ?? "90");
     const requestedQuery = requestUrl.searchParams.get("q") ?? "";
+    const requestedMode = requestUrl.searchParams.get("mode") ?? "graph";
+    const requestedDirection = requestUrl.searchParams.get("direction") ?? "balanced";
     graphNodeLimits.push(requestedLimit);
+    graphRequests.push({
+      mode: requestedMode,
+      query: requestedQuery,
+      direction: requestedDirection,
+      limit: requestedLimit,
+    });
     return route.fulfill({
       json: {
         version: 1,
         project_id: project.id,
         snapshot_id: "snapshot-active",
         indexed_commit: project.indexed_commit,
-        mode: "graph",
-        direction: "balanced",
+        mode: requestedMode,
+        direction: requestedDirection,
         query: requestedQuery,
         root: "",
         nodes: [{
@@ -1593,6 +1800,30 @@ test("project detail distinguishes Odin freshness from Git changes", async ({ pa
       },
     });
   });
+  await page.route(`${backendOrigin}/api/v1/projects/${project.id}/graph/path*`, (route) =>
+    route.fulfill({
+      json: {
+        status: "found",
+        path: [
+          {
+            id: "node-map-view",
+            qualified_id: "apps.desktop.routes.MapView",
+            display_label: "MapView",
+            label: "MapView",
+          },
+          {
+            id: "node-map-overview",
+            qualified_id: "backend.app.api.routes.map.map_overview",
+            display_label: "map_overview",
+            label: "map_overview",
+          },
+        ],
+        edges: [{ id: "edge-map-view", type: "calls" }],
+        visited_nodes: 2,
+        elapsed_ms: 3,
+      },
+    }),
+  );
 
   await page.goto(`/projects/${project.id}`);
   await expect(page).toHaveTitle("Project");
@@ -1621,6 +1852,17 @@ test("project detail distinguishes Odin freshness from Git changes", async ({ pa
       name: /How is the detected package or workspace in Snapshot semantics organized/,
     }),
   ).toBeVisible();
+  const generalSuggestedQuestion = page.getByRole("button", {
+    name: /Explain the application flow starting at src\/main\.ts/,
+  });
+  await generalSuggestedQuestion.click();
+  await expect(page.getByText("Project question service temporarily unavailable.")).toBeVisible();
+  await expect(generalSuggestedQuestion).toBeEnabled();
+  await expect(page).toHaveURL(new RegExp(`/projects/${project.id}$`));
+  expect(consoleProblems).toEqual([
+    "error: Failed to load resource: the server responded with a status of 503 (Service Unavailable)",
+  ]);
+  consoleProblems.length = 0;
   await page.getByText("Project details", { exact: true }).click();
   await expect(page.getByText("Interpretation").locator("..")).toContainText("ready");
   await expect(page.getByRole("heading", { name: "Odin freshness" })).toBeVisible();
@@ -1637,6 +1879,37 @@ test("project detail distinguishes Odin freshness from Git changes", async ({ pa
   await suggestedQuestions.first().click();
   await expect(page).toHaveURL(/\/project-map\?.*project=project-rendered/);
   await expect(page.getByRole("heading", { name: "Project map" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Graph" })).toHaveAttribute("aria-pressed", "true");
+  await expect(page.getByRole("button", { name: "Fit map to view" })).toBeVisible();
+  await page.getByRole("button", { name: /^map_overview / }).click();
+  const nodeDetails = page.locator("aside").filter({
+    has: page.getByRole("button", { name: "Close node details" }),
+  });
+  await expect(nodeDetails.getByText("map_overview(vault_id)", { exact: true })).toBeVisible();
+  await expect(
+    nodeDetails.getByText("Direct question match: map, connections", { exact: true }),
+  ).toBeVisible();
+  await nodeDetails.getByRole("button", { name: "Close node details" }).click();
+
+  await page.getByRole("button", { name: "Advanced" }).click();
+  await page.getByLabel("Relationship direction").selectOption("outbound");
+  await expect.poll(() => graphRequests.at(-1)?.direction).toBe("outbound");
+  await page.getByLabel("Path start item").fill("apps.desktop.routes.MapView");
+  await page.getByLabel("Path end item").fill("backend.app.api.routes.map.map_overview");
+  await page.getByRole("button", { name: "Trace", exact: true }).click();
+  await expect(page.getByText(/MapView.*map_overview/)).toBeVisible();
+  await expect(page.getByText("Checked 2 items in 3 ms.", { exact: true })).toBeVisible();
+  await page.getByLabel("Path start item").fill("changed.item");
+  await expect(page.getByText("Checked 2 items in 3 ms.", { exact: true })).toHaveCount(0);
+
+  await page.getByRole("button", { name: "Tree" }).click();
+  await expect(page.getByRole("button", { name: "Tree" })).toHaveAttribute("aria-pressed", "true");
+  await expect.poll(() => graphRequests.at(-1)).toMatchObject({ mode: "tree", limit: 180 });
+  await expect(page.getByRole("button", { name: /function\s+map_overview/ })).toBeVisible();
+  await page.getByRole("button", { name: /function\s+map_overview/ }).click();
+  await expect(page.getByText("backend/app/api/routes/map.py:51", { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "Graph" }).click();
+  await expect.poll(() => graphRequests.at(-1)).toMatchObject({ mode: "graph", limit: 90 });
   await page.getByLabel("Filter project map").fill("Why are map connections shown?");
   await page.getByRole("button", { name: "Show", exact: true }).click();
   await expect(page.getByText(/question-focused items/)).toBeVisible();
@@ -1651,6 +1924,15 @@ test("project detail distinguishes Odin freshness from Git changes", async ({ pa
   if (process.env.CML_QA_PROJECT_MAP_SCREENSHOT) {
     await page.screenshot({ path: process.env.CML_QA_PROJECT_MAP_SCREENSHOT, fullPage: false });
   }
+  await page.setViewportSize({ width: 390, height: 844 });
+  await expect(page.getByRole("heading", { name: "Project map" })).toBeVisible();
+  await expect(page.getByLabel("Filter project map")).toBeVisible();
+  await expect(page.getByRole("button", { name: "Graph" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Tree" })).toBeVisible();
+  if (process.env.CML_QA_PROJECT_MAP_MOBILE_SCREENSHOT) {
+    await page.screenshot({ path: process.env.CML_QA_PROJECT_MAP_MOBILE_SCREENSHOT, fullPage: false });
+  }
+  await page.setViewportSize({ width: 1024, height: 680 });
   await page.goBack();
   await page.getByRole("button", { name: "Settings" }).click();
   await expect(page.getByRole("heading", { name: "Project settings" })).toBeVisible();
@@ -1660,6 +1942,22 @@ test("project detail distinguishes Odin freshness from Git changes", async ({ pa
   if (process.env.CML_QA_PROJECT_SETTINGS_SCREENSHOT) {
     await page.screenshot({ path: process.env.CML_QA_PROJECT_SETTINGS_SCREENSHOT, fullPage: false });
   }
+  await page.getByLabel("Ask about this project").fill("How does request routing work?");
+  await page.getByRole("button", { name: "Ask Odin", exact: true }).click();
+  await expect(page).toHaveURL(new RegExp(`/chat/${questionSession.id}$`));
+  await expect.poll(() => createdQuestionPayload).toMatchObject({
+    vault_id: project.vault_id,
+    scope_cluster_id: project.primary_cluster_id,
+    scope_project_id: project.id,
+  });
+  await expect.poll(() => streamedQuestionPayload).toMatchObject({
+    prompt: "How does request routing work?",
+    session_id: questionSession.id,
+    persist: true,
+  });
+  await expect(
+    page.getByText("The request enters the route and follows the indexed handler.", { exact: true }).first(),
+  ).toBeVisible();
   expect(consoleProblems).toEqual([]);
 });
 
@@ -1791,8 +2089,36 @@ test("window-aware controls never intersect native controls at minimum size", as
     };
   });
 
-  expect(geometry.safe).toEqual({ left: 874, right: 1024, top: 0, bottom: 44 });
+  expect(geometry.safe).toEqual({ left: 886, right: 1024, top: 0, bottom: 32 });
   expect(geometry.collisions).toEqual([]);
+});
+
+test("requested sidebar artwork renders cleanly in the desktop shell", async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.goto("/projects");
+  await expect(page.getByRole("heading", { name: "Projects" })).toBeVisible();
+
+  const artwork = await page.evaluate(() => {
+    const sidebarArtwork = document.querySelector<HTMLImageElement>(".vault-sidebar-wordmark img");
+    const wordmark = document.querySelector<HTMLElement>(".vault-sidebar-wordmark");
+    const wordmarkRect = wordmark?.getBoundingClientRect();
+    return {
+      src: sidebarArtwork?.getAttribute("src"),
+      width: wordmarkRect?.width,
+      height: wordmarkRect?.height,
+    };
+  });
+
+  expect(artwork).toEqual({ src: "/brand/Frame%208.png", width: 200, height: 96 });
+  await page.getByRole("link", { name: "Home", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "Home" })).toBeVisible();
+
+  if (process.env.CML_QA_WINDOW_CHROME_SCREENSHOT) {
+    await page.screenshot({
+      path: process.env.CML_QA_WINDOW_CHROME_SCREENSHOT,
+      fullPage: false,
+    });
+  }
 });
 
 test("import progress is viewport draggable and restores its saved position", async ({ page }) => {

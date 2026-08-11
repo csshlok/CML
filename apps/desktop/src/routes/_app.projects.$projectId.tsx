@@ -120,7 +120,7 @@ function ProjectWorkspace() {
   const questions = useMemo(() => (project ? projectQuestions(project) : []), [project]);
 
   async function ask(prompt = question) {
-    if (!project || !prompt.trim()) return;
+    if (!project || !prompt.trim() || busy) return;
     const normalized = prompt.trim();
     const visualization = detectProjectVisualizationRequest(normalized);
     if (visualization) {
@@ -130,14 +130,22 @@ function ProjectWorkspace() {
       });
       return;
     }
-    const session = await createChatSession({
-      vault_id: project.vault_id,
-      title: `${project.name}: ${normalized.slice(0, 52)}`,
-      scope_cluster_id: project.primary_cluster_id,
-      scope_project_id: project.id,
-    });
-    window.sessionStorage.setItem(`cml.pendingPrompt.${session.id}`, normalized);
-    navigate({ to: "/chat/$chatId", params: { chatId: session.id } });
+    setBusy(true);
+    setMessage(null);
+    try {
+      const session = await createChatSession({
+        vault_id: project.vault_id,
+        title: `${project.name}: ${normalized.slice(0, 52)}`,
+        scope_cluster_id: project.primary_cluster_id,
+        scope_project_id: project.id,
+      });
+      window.sessionStorage.setItem(`cml.pendingPrompt.${session.id}`, normalized);
+      await navigate({ to: "/chat/$chatId", params: { chatId: session.id } });
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Odin could not start this question.");
+    } finally {
+      setBusy(false);
+    }
   }
 
   async function runAction(action: () => Promise<unknown>, success: string) {
@@ -321,7 +329,7 @@ function ProjectWorkspace() {
                 }}
               />
               <div className="flex justify-end px-1 pb-1">
-                <Button size="sm" disabled={!question.trim()} onClick={() => void ask()}>
+                <Button size="sm" disabled={busy || !question.trim()} onClick={() => void ask()}>
                   <Send className="h-4 w-4" /> Ask Odin
                 </Button>
               </div>
@@ -338,6 +346,7 @@ function ProjectWorkspace() {
                   <button
                     key={item}
                     type="button"
+                    disabled={busy}
                     className="rounded px-2 py-2 text-left hover:bg-card hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                     onClick={() => void ask(item)}
                   >

@@ -28,9 +28,11 @@ function ProjectMapPage() {
   useEffect(() => {
     let cancelled = false;
     if (!search.project) {
+      setProject(null);
       setError("Choose a project before opening its map.");
       return;
     }
+    setProject(null);
     setError(null);
     void getProject(search.project)
       .then((next) => {

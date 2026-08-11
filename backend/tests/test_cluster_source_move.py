@@ -160,6 +160,30 @@ class ClusterSourceMoveTests(unittest.TestCase):
 
         self.assertIsNone(source["cluster_id"])
 
+    def test_reconciliation_does_not_reassign_an_already_clustered_source(self) -> None:
+        from backend.app.core.background_jobs import _run_source_cluster_reconciliation
+        from backend.app.core.database import connect
+
+        self.seed_clusters()
+        source = self.create_clustered_source()
+        with connect() as conn:
+            conn.execute(
+                "UPDATE sources SET metadata_version = 3 WHERE id = ?",
+                (source["id"],),
+            )
+
+        _run_source_cluster_reconciliation(
+            {"vault_id": "vault-1", "source_id": source["id"]}
+        )
+
+        with connect() as conn:
+            membership = conn.execute(
+                "SELECT cluster_id FROM sources WHERE id = ?",
+                (source["id"],),
+            ).fetchone()
+
+        self.assertEqual(membership["cluster_id"], "cluster-a")
+
     def test_chat_only_cluster_does_not_block_first_document_cluster(self) -> None:
         from backend.app.api.routes.sources import create_source
         from backend.app.core.background_jobs import _run_source_cluster_reconciliation
