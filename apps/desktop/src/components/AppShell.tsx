@@ -19,7 +19,7 @@ import {
 } from "lucide-react";
 import { CommandPalette, useCommandPalette } from "@/components/CommandPalette";
 import { HealthStatusPanel } from "@/components/HealthStatusPanel";
-import { BrandLogo } from "@/components/BrandLogo";
+import { BrandLogo, SidebarBrandLogo } from "@/components/BrandLogo";
 import { useCallback, useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
 import {
   getJobStatus,
@@ -565,9 +565,7 @@ export function AppShell() {
               aria-label="Vault home"
               className="inline-flex rounded-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
             >
-              <BrandLogo
-                className="h-auto w-[180px] select-none"
-              />
+              <SidebarBrandLogo className="select-none" />
             </Link>
             <button
               type="button"

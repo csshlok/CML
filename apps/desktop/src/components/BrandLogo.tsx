@@ -4,6 +4,7 @@ type BrandLogoProps = {
 };
 
 export const VAULT_OPENING_WORDMARK = "/brand/Container.svg";
+export const VAULT_SIDEBAR_WORDMARK = "/brand/Frame%208.png";
 
 export function BrandLogo({
   className = "",
@@ -16,5 +17,20 @@ export function BrandLogo({
       className={className}
       draggable={false}
     />
+  );
+}
+
+export function SidebarBrandLogo({
+  className = "",
+  alt = "Vault",
+}: BrandLogoProps) {
+  return (
+    <span className={`vault-sidebar-wordmark ${className}`}>
+      <img
+        src={VAULT_SIDEBAR_WORDMARK}
+        alt={alt}
+        draggable={false}
+      />
+    </span>
   );
 }

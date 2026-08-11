@@ -223,6 +223,11 @@ test("desktop window and preload are wired to the custom frameless chrome", () =
     stylesSource,
     /\.vault-window-controls\s*\{[^}]*-webkit-app-region:\s*no-drag/s,
   );
+  assert.match(
+    stylesSource,
+    /\.vault-window-chrome\s*\{[^}]*width:\s*100%;[^}]*-webkit-app-region:\s*drag/s,
+    "the restored window must expose a full-width drag surface",
+  );
   assert.doesNotMatch(
     stylesSource,
     /\.vault-desktop-content\s*\{[^}]*padding-top:/s,

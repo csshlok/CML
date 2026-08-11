@@ -32,10 +32,13 @@ export function WindowChrome() {
     <header
       className="vault-window-chrome"
       data-testid="window-chrome"
-      data-window-control-safe-zone=""
       aria-hidden={controls ? undefined : true}
     >
-      {controls ? <div className="vault-window-controls" aria-label="Window controls">
+      {controls ? <div
+        className="vault-window-controls"
+        data-window-control-safe-zone=""
+        aria-label="Window controls"
+      >
         <button
           type="button"
           className="vault-window-control"

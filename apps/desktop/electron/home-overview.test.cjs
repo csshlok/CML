@@ -133,7 +133,7 @@ test("presets and keyboard reorder keep a complete, stable section list", () => 
   assert.equal(new Set(moved.sectionOrder).size, moved.sectionOrder.length);
 });
 
-test("sidebar and startup use the same Vault wordmark asset", () => {
+test("sidebar uses the requested artwork while startup keeps the opening wordmark", () => {
   const brandSource = fs.readFileSync(
     path.join(desktopRoot, "src", "components", "BrandLogo.tsx"),
     "utf8",
@@ -145,10 +145,9 @@ test("sidebar and startup use the same Vault wordmark asset", () => {
   const startupSource = fs.readFileSync(path.join(__dirname, "startup.html"), "utf8");
 
   assert.match(brandSource, /VAULT_OPENING_WORDMARK\s*=\s*"\/brand\/Container\.svg"/);
+  assert.match(brandSource, /VAULT_SIDEBAR_WORDMARK\s*=\s*"\/brand\/Frame%208\.png"/);
   assert.doesNotMatch(brandSource, /brand\/logo\.svg|variant/);
-  assert.match(shellSource, /<BrandLogo/);
-  assert.match(shellSource, /w-\[180px\]/);
-  assert.doesNotMatch(shellSource, /w-\[132px\]/);
+  assert.match(shellSource, /<SidebarBrandLogo/);
   assert.match(startupSource, /brand\/Container\.svg/);
 });
 

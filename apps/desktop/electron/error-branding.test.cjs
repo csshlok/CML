@@ -27,7 +27,8 @@ test("legacy app branding and embedded startup artwork are removed", () => {
 
   assert.equal(fs.existsSync(path.join(brandDirectory, "logo.svg")), false);
   assert.doesNotMatch(mainSource, /startupRepairLogoMarkup|data:image\/png;base64/);
-  assert.doesNotMatch(brandSource, /brand\/(?:logo\.svg|Frame 8\.png)|variant/);
+  assert.doesNotMatch(brandSource, /brand\/logo\.svg|variant/);
+  assert.match(brandSource, /VAULT_SIDEBAR_WORDMARK\s*=\s*"\/brand\/Frame%208\.png"/);
 });
 
 test("error-page copy is concise and keeps technical details out of the primary message", () => {
