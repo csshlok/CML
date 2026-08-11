@@ -5,13 +5,12 @@ import {
   Cable,
   Check,
   ChevronDown,
-  Clipboard,
+  ChevronLeft,
+  ChevronRight,
   Copy,
   Cpu,
   FileCode2,
   FileText,
-  FolderTree,
-  GitBranch,
   HardDrive,
   HelpCircle,
   Layers,
@@ -227,7 +226,7 @@ function HelpView() {
               {article.title}
             </h2>
 
-            <section id="quick-answer" className="scroll-mt-6 border-b border-border py-7">
+            <section id="quick-answer" className="scroll-mt-6 py-7">
               <h3 className="text-lg font-semibold">Quick answer</h3>
               <p className="mt-3 text-[15px] leading-7 text-foreground/85">{article.summary}</p>
               <div className="mt-4 space-y-3 text-sm leading-7 text-muted-foreground">
@@ -237,7 +236,7 @@ function HelpView() {
               </div>
             </section>
 
-            <section id="fix-it" className="scroll-mt-6 border-b border-border py-7">
+            <section id="fix-it" className="scroll-mt-6 py-7">
               <h3 className="text-lg font-semibold">Fix it</h3>
               <ol className="mt-4 space-y-3 pl-6 text-sm leading-6 text-foreground/85 marker:font-medium marker:text-muted-foreground">
                 {article.steps.map((step) => (
@@ -246,10 +245,10 @@ function HelpView() {
                   </li>
                 ))}
               </ol>
-              <HelpVisual article={article} />
+              <HelpVisual key={article.id} article={article} />
             </section>
 
-            <section id="command-path" className="scroll-mt-6 border-b border-border py-7">
+            <section id="command-path" className="scroll-mt-6 py-7">
               <h3 className="text-lg font-semibold">Command path</h3>
               <CopyBlock
                 value={article.path}
@@ -270,13 +269,13 @@ function HelpView() {
               ))}
             </section>
 
-            <section id="what-next" className="scroll-mt-6 border-b border-border py-7">
-              <details className="group border-y border-border bg-card/30 px-4 py-1" open>
+            <section id="what-next" className="scroll-mt-6 py-7">
+              <details className="group rounded-md bg-card/50 px-4 py-1" open>
                 <summary className="flex cursor-pointer list-none items-center gap-3 py-3 text-sm font-medium outline-none focus-visible:ring-2 focus-visible:ring-ring">
                   <ChevronDown className="h-4 w-4 transition-transform group-open:rotate-180" />
                   What Vault does next
                 </summary>
-                <ol className="mb-4 ml-7 space-y-2 border-l border-border pl-5 text-sm leading-6 text-muted-foreground">
+                <ol className="mb-4 ml-7 space-y-2 pl-5 text-sm leading-6 text-muted-foreground">
                   {article.plan.map((step, index) => (
                     <li key={step}>
                       <span className="mr-2 font-mono text-xs text-foreground/60">{index + 1}.</span>
@@ -289,7 +288,7 @@ function HelpView() {
 
             <section id="related" className="scroll-mt-6 py-7">
               <h3 className="text-lg font-semibold">Related questions</h3>
-              <div className="mt-3 divide-y divide-border border-y border-border">
+              <div className="mt-3 space-y-1">
                 {article.related.map((id) => {
                   const related = helpArticleById(id);
                   return (
@@ -297,7 +296,7 @@ function HelpView() {
                       key={id}
                       type="button"
                       onClick={() => selectArticle(id)}
-                      className="flex w-full items-center justify-between gap-4 py-3 text-left text-sm text-primary hover:underline"
+                      className="flex w-full items-center justify-between gap-4 rounded-md px-3 py-2.5 text-left text-sm text-primary hover:bg-card hover:underline"
                     >
                       {related.title}
                       <span aria-hidden="true">→</span>
@@ -398,74 +397,110 @@ function CopyBlock({
 }
 
 function HelpVisual({ article }: { article: HelpArticle }) {
+  const slides = helpGallerySlides(article);
+  const [activeSlide, setActiveSlide] = useState(0);
+  const swipeStartRef = useRef<number | null>(null);
+  const currentSlide = slides[activeSlide];
+
+  const showSlide = (index: number) => {
+    const nextIndex = Math.max(0, Math.min(index, slides.length - 1));
+    setActiveSlide(nextIndex);
+  };
+
+  const finishSwipe = (clientX: number) => {
+    const startX = swipeStartRef.current;
+    swipeStartRef.current = null;
+    if (startX === null || Math.abs(clientX - startX) < 48) return;
+    showSlide(activeSlide + (clientX < startX ? 1 : -1));
+  };
+
   return (
-    <figure className="mt-7">
-      <div className="overflow-hidden rounded-md border border-border bg-background shadow-sm">
-        <div className="flex items-center justify-between border-b border-border bg-card/60 px-4 py-2.5">
-          <div className="flex items-center gap-2 text-xs font-medium">
-            <span className="h-2 w-2 rounded-full bg-primary" />
-            {article.visual.title}
-          </div>
-          <span className="text-[10px] uppercase tracking-[0.12em] text-muted-foreground">Visual guide</span>
+    <figure className="mt-8" aria-label={`${article.visual.title} walkthrough`}>
+      <div className="mb-3 flex items-center justify-between gap-4">
+        <div>
+          <h4 className="text-sm font-semibold text-foreground">See it in Vault</h4>
+          <p className="mt-0.5 text-xs text-muted-foreground">Real screens with the next control outlined.</p>
         </div>
-        <VisualScreen kind={article.visual.kind} highlight={article.visual.highlight} />
+        <span className="text-xs tabular-nums text-muted-foreground">{activeSlide + 1} of {slides.length}</span>
       </div>
-      <figcaption className="mt-2 flex items-start gap-2 text-xs leading-5 text-muted-foreground">
-        <span className="mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full bg-primary" />
-        {article.visual.caption}
+      <div
+        className="touch-pan-y overflow-hidden rounded-md border border-border bg-card"
+        onPointerDown={(event) => { swipeStartRef.current = event.clientX; }}
+        onPointerUp={(event) => finishSwipe(event.clientX)}
+        onPointerCancel={() => { swipeStartRef.current = null; }}
+      >
+        <img key={currentSlide.src} src={currentSlide.src} alt={currentSlide.alt} className="block aspect-[8/5] w-full select-none object-cover object-top" loading="eager" draggable={false} />
+      </div>
+      <figcaption className="mt-3 flex items-start gap-3">
+        <div className="flex shrink-0 gap-1">
+          <Button type="button" variant="outline" size="icon" className="h-8 w-8" aria-label="Previous walkthrough image" disabled={activeSlide === 0} onClick={() => showSlide(activeSlide - 1)}><ChevronLeft className="h-4 w-4" /></Button>
+          <Button type="button" variant="outline" size="icon" className="h-8 w-8" aria-label="Next walkthrough image" disabled={activeSlide === slides.length - 1} onClick={() => showSlide(activeSlide + 1)}><ChevronRight className="h-4 w-4" /></Button>
+        </div>
+        <div className="min-w-0 text-xs leading-5" aria-live="polite">
+          <div className="font-medium text-foreground">{currentSlide.title}</div>
+          <p className="text-muted-foreground">{currentSlide.caption}</p>
+        </div>
       </figcaption>
     </figure>
   );
 }
 
-function VisualScreen({ kind, highlight }: { kind: HelpVisualKind; highlight: string }) {
-  const visual = visualCopy[kind];
-  const Icon = visual.icon;
-  return (
-    <div className="relative min-h-56 bg-[linear-gradient(to_bottom,transparent_31px,var(--border)_32px)] bg-[length:100%_32px] px-5 py-5 md:px-7">
-      <div className="flex items-center justify-between gap-4">
-        <div className="flex items-center gap-2 text-sm font-semibold">
-          <Icon className="h-4 w-4 text-primary" />
-          {visual.heading}
-        </div>
-        <div className="rounded border border-border bg-card px-2.5 py-1 text-[11px] text-muted-foreground">Ready</div>
-      </div>
-      <div className="mt-5 grid gap-3 sm:grid-cols-[1fr_auto]">
-        <div className="space-y-2">
-          {visual.rows.map((row) => (
-            <div key={row} className="flex min-w-0 items-center gap-3 rounded border border-border bg-card px-3 py-2.5 text-xs">
-              <FileText className="h-4 w-4 shrink-0 text-muted-foreground" />
-              <span className="min-w-0 flex-1 truncate">{row}</span>
-              <span className="text-muted-foreground">Ready</span>
-            </div>
-          ))}
-        </div>
-        <div className="flex min-w-36 flex-col justify-center gap-2">
-          <div className="text-[10px] font-medium uppercase tracking-[0.12em] text-muted-foreground">Look here</div>
-          <div className="relative rounded-md border-2 border-primary bg-primary/5 px-3 py-2 text-center text-xs font-semibold text-foreground shadow-[0_0_0_4px_hsl(var(--primary)/0.12)]">
-            {highlight}
-            <span className="absolute -left-3 top-1/2 h-px w-3 bg-primary" />
-          </div>
-          <p className="max-w-40 text-[10px] leading-4 text-muted-foreground">The highlighted control is the next action.</p>
-        </div>
-      </div>
-    </div>
-  );
-}
+type HelpGallerySlide = { src: string; title: string; caption: string; alt: string };
 
-const visualCopy: Record<
-  HelpVisualKind,
-  { heading: string; rows: string[]; icon: typeof Clipboard }
-> = {
-  sources: { heading: "Sources", rows: ["browser-start.log", "startup-notes.md"], icon: Clipboard },
-  clusters: { heading: "Clusters", rows: ["Browser Start Issues · 2 sources", "Research notes · 18 sources"], icon: FolderTree },
-  search: { heading: "Search", rows: ["3 matching source passages", "1 related project result"], icon: Search },
-  chat: { heading: "Chat", rows: ["Question scoped to selected sources", "Answer with 3 citations"], icon: MessageSquare },
-  project: { heading: "Odin project", rows: ["Structure · Ready", "Retrieval · Ready"], icon: FileCode2 },
-  map: { heading: "Knowledge map", rows: ["42 relevant sources", "18 evidence-backed connections"], icon: GitBranch },
-  tasks: { heading: "Tasks", rows: ["Import sources · Running", "Cluster refresh · Queued"], icon: ListTodo },
-  models: { heading: "Models & OCR", rows: ["Chat model · Ready", "Embeddings · Ready"], icon: Cpu },
-  storage: { heading: "Storage", rows: ["Library location · Available", "Latest backup · Verified"], icon: HardDrive },
-  connections: { heading: "Code connections", rows: ["Connection scope · 1 vault", "Pending reviews · 0"], icon: Cable },
-  settings: { heading: "Settings", rows: ["Local model · Ready", "Vault service · Ready"], icon: Settings2 },
+const gallerySlides: Record<string, HelpGallerySlide> = {
+  "sources-add-files": { src: "/help/sources-add-files.png", title: "Add the first files", caption: "In Sources, use the outlined Add files button for a small, familiar set.", alt: "Vault Sources page with mock documents and the Add files button outlined" },
+  "sources-ready": { src: "/help/sources-ready.png", title: "Confirm indexing", caption: "Wait for imported rows to show Ready before relying on them in search or chat.", alt: "Vault Sources page with populated mock documents and a Ready source row outlined" },
+  "clusters-refresh": { src: "/help/clusters-refresh.png", title: "Refresh unclustered organization", caption: "Refresh organization rebuilds cluster profiles, then assigns eligible unclustered sources.", alt: "Vault Clusters page with mock clusters and Refresh organization outlined" },
+  "clusters-moves": { src: "/help/clusters-moves.png", title: "Look for moves between clusters", caption: "Check suggestions separately to compare already-clustered sources with other cluster profiles.", alt: "Vault Clusters page with populated mock clusters and Check suggestions outlined" },
+  "search-query": { src: "/help/search-query.png", title: "Search saved evidence", caption: "Enter a phrase, title, tag, or summary in the outlined search field.", alt: "Vault Search page with mock source results and the search field outlined" },
+  "chat-scope": { src: "/help/chat-scope.png", title: "Choose the evidence scope", caption: "Use the outlined scope control to search the whole vault or one cluster.", alt: "Vault Chat page with the scope selector outlined" },
+  "chat-send": { src: "/help/chat-send.png", title: "Ask the question", caption: "Write a question you can verify, then use Send and inspect the resulting citations.", alt: "Vault Chat page with the Send button outlined" },
+  "project-add": { src: "/help/project-add.png", title: "Add a code project", caption: "Choose Add project folder to let Odin index a repository without modifying it.", alt: "Vault Projects page with Add project folder outlined" },
+  "map-connections": { src: "/help/map-connections.png", title: "Reveal related clusters", caption: "Connections adds evidence-backed similarity links to the populated knowledge map.", alt: "Vault knowledge map with mock clusters and Connections outlined" },
+  "tasks-active": { src: "/help/tasks-active.png", title: "Track active work", caption: "The Active view shows running and queued work with durable status details.", alt: "Vault Tasks page with mock running jobs and Active outlined" },
+  "models-manage": { src: "/help/models-manage.png", title: "Manage local models", caption: "Open Manage models to install or select the model Vault uses locally.", alt: "Vault model settings with Manage models outlined" },
+  "storage-library": { src: "/help/storage-library.png", title: "Open library security", caption: "Library & security contains the vault location, protection, backup, and deletion controls.", alt: "Vault settings with Library and security outlined" },
+  "connections-install": { src: "/help/connections-install.png", title: "Set up Odin", caption: "Install Odin before pairing command-line access or adding code projects.", alt: "Vault code connection settings with Install Odin outlined" },
+  "settings-health": { src: "/help/settings-health.png", title: "Check system health", caption: "System health shows whether the vault, models, queue, and OCR are available.", alt: "Vault system health settings with System health outlined" },
 };
+
+const defaultSlideForKind: Record<HelpVisualKind, string> = {
+  sources: "sources-add-files", clusters: "clusters-moves", search: "search-query",
+  chat: "chat-scope", project: "project-add", map: "map-connections", tasks: "tasks-active",
+  models: "models-manage", storage: "storage-library", connections: "connections-install",
+  settings: "settings-health",
+};
+
+const slideForHighlight: Record<string, string> = {
+  "Add files": "sources-add-files", Ready: "sources-ready", Unclustered: "sources-ready",
+  "Unclustered sources": "sources-ready", "Refresh clustering": "clusters-refresh",
+  "Needs attention": "clusters-moves", "Browser Start Issues": "clusters-moves",
+  "Connection access": "connections-install", "Delete library": "storage-library",
+  "Restart local services": "settings-health",
+};
+
+const stepKinds: Array<[RegExp, HelpVisualKind]> = [
+  [/\bsource|file|folder|document|citation\b/i, "sources"],
+  [/\bcluster|organization|move\b/i, "clusters"],
+  [/\bchat|question|answer|scope\b/i, "chat"],
+  [/\bsearch|retriev/i, "search"],
+  [/\bproject|odin|repository|code\b/i, "project"],
+  [/\bmap|connection|relationship\b/i, "map"],
+  [/\btask|job|queue|progress\b/i, "tasks"],
+  [/\bmodel|ocr|embedding\b/i, "models"],
+  [/\bstorage|library|backup|passphrase|delete\b/i, "storage"],
+  [/\bpair|bridge|client|share|tunnel\b/i, "connections"],
+  [/\bhealth|setting|restart\b/i, "settings"],
+];
+
+function helpGallerySlides(article: HelpArticle): HelpGallerySlide[] {
+  const slideIds = [slideForHighlight[article.visual.highlight] ?? defaultSlideForKind[article.visual.kind]];
+  for (const step of article.steps) {
+    const match = stepKinds.find(([pattern]) => pattern.test(step));
+    if (match) slideIds.push(defaultSlideForKind[match[1]]);
+  }
+  if (article.id === "first-ten-minutes") {
+    slideIds.splice(0, slideIds.length, "sources-add-files", "sources-ready", "clusters-moves", "chat-scope", "chat-send");
+  }
+  return [...new Set(slideIds)].slice(0, 5).map((id) => gallerySlides[id]);
+}

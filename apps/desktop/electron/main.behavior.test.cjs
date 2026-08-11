@@ -686,6 +686,21 @@ test("packaged static asset server serves bundled brand assets", async () => {
   assert.equal(String(response?.body), "<svg></svg>");
 });
 
+test("packaged static asset server serves FAQ walkthrough images as PNGs", async () => {
+  const { exported } = loadMainModule();
+  const clientDir = makeTempDir("cml-client-");
+  const helpDir = path.join(clientDir, "help");
+  const pngHeader = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]);
+  fs.mkdirSync(helpDir, { recursive: true });
+  fs.writeFileSync(path.join(helpDir, "chat-scope.png"), pngHeader);
+
+  const response = await exported.tryServeStaticAsset(clientDir, "/help/chat-scope.png");
+
+  assert.equal(response?.status, 200);
+  assert.equal(response?.headers["content-type"], "image/png");
+  assert.deepEqual(response?.body, pngHeader);
+});
+
 test("startup progress loads a small packaged document that references the onboarding wordmark", async () => {
   const { exported } = loadMainModule();
   const root = makeTempDir("cml-startup-brand-large-");

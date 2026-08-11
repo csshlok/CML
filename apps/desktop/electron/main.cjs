@@ -1713,7 +1713,7 @@ async function tryServeStaticAsset(clientDir, pathname) {
     };
   }
   if (!safePathname || safePathname.includes("..")) return null;
-  if (!(safePathname.startsWith("assets/") || safePathname.startsWith("brand/"))) return null;
+  if (!(safePathname.startsWith("assets/") || safePathname.startsWith("brand/") || safePathname.startsWith("help/"))) return null;
   const target = path.join(clientDir, safePathname);
   if (!target.startsWith(clientDir)) return null;
   try {
@@ -1763,6 +1763,7 @@ function contentTypeForPath(targetPath) {
   if (ext === ".js") return "text/javascript; charset=utf-8";
   if (ext === ".css") return "text/css; charset=utf-8";
   if (ext === ".svg") return "image/svg+xml";
+  if (ext === ".png") return "image/png";
   if (ext === ".json") return "application/json; charset=utf-8";
   return "application/octet-stream";
 }
