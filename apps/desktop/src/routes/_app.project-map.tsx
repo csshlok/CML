@@ -2,18 +2,19 @@ import { createFileRoute, Link } from "@tanstack/react-router";
 import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { ProjectGraphWorkspace } from "@/components/ProjectGraphArtifact";
+import { ProjectFlowWorkspace } from "@/components/ProjectFlowArtifact";
 import { getProject, type ProjectRecord } from "@/lib/backend";
 
 type ProjectMapSearch = {
   project: string;
-  mode: "graph" | "tree";
+  mode: "graph" | "flow" | "tree";
   q: string;
 };
 
 export const Route = createFileRoute("/_app/project-map")({
   validateSearch: (search: Record<string, unknown>): ProjectMapSearch => ({
     project: typeof search.project === "string" ? search.project : "",
-    mode: search.mode === "tree" ? "tree" : "graph",
+    mode: search.mode === "tree" ? "tree" : search.mode === "flow" ? "flow" : "graph",
     q: typeof search.q === "string" ? search.q.slice(0, 500) : "",
   }),
   head: () => ({ meta: [{ title: "Project map" }] }),
@@ -67,6 +68,16 @@ function ProjectMapPage() {
       <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
         Loading project map…
       </div>
+    );
+  }
+
+  if (search.mode === "flow") {
+    return (
+      <ProjectFlowWorkspace
+        projectId={project.id}
+        projectName={project.name}
+        initialQuery={search.q}
+      />
     );
   }
 

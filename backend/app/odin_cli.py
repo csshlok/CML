@@ -318,6 +318,13 @@ def build_parser() -> argparse.ArgumentParser:
     graph.add_argument("--edge-type", action="append", default=[])
     graph.add_argument("--format", choices=("markdown", "json"), default="markdown")
 
+    flow = project_commands.add_parser(
+        "flow", help="Trace one bounded, evidence-backed behavior through indexed code."
+    )
+    _add_project_target(flow)
+    flow.add_argument("query")
+    flow.add_argument("--format", choices=("markdown", "json"), default="markdown")
+
     tree = project_commands.add_parser("tree", help="Render a bounded project and symbol tree.")
     _add_project_target(tree)
     tree.add_argument("--root", default="")
@@ -520,6 +527,13 @@ def dispatch(client: OdinClient, args: argparse.Namespace) -> object:
         if args.format == "json":
             return view
         return _format_graph_markdown(dict(view))
+    if action == "flow":
+        view = client.request(
+            "GET", f"projects/{project_id}/graph/flow?{urlencode({'q': args.query})}"
+        )
+        if args.format == "json":
+            return view
+        return _format_flow_markdown(dict(view))
     operation_names = {
         "overview": "overview",
         "state": "project_state",
@@ -742,6 +756,30 @@ def _format_graph_markdown(view: dict) -> str:
     return "\n".join(lines)
 
 
+def _format_flow_markdown(view: dict) -> str:
+    flow = view.get("primary_flow")
+    lines = [
+        "# Odin Semantic Flow",
+        "",
+        f"Question: {view.get('query') or 'Project flow'}",
+        f"Status: {view.get('status') or 'unknown'}",
+        "",
+    ]
+    if not flow:
+        lines.append("No verified execution flow was found.")
+    else:
+        lines.extend([f"## {flow['title']}", ""])
+        for step in flow.get("steps") or []:
+            node = step["node"]
+            location = str(node.get("relative_path") or "project")
+            if node.get("start_line"):
+                location += f":{node['start_line']}"
+            lines.append(f"{step['ordinal']}. {node['label']} — {step['role_summary']} ({location})")
+    for warning in view.get("warnings", []):
+        lines.append(f"\nNote: {warning}")
+    return "\n".join(lines)
+
+
 def _project_line(project: dict) -> str:
     return f"{project['name']}  {project['status']}  {project.get('source_count', 0)} files  {project['root_path']}"
 
@@ -833,10 +871,27 @@ def _ensure_fresh_project(client: OdinClient, project: dict) -> dict:
 
 
 def _resolve_cluster_id(client: OdinClient, vault_id: str, name: str) -> str:
-    clusters = (
-        client.request("GET", f"clusters?{urlencode({'vault_id': vault_id, 'limit': 1000})}") or []
-    )
-    matches = [item for item in clusters if str(item["name"]).casefold() == name.casefold()]
+    matches: list[dict] = []
+    cursor: str | None = None
+    while True:
+        query = {"vault_id": vault_id, "limit": 200, "q": name}
+        if cursor:
+            query["cursor"] = cursor
+        page = client.request("GET", f"clusters/page?{urlencode(query)}") or {}
+        if not isinstance(page, dict):
+            raise OdinClientError("Vault returned an invalid cluster page.", EXIT_INTERNAL)
+        matches.extend(
+            item
+            for item in page.get("items", [])
+            if str(item.get("name", "")).casefold() == name.casefold()
+        )
+        # Two exact matches are already ambiguous, so avoid scanning any more pages.
+        if len(matches) > 1:
+            break
+        next_cursor = page.get("next_cursor")
+        if not next_cursor:
+            break
+        cursor = str(next_cursor)
     if len(matches) != 1:
         raise OdinClientError(
             "Cluster name was not found or is ambiguous; use --cluster-id.", EXIT_INVALID_INPUT

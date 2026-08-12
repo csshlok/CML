@@ -17,9 +17,33 @@ test("requested project graphs open in an on-demand full-page workspace", () => 
   assert.match(project, /to:\s*"\/project-map"/);
   assert.match(route, /createFileRoute\("\/_app\/project-map"\)/);
   assert.match(graph, /Show more/);
+  assert.doesNotMatch(graph, /mode === "graph" \? \(\s*<Button type="button" variant="outline" disabled=\{!canExpand/);
   assert.match(graph, /Spread out/);
   assert.match(graph, /What this view shows/);
   assert.match(graph, /Observed flows/);
+});
+
+test("semantic project flows use a dedicated bounded workspace and cancel stale requests", () => {
+  const route = read("routes/_app.project-map.tsx");
+  const graph = read("components/ProjectGraphArtifact.tsx");
+  const flow = read("components/ProjectFlowArtifact.tsx");
+  const backend = read("lib/backend.ts");
+
+  assert.match(route, /search\.mode === "flow"/);
+  assert.match(route, /<ProjectFlowWorkspace/);
+  assert.match(graph, /mode: "graph" \| "flow" \| "tree"/);
+  assert.match(graph, /call flow\|execution flow\|data flow\|request flow\|pipeline\|trace/);
+  assert.match(flow, /new AbortController\(\)/);
+  assert.match(flow, /controller\.abort\(\)/);
+  assert.match(flow, /In plain English/);
+  assert.match(flow, /step\.what_happens/);
+  assert.match(flow, /Why it matters/);
+  assert.match(flow, /step\.technical_detail/);
+  assert.match(flow, /No verified execution path found/);
+  assert.match(flow, /view\.warnings\.join/);
+  assert.match(flow, /Trace \$\{candidate\.qualified_id\}/);
+  assert.match(flow, /xl:border-l xl:border-t-0/);
+  assert.match(backend, /\/graph\/flow\?/);
 });
 
 test("renderer accepts runtime backend URLs only from loopback origins", () => {
@@ -54,4 +78,6 @@ test("long chat and graph surfaces virtualize rows and dispose graph simulations
   assert.match(graph, /pauseAnimation/);
   assert.match(graph, /_destructor/);
   assert.match(map, /rowVirtualizer\.getVirtualItems\(\)/);
+  assert.match(map, /neighborhoodLimit < 200/);
+  assert.match(map, /map limit reached/);
 });

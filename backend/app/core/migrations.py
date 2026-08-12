@@ -5,7 +5,7 @@ from uuid import uuid4
 
 from backend.app.core.database import connect, utc_now
 
-SCHEMA_VERSION = 37
+SCHEMA_VERSION = 39
 
 
 class MigrationError(RuntimeError):
@@ -1591,6 +1591,34 @@ def _migration_037_maintenance_coordinator(conn) -> None:
     )
 
 
+def _migration_038_project_flow_source_ranges(conn) -> None:
+    if not _table_exists(conn, "code_nodes"):
+        return
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_code_nodes_source_range
+        ON code_nodes(project_id, snapshot_id, source_id, start_line, end_line)
+        """
+    )
+
+
+def _migration_039_project_flow_lookup_indexes(conn) -> None:
+    if not _table_exists(conn, "code_nodes"):
+        return
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_code_nodes_label_search
+        ON code_nodes(project_id, snapshot_id, display_label COLLATE NOCASE)
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_code_nodes_path_search
+        ON code_nodes(project_id, snapshot_id, relative_path COLLATE NOCASE)
+        """
+    )
+
+
 MIGRATIONS: dict[int, Migration] = {
     1: _migration_001_baseline,
     2: _migration_002_vault_security_metadata,
@@ -1629,6 +1657,8 @@ MIGRATIONS: dict[int, Migration] = {
     35: _migration_035_background_job_leases,
     36: _migration_036_watched_folder_backoff,
     37: _migration_037_maintenance_coordinator,
+    38: _migration_038_project_flow_source_ranges,
+    39: _migration_039_project_flow_lookup_indexes,
 }
 
 

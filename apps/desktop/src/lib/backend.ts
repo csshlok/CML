@@ -995,6 +995,120 @@ export type DiagnosticBundleResponse = {
   included_files: string[];
 };
 
+export type ProjectFlowEvidence = {
+  source_id: string;
+  relative_path: string;
+  line_start: number | null;
+  line_end: number | null;
+  chunk_id?: string;
+  excerpt?: string;
+  basis: "structure" | "semantic_retrieval";
+};
+
+export type ProjectFlowConnection = {
+  edge_id: string;
+  type: string;
+  label: string;
+  confidence: "extracted" | "user_confirmed" | string;
+  evidence_source_id: string | null;
+  source_line: number | null;
+  display_reversed: boolean;
+  raw_source_node_id: string;
+  raw_target_node_id: string;
+};
+
+export type ProjectFlowStep = {
+  ordinal: number;
+  node: ProjectGraphNode;
+  plain_label: string;
+  role_summary: string;
+  what_happens: string;
+  why_it_matters: string;
+  technical_detail: string;
+  source_context: string;
+  summary_scope: "symbol" | "file" | "structural";
+  semantic_quality: "semantic" | "fallback" | "pending" | "unavailable" | string;
+  evidence: ProjectFlowEvidence[];
+  connection_to_next: ProjectFlowConnection | null;
+};
+
+export type ProjectFlow = {
+  id: string;
+  title: string;
+  score: number;
+  overview: {
+    answer: string;
+    meaning: string;
+  };
+  steps: ProjectFlowStep[];
+};
+
+export type ProjectFlowView = {
+  version: 2;
+  project_id: string;
+  query: string;
+  lens: "execution" | "impact" | "lineage" | "security" | "failure" | "async" | "tests" | "release" | "architecture" | "health" | "documentation" | string;
+  status: "found" | "ambiguous" | "not_found" | "partial" | "stale";
+  structure_snapshot_id: string | null;
+  retrieval_snapshot_id: string | null;
+  indexed_commit: string | null;
+  primary_flow: ProjectFlow | null;
+  alternatives: ProjectFlow[];
+  candidates: Array<ProjectGraphNode & { match_score: number; match_reasons: string[] }>;
+  analysis: {
+    lens: string;
+    title: string;
+    summary: string;
+    observations: Array<{
+      kind: string;
+      label: string;
+      detail: string;
+      confidence: string;
+      paths: string[];
+    }>;
+    test_impact: {
+      status: string;
+      exact_tests: Array<{ test_path: string; test_name: string; matched_sources: string[]; confidence_class: string }>;
+      guessed_tests: Array<Record<string, unknown>>;
+      unknown_reason?: string;
+      warning?: string | null;
+    };
+    release_change: {
+      status: string;
+      changed: string[];
+      unchanged: string[];
+      previous_snapshot_id?: string | null;
+      previous_commit?: string | null;
+    };
+    limitations: string[];
+  };
+  freshness: {
+    structure_status: string;
+    retrieval_status: string;
+    changed_file_count: number;
+    includes_unindexed_changes: false;
+  };
+  warnings: string[];
+  limits: {
+    max_steps: number;
+    max_candidate_nodes: number;
+    max_examined_edges: number;
+    max_alternatives: number;
+    timeout_ms: number;
+    candidate_timeout_ms: number;
+    retrieval_timeout_ms: number;
+  };
+  diagnostics: {
+    candidate_nodes: number;
+    examined_edges: number;
+    retrieval_ms?: number;
+    candidate_ms?: number;
+    traversal_ms?: number;
+    candidate_timed_out?: boolean;
+    elapsed_ms: number;
+  };
+};
+
 export type SecurityScanCheck = {
   id: string;
   label: string;
@@ -1841,6 +1955,20 @@ export async function getCluster(id: string) {
   return request<ClusterRecord>(`/api/v1/clusters/${encodeURIComponent(id)}`);
 }
 
+export type ClusterCountsRecord = {
+  cluster_id: string;
+  source_count: number;
+  indexed_source_count: number;
+  chat_count: number;
+  project_count: number;
+};
+
+export async function getClusterCounts(id: string) {
+  return request<ClusterCountsRecord>(
+    `/api/v1/clusters/${encodeURIComponent(id)}/counts`,
+  );
+}
+
 export async function updateCluster(
   id: string,
   payload: Partial<Pick<ClusterRecord, "name" | "description" | "color" | "index_status" | "profile_status">>,
@@ -2165,10 +2293,11 @@ export async function listProjectRuns(id: string, limit = 50, offset = 0) {
   );
 }
 
-export async function listProjectRunSummary(limit = 200, activeOnly = false) {
+export async function listProjectRunSummary(limit = 200, activeOnly = false, offset = 0) {
   const params = new URLSearchParams({
     limit: String(limit),
     active_only: String(activeOnly),
+    offset: String(offset),
   });
   return request<{
     items: Array<{
@@ -2176,6 +2305,8 @@ export async function listProjectRunSummary(limit = 200, activeOnly = false) {
       run: ProjectIndexRunRecord;
     }>;
     limit: number;
+    offset: number;
+    total: number;
   }>(`/api/v1/projects/project-run-summary?${params.toString()}`);
 }
 
@@ -2391,6 +2522,18 @@ export async function listSourcesPage(
   return request<CursorPage<SourceRecord>>(`/api/v1/sources/page${query}`, {
     signal: options.signal,
   });
+}
+
+export async function getProjectFlowView(
+  id: string,
+  query: string,
+  options?: { signal?: AbortSignal },
+) {
+  const params = new URLSearchParams({ q: query });
+  return request<ProjectFlowView>(
+    `/api/v1/projects/${encodeURIComponent(id)}/graph/flow?${params.toString()}`,
+    { signal: options?.signal, timeoutMs: 12_000 },
+  );
 }
 
 export async function getLatestSourcesByCluster(vaultId: string) {
@@ -3293,6 +3436,13 @@ export async function activateLocalModel(modelId: string, role: "chat" = "chat")
 
 export async function getModelRuntimeStatus() {
   return request<ModelRuntimeStatus>("/api/v1/models/runtime");
+}
+
+export async function testModelRuntimeConnection() {
+  return request<ModelRuntimeStatus>("/api/v1/models/runtime/probe", {
+    method: "POST",
+    signal: AbortSignal.timeout(120_000),
+  });
 }
 
 export async function getEmbeddingRuntimeStatus() {

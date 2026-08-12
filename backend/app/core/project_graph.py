@@ -22,6 +22,18 @@ ALLOWED_TRAVERSAL_EDGES = {
     "reexports",
     "tested_by",
     "uses_schema",
+    "dispatches",
+    "http_request",
+    "dispatches_job",
+    "sends_ipc",
+    "handles_ipc",
+    "emits_event",
+    "listens_event",
+    "registers_router",
+    "reads_data",
+    "writes_data",
+    "raises_failure",
+    "handles_failure",
 }
 DEFAULT_PATH_EDGES = ALLOWED_TRAVERSAL_EDGES - {"contains", "depends_on_package"}
 GRAPH_VIEW_EDGES = DEFAULT_PATH_EDGES | {"contains"}

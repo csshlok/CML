@@ -18,8 +18,22 @@ _AUTHORITY_EDGES = {
     "defines_route",
     "implements",
     "inherits",
+    "dispatches",
+    "http_request",
+    "dispatches_job",
+    "sends_ipc",
+    "handles_ipc",
+    "emits_event",
+    "listens_event",
+    "registers_router",
+    "reads_data",
+    "writes_data",
 }
-_FLOW_EDGES = {"calls", "defines_route", "imports", "references", "exports"}
+_FLOW_EDGES = {
+    "calls", "defines_route", "imports", "references", "exports", "dispatches",
+    "http_request", "dispatches_job", "sends_ipc", "handles_ipc", "emits_event",
+    "listens_event", "registers_router", "reads_data", "writes_data",
+}
 
 
 def compute_graph_metrics(

@@ -11,7 +11,16 @@ from pathlib import Path
 from uuid import uuid4
 
 
-STRUCTURE_EXTRACTOR_VERSION = "odin-structure-v2"
+STRUCTURE_EXTRACTOR_VERSION = "odin-structure-v3"
+
+
+@dataclass(frozen=True)
+class BoundaryReference:
+    kind: str
+    key: str
+    label: str
+    edge_type: str
+    line: int
 
 
 @dataclass
@@ -32,6 +41,9 @@ class Symbol:
     inherits: list[tuple[str, int]] = field(default_factory=list)
     implements: list[tuple[str, int]] = field(default_factory=list)
     routes: list[tuple[str, str, int]] = field(default_factory=list)
+    boundaries: list[BoundaryReference] = field(default_factory=list)
+    dispatches: list[tuple[str, int]] = field(default_factory=list)
+    router_registrations: list[tuple[str, int]] = field(default_factory=list)
 
 
 @dataclass
@@ -304,6 +316,69 @@ def build_structure_graph(
 
     for relative_path, structure in structures.items():
         source_id = source_by_path.get(relative_path)
+        for symbol in structure.symbols:
+            symbol_node = symbol_nodes[symbol.qualified_id]
+            for target_name, line in symbol.dispatches:
+                resolved = _resolved_symbol_reference(
+                    relative_path,
+                    target_name,
+                    structures=structures,
+                    module_index=module_to_file,
+                    simple_names=simple_names,
+                    symbol_records=symbol_records,
+                )
+                if resolved and resolved != symbol.qualified_id:
+                    _insert_edge(
+                        conn, project["id"], snapshot_id, symbol_node,
+                        symbol_nodes[resolved], "dispatches", source_id, line, now,
+                    )
+            for local_name, line in symbol.router_registrations:
+                binding = next(
+                    (item for item in structure.import_bindings if item.local_name == local_name),
+                    None,
+                )
+                target_path = (
+                    _resolve_import(relative_path, binding.module, module_to_file)
+                    if binding is not None else None
+                )
+                if target_path and target_path != relative_path:
+                    _insert_edge(
+                        conn, project["id"], snapshot_id, symbol_node,
+                        _file_node_id(file_nodes, target_path), "registers_router",
+                        source_id, line, now,
+                    )
+            for reference in symbol.boundaries:
+                qualified_id = (
+                    f"route:{reference.key}"
+                    if reference.kind == "http"
+                    else f"boundary:{reference.kind}:{reference.key.casefold()}"
+                )
+                boundary_node = route_nodes.get(qualified_id)
+                if boundary_node is None:
+                    boundary_node = _insert_node(
+                        conn,
+                        project_id=project["id"],
+                        snapshot_id=snapshot_id,
+                        qualified_id=qualified_id,
+                        kind="route" if reference.kind == "http" else reference.kind,
+                        language="",
+                        label=reference.label,
+                        relative_path=relative_path,
+                        source_id=source_id,
+                        signature=reference.label,
+                        content_hash=_hash_text(qualified_id),
+                        now=now,
+                        extractor_version=structure.extractor_version or STRUCTURE_EXTRACTOR_VERSION,
+                        start_line=reference.line,
+                    )
+                    route_nodes[qualified_id] = boundary_node
+                _insert_edge(
+                    conn, project["id"], snapshot_id, symbol_node, boundary_node,
+                    reference.edge_type, source_id, reference.line, now,
+                )
+
+    for relative_path, structure in structures.items():
+        source_id = source_by_path.get(relative_path)
         for imported, line in structure.imports:
             target_path = _resolve_import(relative_path, imported, module_to_file)
             if target_path and target_path != relative_path:
@@ -370,6 +445,32 @@ def build_structure_graph(
         "warning_count": sum(len(item["warnings"]) for item in file_results),
         "unresolved_reference_count": sum(int(item["unresolved_reference_count"]) for item in file_results),
     }
+
+
+def _resolved_symbol_reference(
+    relative_path: str,
+    target_name: str,
+    *,
+    structures: dict[str, FileStructure],
+    module_index: dict[str, str | None],
+    simple_names: dict[str, list[str]],
+    symbol_records: dict[str, Symbol],
+) -> str | None:
+    imported = _imported_symbol_candidates(
+        relative_path,
+        target_name,
+        structures=structures,
+        module_index=module_index,
+        simple_names=simple_names,
+        symbol_records=symbol_records,
+    )
+    if len(imported) == 1:
+        return imported[0]
+    candidates = simple_names.get(target_name, [])
+    same_file = [item for item in candidates if symbol_records[item].relative_path == relative_path]
+    if len(same_file) == 1:
+        return same_file[0]
+    return candidates[0] if len(candidates) == 1 else None
 
 
 def extract_structure(relative_path: str, text: str, language: str, source_id: str | None) -> FileStructure:
@@ -453,14 +554,18 @@ def _extract_python(relative_path: str, text: str, source_id: str | None) -> Fil
                 parent_qualified_id=self.parents[-1].qualified_id if self.parents else None,
             )
             for decorator in node.decorator_list:
-                route = _python_route(decorator)
-                if route:
+                for route in _python_routes(decorator):
                     symbol.routes.append((route[0], route[1], getattr(decorator, "lineno", node.lineno)))
             if not relative_path.casefold().endswith(".pyi"):
                 call_visitor = _PythonCallVisitor()
+                boundary_visitor = _PythonBoundaryVisitor()
                 for statement in node.body:
                     call_visitor.visit(statement)
+                    boundary_visitor.visit(statement)
                 symbol.calls = call_visitor.calls
+                symbol.boundaries = boundary_visitor.boundaries
+                symbol.dispatches = boundary_visitor.dispatches
+                symbol.router_registrations = boundary_visitor.router_registrations
             result.symbols.append(symbol)
             self.parents.append(symbol)
             for statement in node.body:
@@ -490,6 +595,119 @@ class _PythonCallVisitor(ast.NodeVisitor):
 
     def visit_ClassDef(self, node: ast.ClassDef) -> None:
         return
+
+
+class _PythonBoundaryVisitor(ast.NodeVisitor):
+    _HTTP_CLIENTS = {"requests", "httpx", "client", "session", "api_client", "http_client"}
+    _HTTP_METHODS = {"get", "post", "put", "patch", "delete", "head", "options"}
+
+    def __init__(self) -> None:
+        self.boundaries: list[BoundaryReference] = []
+        self.dispatches: list[tuple[str, int]] = []
+        self.router_registrations: list[tuple[str, int]] = []
+
+    def visit_Call(self, node: ast.Call) -> None:
+        full_name = _ast_name(node.func)
+        parts = full_name.split(".") if full_name else []
+        method = parts[-1].casefold() if parts else ""
+        owner = parts[-2].casefold() if len(parts) > 1 else ""
+        first_text = _literal_text(node.args[0]) if node.args else ""
+        if method in self._HTTP_METHODS and owner in self._HTTP_CLIENTS and first_text:
+            path = _normalized_boundary_path(first_text)
+            self.boundaries.append(BoundaryReference(
+                "http", f"{method.upper()}:{path}", f"{method.upper()} {path}",
+                "http_request", node.lineno,
+            ))
+        if method == "include_router" and node.args:
+            target = _ast_name(node.args[0]).rsplit(".", 1)[-1]
+            if target:
+                self.router_registrations.append((target, node.lineno))
+        if method == "add_task" and node.args:
+            target = _ast_name(node.args[0]).rsplit(".", 1)[-1]
+            if target:
+                self.dispatches.append((target, node.lineno))
+        if method in {"_spawn", "spawn"} and node.args:
+            target = _ast_name(node.args[0]).rsplit(".", 1)[-1]
+            if target:
+                self.dispatches.append((target, node.lineno))
+        if method in {"thread", "process"}:
+            target_node = next((item.value for item in node.keywords if item.arg == "target"), None)
+            target = _ast_name(target_node).rsplit(".", 1)[-1] if target_node is not None else ""
+            if target:
+                self.dispatches.append((target, node.lineno))
+        if method == "enqueue_job":
+            job_type = next((_literal_text(item.value) for item in node.keywords if item.arg == "job_type"), "")
+            if job_type:
+                self.boundaries.append(BoundaryReference(
+                    "job", job_type, f"Job {job_type}", "dispatches_job", node.lineno,
+                ))
+        if method in {"execute", "executemany", "query"} and first_text:
+            self.boundaries.extend(_sql_boundary_references(first_text, node.lineno))
+        self.generic_visit(node)
+
+    def visit_Raise(self, node: ast.Raise) -> None:
+        name = "exception"
+        if node.exc is not None:
+            value = node.exc.func if isinstance(node.exc, ast.Call) else node.exc
+            name = _ast_name(value).rsplit(".", 1)[-1] or name
+        self.boundaries.append(BoundaryReference(
+            "failure", name, f"Raises {name}", "raises_failure", node.lineno,
+        ))
+        self.generic_visit(node)
+
+    def visit_ExceptHandler(self, node: ast.ExceptHandler) -> None:
+        name = _ast_name(node.type).rsplit(".", 1)[-1] if node.type is not None else "exception"
+        self.boundaries.append(BoundaryReference(
+            "failure", name or "exception", f"Handles {name or 'exception'}",
+            "handles_failure", getattr(node, "lineno", 1),
+        ))
+        self.generic_visit(node)
+
+    def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+        return
+
+    def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
+        return
+
+    def visit_ClassDef(self, node: ast.ClassDef) -> None:
+        return
+
+
+def _literal_text(node: ast.AST) -> str:
+    return str(node.value) if isinstance(node, ast.Constant) and isinstance(node.value, str) else ""
+
+
+def _normalized_boundary_path(value: str) -> str:
+    from urllib.parse import urlsplit
+
+    text = value.strip()
+    if "://" in text:
+        parsed = urlsplit(text)
+        text = parsed.path or "/"
+    text = re.sub(r"\$\{[^}]+\}", "{*}", text)
+    text = text.split("?", 1)[0].strip()
+    if not text.startswith("/"):
+        text = "/" + text
+    return re.sub(r"/{2,}", "/", text)[:300]
+
+
+def _sql_boundary_references(statement: str, line: int) -> list[BoundaryReference]:
+    normalized = " ".join(statement.strip().split())
+    if not normalized:
+        return []
+    operation = normalized.split(" ", 1)[0].casefold()
+    edge_type = "writes_data" if operation in {"insert", "update", "delete", "replace", "merge"} else "reads_data"
+    patterns = (
+        r"\b(?:from|join|into|update)\s+[\"'`\[]?([A-Za-z_][\w.$-]*)",
+        r"\bdelete\s+from\s+[\"'`\[]?([A-Za-z_][\w.$-]*)",
+    )
+    tables: list[str] = []
+    for pattern in patterns:
+        tables.extend(re.findall(pattern, normalized, flags=re.I))
+    return [
+        BoundaryReference("data_store", table.casefold(), table, edge_type, line)
+        for table in list(dict.fromkeys(tables))[:4]
+    ]
 
 
 def _extract_package_json(relative_path: str, text: str) -> FileStructure:
@@ -868,17 +1086,31 @@ def _ast_name(node: ast.AST) -> str:
     return ""
 
 
-def _python_route(decorator: ast.AST) -> tuple[str, str] | None:
+def _python_routes(decorator: ast.AST) -> list[tuple[str, str]]:
     if not isinstance(decorator, ast.Call):
-        return None
+        return []
     name = _ast_name(decorator.func)
     method = name.rsplit(".", 1)[-1].upper()
-    if method not in {"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "HEAD"}:
-        return None
     path = "<dynamic>"
     if decorator.args and isinstance(decorator.args[0], ast.Constant) and isinstance(decorator.args[0].value, str):
         path = decorator.args[0].value
-    return method, path
+    allowed = {"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "HEAD"}
+    if method in allowed:
+        return [(method, path)]
+    if method != "ROUTE":
+        return []
+    methods = ["GET"]
+    keyword = next((item for item in decorator.keywords if item.arg == "methods"), None)
+    if keyword and isinstance(keyword.value, (ast.List, ast.Tuple, ast.Set)):
+        literal_methods = [
+            str(item.value).upper()
+            for item in keyword.value.elts
+            if isinstance(item, ast.Constant) and isinstance(item.value, str)
+            and str(item.value).upper() in allowed
+        ]
+        if literal_methods:
+            methods = literal_methods
+    return [(item, path) for item in methods]
 
 
 def _hash_text(value: str) -> str:

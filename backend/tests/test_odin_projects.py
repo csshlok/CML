@@ -6,6 +6,55 @@ import tempfile
 import unittest
 from pathlib import Path
 
+import pytest
+
+
+def test_odin_cluster_name_resolution_follows_cursor_pages() -> None:
+    from backend.app.odin_cli import _resolve_cluster_id
+
+    class FakeClient:
+        def __init__(self) -> None:
+            self.paths: list[str] = []
+
+        def request(self, method: str, path: str):
+            self.paths.append(path)
+            if "cursor=next-page" in path:
+                return {
+                    "items": [{"id": "cluster-wanted", "name": "Wanted"}],
+                    "next_cursor": None,
+                }
+            return {
+                "items": [{"id": "cluster-nearby", "name": "Wanted notes"}],
+                "next_cursor": "next-page",
+            }
+
+    client = FakeClient()
+    assert _resolve_cluster_id(client, "vault-odin", "wanted") == "cluster-wanted"
+    assert len(client.paths) == 2
+    assert all("clusters/page?" in path and "q=wanted" in path for path in client.paths)
+
+
+def test_odin_cluster_name_resolution_stops_once_ambiguous() -> None:
+    from backend.app.odin_cli import OdinClientError, _resolve_cluster_id
+
+    class FakeClient:
+        calls = 0
+
+        def request(self, method: str, path: str):
+            self.calls += 1
+            return {
+                "items": [
+                    {"id": "cluster-a", "name": "Same"},
+                    {"id": "cluster-b", "name": "SAME"},
+                ],
+                "next_cursor": "unused-page",
+            }
+
+    client = FakeClient()
+    with pytest.raises(OdinClientError, match="ambiguous"):
+        _resolve_cluster_id(client, "vault-odin", "same")
+    assert client.calls == 1
+
 
 def _register_project(**kwargs):
     from backend.app.core.background_jobs import run_due_jobs_once
@@ -954,7 +1003,6 @@ class OdinProjectTests(unittest.TestCase):
 
     def test_failed_candidate_keeps_the_previous_snapshot_readable(self) -> None:
         from unittest.mock import patch
-
         from backend.app.core.background_jobs import run_due_jobs_once
         from backend.app.core.projects import get_project, get_project_run, sync_project
 
@@ -1237,6 +1285,274 @@ class OdinProjectTests(unittest.TestCase):
         self.assertIn("## Overview", markdown)
         self.assertIn("## Key areas", markdown)
         self.assertIn("## Flows", markdown)
+
+    def test_semantic_flow_follows_verified_calls_and_attaches_file_evidence(self) -> None:
+        from unittest.mock import patch
+
+        from backend.app.core.database import connect
+        from backend.app.core.project_flow import project_flow_markdown, project_flow_view
+
+        project = _register_project(
+            vault_id="vault-odin",
+            root_path=str(self.repo),
+            name="Sample",
+            sync=True,
+        )
+        with connect() as conn:
+            source = conn.execute(
+                """
+                SELECT sources.id FROM sources
+                JOIN project_sources ON project_sources.source_id = sources.id
+                WHERE project_sources.project_id = ? AND project_sources.relative_path = 'src/main.ts'
+                """,
+                (project["id"],),
+            ).fetchone()
+            conn.execute(
+                """
+                UPDATE sources SET summary = ?, metadata_quality = 'semantic',
+                    semantic_metadata_version = 1 WHERE id = ?
+                """,
+                ("Starts authorization for an incoming request.", source["id"]),
+            )
+        semantic_bundle = {
+            "evidence": [{
+                "source_id": source["id"],
+                "relative_path": "src/main.ts",
+                "line_start": 1,
+                "line_end": 2,
+                "chunk_id": "chunk-main",
+                "snippet": "export const start = () => authorize();",
+            }]
+        }
+        with patch(
+            "backend.app.core.project_flow.build_cluster_bundle_context",
+            return_value=semantic_bundle,
+        ):
+            view = project_flow_view(project["id"], query="Show how start authorization works")
+
+        self.assertEqual(view["status"], "found")
+        flow = view["primary_flow"]
+        self.assertIsNotNone(flow)
+        self.assertEqual([step["node"]["label"] for step in flow["steps"]], ["start", "authorize"])
+        self.assertEqual(flow["steps"][0]["connection_to_next"]["type"], "calls")
+        self.assertEqual(flow["steps"][0]["summary_scope"], "symbol")
+        self.assertEqual(
+            flow["steps"][0]["what_happens"],
+            "start asks authorize to perform the next piece of work.",
+        )
+        self.assertEqual(
+            flow["steps"][0]["source_context"],
+            "Starts authorization for an incoming request.",
+        )
+        self.assertEqual(flow["steps"][0]["semantic_quality"], "semantic")
+        self.assertEqual(flow["steps"][0]["evidence"][0]["chunk_id"], "chunk-main")
+        self.assertIn("start to authorize", project_flow_markdown(view))
+
+    def test_semantic_flow_degrades_to_structure_when_retrieval_is_unavailable(self) -> None:
+        from unittest.mock import patch
+
+        from backend.app.core.project_flow import project_flow_view
+
+        project = _register_project(
+            vault_id="vault-odin",
+            root_path=str(self.repo),
+            name="Sample",
+            sync=True,
+        )
+        with patch(
+            "backend.app.core.project_flow.build_cluster_bundle_context",
+            side_effect=RuntimeError("embedding runtime unavailable"),
+        ):
+            view = project_flow_view(project["id"], query="Trace start")
+
+        self.assertEqual(view["status"], "found")
+        self.assertTrue(view["primary_flow"])
+        self.assertIn(
+            "Semantic retrieval was unavailable; this flow uses indexed structure only.",
+            view["warnings"],
+        )
+
+    def test_semantic_flow_marks_changed_projects_partial_and_honors_budgets(self) -> None:
+        from unittest.mock import patch
+
+        from backend.app.core.database import connect
+        from backend.app.core.project_flow import project_flow_view
+
+        project = _register_project(
+            vault_id="vault-odin",
+            root_path=str(self.repo),
+            name="Sample",
+            sync=True,
+        )
+        with connect() as conn:
+            conn.execute(
+                "UPDATE projects SET changed_file_count = 2, structure_status = 'stale' WHERE id = ?",
+                (project["id"],),
+            )
+        with patch("backend.app.core.project_flow.build_cluster_bundle_context", return_value={"evidence": []}):
+            view = project_flow_view(
+                project["id"],
+                query="Trace start",
+                max_steps=2,
+                max_candidate_nodes=20,
+                max_examined_edges=50,
+            )
+
+        self.assertEqual(view["status"], "partial")
+        self.assertEqual(view["limits"]["max_steps"], 2)
+        self.assertLessEqual(view["diagnostics"]["examined_edges"], 50)
+        self.assertTrue(any("2 local files have changed" in warning for warning in view["warnings"]))
+
+    def test_semantic_flow_reads_summaries_through_secured_vault_storage(self) -> None:
+        from unittest.mock import patch
+
+        from backend.app.core import vault_crypto
+        from backend.app.core.database import connect
+        from backend.app.core.encrypted_storage import update_source_content_fields
+        from backend.app.core.project_flow import project_flow_view
+
+        vault_crypto.initialize_vault_security(
+            "vault-odin",
+            "semantic flow test passphrase",
+            kdf_params=vault_crypto.TEST_KDF_PARAMS,
+        )
+        project = _register_project(
+            vault_id="vault-odin",
+            root_path=str(self.repo),
+            name="Sample",
+            sync=True,
+        )
+        with connect() as conn:
+            source = conn.execute(
+                """
+                SELECT sources.* FROM sources
+                JOIN project_sources ON project_sources.source_id = sources.id
+                WHERE project_sources.project_id = ? AND project_sources.relative_path = 'src/main.ts'
+                """,
+                (project["id"],),
+            ).fetchone()
+            stored = update_source_content_fields(
+                conn,
+                vault_id="vault-odin",
+                source_id=source["id"],
+                updates={"summary": "Secure summary for the authorization entrypoint."},
+            )
+            conn.execute(
+                """
+                UPDATE sources SET summary = ?, metadata_quality = 'semantic',
+                    semantic_metadata_version = 1 WHERE id = ?
+                """,
+                (stored["summary"], source["id"]),
+            )
+            plaintext = conn.execute("SELECT summary FROM sources WHERE id = ?", (source["id"],)).fetchone()["summary"]
+        with patch("backend.app.core.project_flow.build_cluster_bundle_context", return_value={"evidence": []}):
+            view = project_flow_view(project["id"], query="Trace start")
+
+        self.assertEqual(plaintext, "")
+        self.assertEqual(
+            view["primary_flow"]["steps"][0]["source_context"],
+            "Secure summary for the authorization entrypoint.",
+        )
+        self.assertNotIn("Secure summary", view["primary_flow"]["steps"][0]["role_summary"])
+        vault_crypto.lock_all_vaults()
+
+    def test_semantic_flow_presents_routes_in_runtime_order_without_rewriting_provenance(self) -> None:
+        from unittest.mock import patch
+
+        from backend.app.core.project_flow import project_flow_view
+
+        (self.repo / "src" / "upload.py").write_text(
+            """
+@app.post('/upload')
+def upload_file():
+    return process_upload()
+
+def process_upload():
+    return persist_upload()
+
+def persist_upload():
+    return True
+""".strip(),
+            encoding="utf-8",
+        )
+        project = _register_project(
+            vault_id="vault-odin",
+            root_path=str(self.repo),
+            name="Sample",
+            sync=True,
+        )
+        with patch("backend.app.core.project_flow.build_cluster_bundle_context", return_value={"evidence": []}):
+            view = project_flow_view(project["id"], query="Show the upload request flow")
+
+        labels = [step["node"]["label"] for step in view["primary_flow"]["steps"]]
+        self.assertEqual(labels, ["POST /upload", "upload_file", "process_upload", "persist_upload"])
+        self.assertEqual(
+            view["primary_flow"]["overview"]["answer"],
+            "It starts at POST /upload, moves through upload file, then process upload, and reaches persist upload.",
+        )
+        self.assertEqual(
+            view["primary_flow"]["steps"][0]["what_happens"],
+            "The backend receives this request and directs it to upload file.",
+        )
+        self.assertIn("server-side code", view["primary_flow"]["steps"][0]["why_it_matters"])
+        route_connection = view["primary_flow"]["steps"][0]["connection_to_next"]
+        self.assertEqual(route_connection["type"], "defines_route")
+        self.assertEqual(route_connection["label"], "handled by")
+        self.assertTrue(route_connection["display_reversed"])
+        self.assertNotEqual(
+            route_connection["raw_source_node_id"],
+            view["primary_flow"]["steps"][0]["node"]["id"],
+        )
+
+    def test_semantic_flow_bounds_dense_file_candidates_without_losing_line_evidence(self) -> None:
+        from backend.app.core.database import connect, utc_now
+        from backend.app.core.project_flow import _semantic_candidate_nodes
+
+        project = _register_project(
+            vault_id="vault-odin",
+            root_path=str(self.repo),
+            name="Sample",
+            sync=True,
+        )
+        with connect() as conn:
+            source = conn.execute(
+                """
+                SELECT sources.id FROM sources
+                JOIN project_sources ON project_sources.source_id = sources.id
+                WHERE project_sources.project_id = ? AND project_sources.relative_path = 'src/main.ts'
+                """,
+                (project["id"],),
+            ).fetchone()
+            snapshot_id = project["active_structure_snapshot_id"]
+            now = utc_now()
+            conn.executemany(
+                """
+                INSERT INTO code_nodes (
+                    id, project_id, snapshot_id, source_id, qualified_id, kind, language,
+                    display_label, relative_path, start_line, start_column, end_line, end_column,
+                    signature, extraction_method, extractor_version, content_hash, created_at
+                ) VALUES (?, ?, ?, ?, ?, 'function', 'TypeScript', ?, 'src/main.ts', ?, 0, ?, 10,
+                          ?, 'test', 'test-v1', ?, ?)
+                """,
+                [
+                    (
+                        f"dense-node-{line}", project["id"], snapshot_id, source["id"],
+                        f"ts:dense_{line}", f"dense_{line}", line, line,
+                        f"dense_{line}()", f"hash-{line}", now,
+                    )
+                    for line in range(100, 400)
+                ],
+            )
+            candidates = _semantic_candidate_nodes(
+                conn,
+                project_id=project["id"],
+                snapshot_id=snapshot_id,
+                evidence=[{"source_id": source["id"], "line_start": 399, "line_end": 399}],
+                limit=6,
+            )
+
+        self.assertLessEqual(len(candidates), 6)
+        self.assertIn("dense_399", [candidate["display_label"] for candidate in candidates])
 
     def test_node_insertion_is_idempotent_within_a_snapshot(self) -> None:
         from backend.app.core.code_structure import _insert_node, _path_key
@@ -1589,6 +1905,32 @@ class OdinProjectTests(unittest.TestCase):
         self.assertTrue(any(label.startswith("inboundCaller") for label in inbound_labels))
         self.assertFalse(any(label.startswith("outboundCallee") for label in inbound_labels))
 
+    def test_project_run_summary_paginates_and_reports_the_full_total(self) -> None:
+        from types import SimpleNamespace
+
+        from backend.app.api.routes.projects import project_run_summary
+        from backend.app.core.background_jobs import run_due_jobs_once
+        from backend.app.core.projects import sync_project
+
+        project = _register_project(
+            vault_id="vault-odin",
+            root_path=str(self.repo),
+            name="Sample",
+            sync=True,
+        )
+        for index in range(2):
+            (self.repo / "README.md").write_text(f"revision {index}", encoding="utf-8")
+            sync_project(project["id"])
+            run_due_jobs_once(limit=20)
+
+        request = SimpleNamespace(state=SimpleNamespace(cli_auth=None))
+        page = project_run_summary(request, limit=1, offset=1)
+
+        self.assertGreaterEqual(page["total"], 3)
+        self.assertEqual(page["limit"], 1)
+        self.assertEqual(page["offset"], 1)
+        self.assertEqual(len(page["items"]), 1)
+
     def test_tree_view_builds_hidden_project_file_symbol_hierarchy(self) -> None:
         from backend.app.core.project_graph import graph_view
 
@@ -1600,6 +1942,18 @@ class OdinProjectTests(unittest.TestCase):
         self.assertIn("directory", kinds)
         self.assertIn("file", kinds)
         self.assertTrue(all(edge["type"] == "contains" for edge in view["edges"]))
+
+def test_project_file_reader_enforces_limit_during_the_read(tmp_path: Path) -> None:
+    from backend.app.core.projects import MAX_FILE_BYTES, _read_bounded_bytes
+
+    exact = tmp_path / "exact.py"
+    oversized = tmp_path / "oversized.py"
+    exact.write_bytes(b"x" * MAX_FILE_BYTES)
+    oversized.write_bytes(b"x" * (MAX_FILE_BYTES + 1))
+
+    assert len(_read_bounded_bytes(exact)) == MAX_FILE_BYTES
+    with pytest.raises(ValueError, match="size limit"):
+        _read_bounded_bytes(oversized)
 
 
 if __name__ == "__main__":

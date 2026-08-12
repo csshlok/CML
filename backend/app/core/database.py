@@ -1438,6 +1438,12 @@ def init_db() -> None:
                 ON cli_auth_audit(client_id, created_at DESC);
             CREATE INDEX IF NOT EXISTS idx_code_nodes_lookup
                 ON code_nodes(project_id, snapshot_id, kind, qualified_id);
+            CREATE INDEX IF NOT EXISTS idx_code_nodes_source_range
+                ON code_nodes(project_id, snapshot_id, source_id, start_line, end_line);
+            CREATE INDEX IF NOT EXISTS idx_code_nodes_label_search
+                ON code_nodes(project_id, snapshot_id, display_label COLLATE NOCASE);
+            CREATE INDEX IF NOT EXISTS idx_code_nodes_path_search
+                ON code_nodes(project_id, snapshot_id, relative_path COLLATE NOCASE);
             CREATE INDEX IF NOT EXISTS idx_code_edges_source
                 ON code_edges(project_id, snapshot_id, source_node_id, edge_type);
             CREATE INDEX IF NOT EXISTS idx_code_edges_target

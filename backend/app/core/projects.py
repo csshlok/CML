@@ -23,6 +23,16 @@ EXTRACTOR_VERSION = (
     f"odin-manifest-v2+{STRUCTURE_EXTRACTOR_VERSION}+{extractor_fingerprint()}"
 )
 MAX_FILE_BYTES = 1_000_000
+MAX_IGNORE_FILE_BYTES = 1_000_000
+
+
+def _read_bounded_bytes(path: Path, max_bytes: int = MAX_FILE_BYTES) -> bytes:
+    """Read at most the admitted project-file budget, including growth races."""
+    with path.open("rb") as handle:
+        payload = handle.read(max_bytes + 1)
+    if len(payload) > max_bytes:
+        raise ValueError("Project file exceeds the indexing size limit")
+    return payload
 
 
 def _safe_git_run(command: list[str], **kwargs):
@@ -275,7 +285,7 @@ def project_discovery_policy_hash(root: Path) -> str:
         path = root / filename
         digest.update(f"{filename}\0".encode("utf-8"))
         try:
-            digest.update(path.read_bytes())
+            digest.update(_read_bounded_bytes(path, MAX_IGNORE_FILE_BYTES))
         except FileNotFoundError:
             digest.update(b"<missing>")
         except OSError:
@@ -573,7 +583,7 @@ def _coalesce_unstaged_renames(
                 candidate.relative_to(resolved_root)
                 if candidate.is_symlink() or not candidate.is_file() or candidate.stat().st_size > MAX_FILE_BYTES:
                     continue
-                data = candidate.read_bytes()
+                data = _read_bounded_bytes(candidate)
             except (OSError, ValueError):
                 continue
             variants = {data, data.replace(b"\r\n", b"\n")}
@@ -1726,12 +1736,12 @@ def discover_project(
                 if size > MAX_FILE_BYTES:
                     ignored_count += 1
                     continue
-                raw = path.read_bytes()
+                raw = _read_bounded_bytes(path)
                 if b"\x00" in raw[:8192]:
                     ignored_count += 1
                     continue
                 text = raw.decode("utf-8-sig")
-            except (OSError, UnicodeDecodeError):
+            except (OSError, UnicodeDecodeError, ValueError):
                 failed_count += 1
                 continue
             digest = hashlib.sha256(raw).hexdigest()
@@ -1821,12 +1831,12 @@ def discover_project_paths(
             skipped.append(relative)
             continue
         try:
-            raw = path.read_bytes()
-            if len(raw) > MAX_FILE_BYTES or b"\x00" in raw[:8192]:
+            raw = _read_bounded_bytes(path)
+            if b"\x00" in raw[:8192]:
                 skipped.append(relative)
                 continue
             text = raw.decode("utf-8-sig")
-        except (OSError, UnicodeDecodeError):
+        except (OSError, UnicodeDecodeError, ValueError):
             skipped.append(relative)
             continue
         language = LANGUAGE_BY_EXTENSION.get(suffix, "Configuration")
@@ -1965,8 +1975,8 @@ def _load_ignore_patterns(root: Path) -> list[str]:
         if not path.is_file():
             continue
         try:
-            lines = path.read_text(encoding="utf-8-sig").splitlines()
-        except (OSError, UnicodeDecodeError):
+            lines = _read_bounded_bytes(path, MAX_IGNORE_FILE_BYTES).decode("utf-8-sig").splitlines()
+        except (OSError, UnicodeDecodeError, ValueError):
             continue
         for line in lines:
             pattern = line.strip()

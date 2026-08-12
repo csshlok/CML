@@ -15,6 +15,7 @@ from backend.app.core.project_graph import (
     node_neighbors,
     shortest_path,
 )
+from backend.app.core.project_flow import project_flow_markdown, project_flow_view
 from backend.app.core.project_intelligence import get_project_intelligence
 from backend.app.core.project_decisions import create_project_decision, relate_project_decisions, set_decision_status
 from backend.app.core.project_operations import enqueue_project_intelligence_layers, run_project_operation, route_project_intent
@@ -165,8 +166,14 @@ def project_list_page(
 
 
 @router.get("/project-run-summary")
-def project_run_summary(request: Request, limit: int = 200, active_only: bool = False) -> dict:
+def project_run_summary(
+    request: Request,
+    limit: int = 200,
+    offset: int = 0,
+    active_only: bool = False,
+) -> dict:
     safe_limit = max(1, min(int(limit), 500))
+    safe_offset = max(0, int(offset))
     status_clause = "AND r.status IN ('queued', 'running')" if active_only else ""
     context = getattr(request.state, "cli_auth", None)
     scope_clause = ""
@@ -179,6 +186,15 @@ def project_run_summary(request: Request, limit: int = 200, active_only: bool = 
             scope_clause = f"AND p.vault_id IN ({','.join('?' for _ in allowed_vault_ids)})"
             params.extend(allowed_vault_ids)
     with connect() as conn:
+        total = conn.execute(
+            f"""
+            SELECT COUNT(*) AS total
+            FROM project_index_runs r
+            JOIN projects p ON p.id = r.project_id
+            WHERE p.deleted_at IS NULL {status_clause} {scope_clause}
+            """,
+            params,
+        ).fetchone()
         rows = conn.execute(
             f"""
             SELECT
@@ -193,9 +209,9 @@ def project_run_summary(request: Request, limit: int = 200, active_only: bool = 
                 CASE WHEN r.status IN ('queued', 'running') THEN 0 ELSE 1 END,
                 r.updated_at DESC,
                 r.id DESC
-            LIMIT ?
+            LIMIT ? OFFSET ?
             """,
-            (*params, safe_limit),
+            (*params, safe_limit, safe_offset),
         ).fetchall()
     return {
         "items": [
@@ -214,6 +230,8 @@ def project_run_summary(request: Request, limit: int = 200, active_only: bool = 
             for row in rows
         ],
         "limit": safe_limit,
+        "offset": safe_offset,
+        "total": int(total["total"] or 0),
     }
 
 
@@ -579,6 +597,47 @@ def project_graph_view(
         raise HTTPException(status_code=404, detail="Project not found") from exc
     except GraphQueryError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.get("/{project_id}/graph/flow")
+def project_graph_flow(
+    project_id: str,
+    q: str = Query(min_length=1, max_length=500),
+    max_steps: int = Query(default=8, ge=2, le=8),
+    max_candidate_nodes: int = Query(default=160, ge=20, le=160),
+    max_examined_edges: int = Query(default=800, ge=50, le=800),
+    timeout_ms: int = Query(default=500, ge=50, le=2000),
+) -> dict:
+    try:
+        return project_flow_view(
+            project_id,
+            query=q,
+            max_steps=max_steps,
+            max_candidate_nodes=max_candidate_nodes,
+            max_examined_edges=max_examined_edges,
+            timeout_ms=timeout_ms,
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Project not found") from exc
+    except GraphQueryError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.get("/{project_id}/graph/flow/export")
+def project_graph_flow_export(
+    project_id: str,
+    q: str = Query(min_length=1, max_length=500),
+    format: str = Query(default="markdown", pattern="^(markdown|json)$"),
+):
+    try:
+        view = project_flow_view(project_id, query=q)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Project not found") from exc
+    except GraphQueryError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if format == "json":
+        return view
+    return PlainTextResponse(project_flow_markdown(view), media_type="text/markdown")
 
 
 @router.get("/{project_id}/graph/export")

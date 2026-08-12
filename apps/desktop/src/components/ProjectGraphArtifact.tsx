@@ -35,17 +35,19 @@ const ALL_RELEVANT_GRAPH_LIMIT = 2000;
 const QUESTION_GRAPH_MAX_DEPTH = 2;
 
 export type ProjectVisualizationRequest = {
-  mode: "graph" | "tree";
+  mode: "graph" | "flow" | "tree";
   query: string;
 };
 
 export function detectProjectVisualizationRequest(prompt: string): ProjectVisualizationRequest | null {
   const normalized = prompt.trim();
-  const asksToShow = /\b(show|draw|display|render|visuali[sz]e|map|diagram|give me|open)\b/i.test(normalized);
-  const graphTerm = /\b(graph|project map|dependency map|call flow|relationship map|architecture diagram)\b/i.test(normalized);
+  const asksToShow = /\b(show|draw|display|render|visuali[sz]e|map|diagram|give me|open|trace|walk me through)\b/i.test(normalized);
+  const flowTerm = /\b(call flow|execution flow|data flow|request flow|pipeline|trace)\b/i.test(normalized)
+    || /\b(show|visuali[sz]e|walk me through)\s+(?:me\s+)?how\b/i.test(normalized);
+  const graphTerm = /\b(graph|project map|dependency map|relationship map|architecture diagram)\b/i.test(normalized);
   const treeTerm = /\b(tree|hierarchy|directory structure|project structure|file structure)\b/i.test(normalized);
-  if (!asksToShow || (!graphTerm && !treeTerm)) return null;
-  return { mode: treeTerm && !graphTerm ? "tree" : "graph", query: normalized };
+  if (!asksToShow || (!flowTerm && !graphTerm && !treeTerm)) return null;
+  return { mode: flowTerm ? "flow" : treeTerm && !graphTerm ? "tree" : "graph", query: normalized };
 }
 
 export function ProjectGraphLink({
@@ -294,6 +296,11 @@ export function ProjectGraphWorkspace({
             >
               <Network className="h-4 w-4" /> Graph
             </button>
+            <Button asChild variant="ghost" className="h-9 rounded-none border-l border-border px-3 text-muted-foreground">
+              <Link to="/project-map" search={{ project: projectId, mode: "flow", q: submittedQuery }}>
+                <GitBranch className="h-4 w-4" /> Flow
+              </Link>
+            </Button>
             <button
               type="button"
               aria-pressed={mode === "tree"}
@@ -328,11 +335,9 @@ export function ProjectGraphWorkspace({
             />
           </div>
           <Button type="submit">Show</Button>
-          {mode === "graph" ? (
-            <Button type="button" variant="outline" disabled={!canExpand || loading} onClick={expandView}>
-              <Maximize2 className="h-4 w-4" /> {showAllRelevant ? "Show all relevant" : "Show more"}
-            </Button>
-          ) : null}
+          <Button type="button" variant="outline" disabled={!canExpand || loading} onClick={expandView}>
+            <Maximize2 className="h-4 w-4" /> {showAllRelevant ? "Show all relevant" : "Show more"}
+          </Button>
           <Button
             type="button"
             variant="ghost"
