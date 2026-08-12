@@ -77,6 +77,23 @@ def percentile(values: list[float], ratio: float) -> float:
     return float(ordered[index])
 
 
+def matching_file_bytes(directory: Path, pattern: str) -> int:
+    """Return a best-effort size for files that may appear and disappear.
+
+    SQLite creates and removes WAL/SHM sidecars while connections open and
+    close.  A sidecar can therefore vanish between ``glob`` and ``stat``;
+    resource telemetry must not be able to terminate the workload it observes.
+    """
+    total = 0
+    for path in directory.glob(pattern):
+        try:
+            if path.is_file():
+                total += path.stat().st_size
+        except (FileNotFoundError, PermissionError):
+            continue
+    return total
+
+
 def free_port(preferred: int) -> int:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
         try:
@@ -482,9 +499,7 @@ class SoakRunner:
                             handles += process.num_handles()
             except psutil.Error:
                 pass
-        db_bytes = sum(
-            path.stat().st_size for path in self.data_dir.glob("cml.sqlite3*") if path.is_file()
-        )
+        db_bytes = matching_file_bytes(self.data_dir, "cml.sqlite3*")
         self.samples.append(
             {
                 "at": time.time(),

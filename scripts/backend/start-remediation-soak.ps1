@@ -15,6 +15,18 @@ $runner = Join-Path $repoRoot "scripts\backend\soak-remediation.py"
 $statePath = [System.IO.Path]::GetFullPath((Join-Path $repoRoot $StateDir))
 $pidPath = Join-Path $statePath "runner.pid"
 
+function Get-SoakRunnerProcess([int]$ProcessId) {
+  $candidate = Get-CimInstance Win32_Process -Filter "ProcessId = $ProcessId" -ErrorAction SilentlyContinue
+  if (-not $candidate) {
+    return $null
+  }
+  $commandLine = [string]$candidate.CommandLine
+  if ($commandLine -notlike "*soak-remediation.py*") {
+    return $null
+  }
+  return $candidate
+}
+
 if (-not (Test-Path -LiteralPath $python)) {
   throw "Repository Python was not found at $python"
 }
@@ -22,7 +34,7 @@ if (-not (Test-Path -LiteralPath $python)) {
 New-Item -ItemType Directory -Force -Path $statePath | Out-Null
 if (Test-Path -LiteralPath $pidPath) {
   $existingPid = [int](Get-Content -LiteralPath $pidPath -Raw)
-  if (Get-Process -Id $existingPid -ErrorAction SilentlyContinue) {
+  if (Get-SoakRunnerProcess $existingPid) {
     throw "A remediation soak runner is already active with PID $existingPid."
   }
 }
@@ -57,4 +69,3 @@ Write-Host "  Runner PID: $($process.Id)"
 Write-Host "  State:      $statePath"
 Write-Host "  Report:     $([System.IO.Path]::GetFullPath((Join-Path $repoRoot $Report)))"
 Write-Host "Monitor with: .\scripts\backend\monitor-remediation-soak.ps1 -StateDir '$StateDir'"
-

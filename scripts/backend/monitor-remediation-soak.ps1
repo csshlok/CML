@@ -12,9 +12,17 @@ $statusPath = Join-Path $statePath "live-status.json"
 $stderrPath = Join-Path $statePath "runner.stderr.log"
 $reportPath = [System.IO.Path]::GetFullPath((Join-Path $repoRoot $Report))
 
+function Get-SoakRunnerProcess([int]$ProcessId) {
+  $candidate = Get-CimInstance Win32_Process -Filter "ProcessId = $ProcessId" -ErrorAction SilentlyContinue
+  if (-not $candidate -or [string]$candidate.CommandLine -notlike "*soak-remediation.py*") {
+    return $null
+  }
+  return Get-Process -Id $ProcessId -ErrorAction SilentlyContinue
+}
+
 if (Test-Path -LiteralPath $pidPath) {
   $soakPid = [int](Get-Content -LiteralPath $pidPath -Raw)
-  $process = Get-Process -Id $soakPid -ErrorAction SilentlyContinue
+  $process = Get-SoakRunnerProcess $soakPid
   if ($process) {
     Write-Host "Runner: ACTIVE (PID $soakPid, CPU $([math]::Round($process.CPU, 1))s, RAM $([math]::Round($process.WorkingSet64 / 1MB, 1)) MiB)"
   }
