@@ -1,7 +1,7 @@
 from dataclasses import dataclass
 from contextlib import contextmanager
 from typing import Any
-from urllib.error import URLError
+from urllib.error import HTTPError, URLError
 from urllib.parse import urlparse
 from urllib.request import Request, urlopen
 import json
@@ -88,6 +88,50 @@ def runtime_status() -> dict[str, Any]:
     status["state"] = "ready"
     status["detail"] = "Local model runtime is reachable."
     return status
+
+
+def probe_runtime_generation() -> dict[str, Any]:
+    """Verify that the configured runtime can complete a real generation request."""
+    with generation_in_flight() as config:
+        if config["provider"] == "none":
+            raise LLMRuntimeError("No local model runtime configured.")
+        payload = {
+            "model": config["model"],
+            "messages": [{"role": "user", "content": "Reply with OK."}],
+            "temperature": 0.0,
+            "stream": False,
+            "max_tokens": 8,
+            "chat_template_kwargs": {"enable_thinking": False},
+        }
+        response = _openai_post(
+            "/chat/completions",
+            payload,
+            timeout=_interactive_timeout(),
+            config=config,
+        )
+    try:
+        response["choices"][0]["message"]["content"]
+    except (KeyError, IndexError, TypeError) as exc:
+        raise LLMRuntimeError("Local model returned an unexpected probe response.") from exc
+    status = runtime_status()
+    status["available"] = True
+    status["state"] = "ready"
+    status["detail"] = "Local model completed a test generation."
+    return status
+
+
+def is_context_limit_error(error: BaseException) -> bool:
+    detail = str(error).casefold()
+    return any(
+        marker in detail
+        for marker in (
+            "context size",
+            "context window",
+            "context length",
+            "too many tokens",
+            "exceeds the available context",
+        )
+    )
 
 
 def generate_grounded_answer(
@@ -493,6 +537,8 @@ def _openai_get(path: str, timeout: float) -> dict[str, Any]:
     try:
         with urlopen(request, timeout=timeout) as response:
             return json.loads(response.read().decode("utf-8"))
+    except HTTPError as exc:
+        raise _runtime_http_error(url, exc) from exc
     except Exception as exc:
         raise LLMRuntimeError(f"Local model runtime is not reachable at {url}") from exc
 
@@ -518,6 +564,8 @@ def _openai_post(
             return json.loads(response.read().decode("utf-8"))
     except TimeoutError as exc:
         raise LLMRuntimeError(f"Local model runtime timed out at {url}") from exc
+    except HTTPError as exc:
+        raise _runtime_http_error(url, exc) from exc
     except URLError as exc:
         raise LLMRuntimeError(f"Local model runtime is not reachable at {url}") from exc
     except OSError as exc:
@@ -561,10 +609,38 @@ def _openai_stream(
                     yield text
     except TimeoutError as exc:
         raise LLMRuntimeError(f"Local model runtime timed out at {url}") from exc
+    except HTTPError as exc:
+        raise _runtime_http_error(url, exc) from exc
     except URLError as exc:
         raise LLMRuntimeError(f"Local model runtime is not reachable at {url}") from exc
     except OSError as exc:
         raise LLMRuntimeError(f"Local model runtime failed at {url}: {exc}") from exc
+
+
+def _runtime_http_error(url: str, error: HTTPError) -> LLMRuntimeError:
+    detail = ""
+    try:
+        raw = error.read(4096)
+        decoded = raw.decode("utf-8", errors="replace").strip()
+        if decoded:
+            try:
+                payload = json.loads(decoded)
+                value = payload.get("error", payload) if isinstance(payload, dict) else payload
+                if isinstance(value, dict):
+                    detail = str(value.get("message") or value.get("detail") or "").strip()
+                elif isinstance(value, str):
+                    detail = value.strip()
+            except json.JSONDecodeError:
+                detail = decoded
+    except (OSError, ValueError):
+        detail = ""
+    finally:
+        error.close()
+    summary = " ".join(detail.split())[:500]
+    suffix = f": {summary}" if summary else ""
+    return LLMRuntimeError(
+        f"Local model rejected the request at {url} (HTTP {error.code}){suffix}"
+    )
 
 
 def _interactive_timeout() -> float:

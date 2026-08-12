@@ -1997,13 +1997,6 @@ def _run_source_import_batch(payload: dict, job_id: str) -> None:
     _set_source_import_progress(job_id, progress)
     if cancellation_requested:
         raise JobCancelled(job_id)
-    if pause_requested and len(completed_indices) == len(paths):
-        with connect() as conn:
-            conn.execute(
-                "UPDATE app_jobs SET status = 'running', updated_at = ? WHERE id = ? AND status = 'paused'",
-                (utc_now(), job_id),
-            )
-        pause_requested = False
     if pause_requested:
         raise JobPaused(job_id)
     if int(progress.get("failed_files") or 0) > 0:

@@ -11,7 +11,7 @@ from backend.app.core.embeddings import (
     embedding_status,
     start_embedding_model_download,
 )
-from backend.app.core.llm_runtime import runtime_status
+from backend.app.core.llm_runtime import LLMRuntimeError, probe_runtime_generation, runtime_status
 from backend.app.core.model_runtime_supervisor import stop_managed_runtime
 from backend.app.core.background_jobs import (
     enqueue_job,
@@ -147,6 +147,14 @@ def add_model_discovery_root(payload: ModelScanRootRequest) -> dict:
 @router.get("/runtime", response_model=ModelRuntimeStatus)
 def get_runtime_status() -> dict:
     return runtime_status()
+
+
+@router.post("/runtime/probe", response_model=ModelRuntimeStatus)
+def probe_runtime() -> dict:
+    try:
+        return probe_runtime_generation()
+    except LLMRuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
 
 
 @router.post("/runtime/stop", response_model=ModelRuntimeStatus)

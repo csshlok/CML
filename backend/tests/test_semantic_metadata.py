@@ -1,5 +1,6 @@
 import json
 import unittest
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from backend.app.core.llm_runtime import LLMResult, LLMRuntimeError
@@ -10,6 +11,7 @@ from backend.app.core.semantic_metadata import (
     enrich_source_metadata,
     fallback_source_summary,
     representative_preview,
+    representative_source_excerpt,
 )
 
 
@@ -45,6 +47,17 @@ class SemanticMetadataTests(unittest.TestCase):
         self.assertTrue(summary.startswith("student employment letter:"))
         self.assertIn("confirms the student", summary)
 
+    def test_source_excerpt_is_bounded_and_samples_the_whole_document(self) -> None:
+        text = "HEAD_MARKER " + ("alpha " * 500) + "MIDDLE_MARKER " + ("omega " * 500) + "TAIL_MARKER"
+
+        excerpt = representative_source_excerpt(text, max_chars=360)
+
+        self.assertLessEqual(len(excerpt), 360)
+        self.assertIn("HEAD_MARKER", excerpt)
+        self.assertIn("MIDDLE_MARKER", excerpt)
+        self.assertIn("TAIL_MARKER", excerpt)
+        self.assertEqual(excerpt.count("\n...\n"), 2)
+
     def test_local_source_enrichment_returns_bounded_semantic_copy(self) -> None:
         response = LLMResult(
             text=json.dumps(
@@ -67,6 +80,69 @@ class SemanticMetadataTests(unittest.TestCase):
             )
         self.assertIn("course guide", result["summary"])
         self.assertEqual(result["keywords"][0], "Python")
+
+    def test_source_enrichment_prompt_uses_the_configured_representative_budget(self) -> None:
+        text = "HEAD_MARKER " + ("alpha " * 500) + "MIDDLE_MARKER " + ("omega " * 500) + "TAIL_MARKER"
+        response = LLMResult(
+            text=json.dumps({"summary": "A representative summary.", "keywords": ["sample"]}),
+            provider="local",
+            model="test",
+        )
+        with (
+            patch(
+                "backend.app.core.semantic_metadata.get_settings",
+                return_value=SimpleNamespace(
+                    atomic_semantic_max_source_chars=1_000,
+                    llm_context_token_budget=1_200,
+                ),
+            ),
+            patch(
+                "backend.app.core.semantic_metadata.generate_local_structured_json",
+                return_value=response,
+            ) as generate,
+        ):
+            enrich_source_metadata(title="large.txt", source_type="file", text=text)
+
+        prompt = generate.call_args.kwargs["user_prompt"]
+        excerpt = prompt.split("Representative document excerpts:\n", 1)[1].split(
+            "\n\nReturn a concise summary",
+            1,
+        )[0]
+        self.assertLessEqual(len(excerpt), 1_000)
+        self.assertIn("HEAD_MARKER", excerpt)
+        self.assertIn("MIDDLE_MARKER", excerpt)
+        self.assertIn("TAIL_MARKER", excerpt)
+
+    def test_source_enrichment_retries_context_rejection_with_a_smaller_excerpt(self) -> None:
+        text = "HEAD " + ("large document content " * 300) + " TAIL"
+        response = LLMResult(
+            text=json.dumps({"summary": "A bounded summary.", "keywords": ["bounded"]}),
+            provider="local",
+            model="test",
+        )
+        with (
+            patch(
+                "backend.app.core.semantic_metadata.get_settings",
+                return_value=SimpleNamespace(
+                    atomic_semantic_max_source_chars=1_000,
+                    llm_context_token_budget=1_200,
+                ),
+            ),
+            patch(
+                "backend.app.core.semantic_metadata.generate_local_structured_json",
+                side_effect=[
+                    LLMRuntimeError("request exceeds the available context size"),
+                    response,
+                ],
+            ) as generate,
+        ):
+            result = enrich_source_metadata(title="large.txt", source_type="file", text=text)
+
+        self.assertEqual(result["summary"], "A bounded summary.")
+        self.assertEqual(generate.call_count, 2)
+        first_prompt = generate.call_args_list[0].kwargs["user_prompt"]
+        second_prompt = generate.call_args_list[1].kwargs["user_prompt"]
+        self.assertLess(len(second_prompt), len(first_prompt))
 
     def test_unavailable_model_pauses_semantic_work_instead_of_saving_fallback_copy(self) -> None:
         with (

@@ -7,10 +7,17 @@ from typing import Callable
 
 from tree_sitter import Language, Parser
 
-from backend.app.core.code_structure import FileStructure, Symbol, SymbolBinding
+from backend.app.core.code_structure import (
+    BoundaryReference,
+    FileStructure,
+    Symbol,
+    SymbolBinding,
+    _normalized_boundary_path,
+    _sql_boundary_references,
+)
 
 
-REGISTRY_VERSION = "odin-extractor-registry-v2"
+REGISTRY_VERSION = "odin-extractor-registry-v3"
 
 
 @dataclass(frozen=True)
@@ -149,6 +156,17 @@ def _tree_sitter_adapter(path: str, text: str, source_id: str | None, spec: Extr
             name_node = declaration_node.child_by_field_name("name") or _first_identifier(declaration_node)
             if name_node is not None:
                 name = _node_text(encoded, name_node)
+                initializer = declaration_node.child_by_field_name("value") if node.type == "lexical_declaration" else None
+                # Local values are implementation details, not stable graph symbols. Keep
+                # module exports and nested function/component declarations, while calls
+                # inside ordinary locals remain owned by the enclosing function.
+                skip_local_value = bool(
+                    node.type == "lexical_declaration" and owners and not _is_function_initializer(initializer)
+                )
+                if skip_local_value:
+                    for child in node.named_children:
+                        walk(child)
+                    return
                 parent_names = [owner.label for owner in owners if owner.kind in {"class", "interface", "module", "implementation"}]
                 ownership = ".".join([*parent_names, name])
                 signature = _declaration_signature(encoded, node, name)
@@ -156,7 +174,6 @@ def _tree_sitter_adapter(path: str, text: str, source_id: str | None, spec: Extr
                 qualified_id = _stable_unique_id(result, base)
                 kind = declarations[node.type]
                 if node.type == "lexical_declaration":
-                    initializer = declaration_node.child_by_field_name("value")
                     if (
                         spec.language_id == "tsx"
                         and re.fullmatch(r"[A-Z][A-Za-z0-9_$]*", name)
@@ -182,11 +199,26 @@ def _tree_sitter_adapter(path: str, text: str, source_id: str | None, spec: Extr
         if node.type in _CALL_TYPES and owners:
             function = node.child_by_field_name("function") or node.child_by_field_name("expression") or (node.named_children[0] if node.named_children else None)
             if function is not None:
-                target = _node_text(encoded, function).split(".")[-1]
+                function_text = _node_text(encoded, function)
+                target = function_text.split(".")[-1]
+                runtime_owner = next(
+                    (owner for owner in reversed(owners) if owner.kind != "exported_value"),
+                    owners[-1],
+                )
                 if re.fullmatch(r"[A-Za-z_$][\w$]*", target):
-                    owners[-1].calls.append((target, node.start_point.row + 1))
+                    runtime_owner.calls.append((target, node.start_point.row + 1))
                 else:
                     result.unresolved_references.append({"kind": "dynamic_call", "text": target[:120], "line": node.start_point.row + 1})
+                _record_runtime_boundary(node, encoded, runtime_owner, function_text)
+        if node.type in {"throw_statement", "catch_clause"} and owners:
+            raw = _node_text(encoded, node)
+            match = re.search(r"(?:throw\s+new|catch\s*\()\s*([A-Za-z_$][\w$]*)", raw)
+            name = match.group(1) if match else "exception"
+            owners[-1].boundaries.append(BoundaryReference(
+                "failure", name, ("Raises " if node.type == "throw_statement" else "Handles ") + name,
+                "raises_failure" if node.type == "throw_statement" else "handles_failure",
+                node.start_point.row + 1,
+            ))
         for child in node.named_children:
             walk(child)
         if pushed:
@@ -207,6 +239,60 @@ def _tree_sitter_adapter(path: str, text: str, source_id: str | None, spec: Extr
         result.parse_error = "tree_sitter_error_nodes"
         result.warnings.append({"category": "syntax_error", "message": "The parser recovered from malformed syntax.", "severity": "warning", "recoverable": True})
     return result
+
+
+def _record_runtime_boundary(node, encoded: bytes, owner: Symbol, function_text: str) -> None:
+    raw = _node_text(encoded, node)
+    line = node.start_point.row + 1
+    arguments = node.child_by_field_name("arguments")
+    argument_text = _node_text(encoded, arguments) if arguments is not None else raw
+    literal = re.search(r"[(`,]\s*[\"'`]([^\"'`]+)[\"'`]", argument_text)
+    first_literal = literal.group(1) if literal else ""
+    lowered = function_text.casefold()
+
+    http_match = re.search(r"(?:^|\.)(get|post|put|patch|delete|head|options)$", lowered)
+    http_owner = lowered.rsplit(".", 1)[0].rsplit(".", 1)[-1] if "." in lowered else ""
+    if http_match and http_owner in {"axios", "client", "session", "api", "apiclient", "http"} and first_literal:
+        method = http_match.group(1).upper()
+        path = _normalized_boundary_path(first_literal)
+        owner.boundaries.append(BoundaryReference(
+            "http", f"{method}:{path}", f"{method} {path}", "http_request", line,
+        ))
+    elif lowered == "fetch" and first_literal:
+        method_match = re.search(r"\bmethod\s*:\s*[\"'`](GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS)[\"'`]", raw, re.I)
+        method = method_match.group(1).upper() if method_match else "GET"
+        path = _normalized_boundary_path(first_literal)
+        owner.boundaries.append(BoundaryReference(
+            "http", f"{method}:{path}", f"{method} {path}", "http_request", line,
+        ))
+
+    channel_match = re.search(r"(?:^|\.)(invoke|send|handle|on)$", lowered)
+    if channel_match and first_literal:
+        action = channel_match.group(1)
+        root = lowered.split(".", 1)[0]
+        if root in {"ipcrenderer", "ipcmain"}:
+            edge = "handles_ipc" if root == "ipcmain" and action in {"handle", "on"} else "sends_ipc"
+            owner.boundaries.append(BoundaryReference(
+                "ipc_channel", first_literal, f"IPC {first_literal}", edge, line,
+            ))
+        elif action in {"on", "send"} and root in {"eventbus", "events", "emitter", "bus"}:
+            edge = "listens_event" if action == "on" else "emits_event"
+            owner.boundaries.append(BoundaryReference(
+                "event", first_literal, f"Event {first_literal}", edge, line,
+            ))
+
+    if lowered.endswith(".add") and first_literal and lowered.split(".", 1)[0] in {"queue", "jobs", "jobqueue"}:
+        owner.boundaries.append(BoundaryReference(
+            "job", first_literal, f"Job {first_literal}", "dispatches_job", line,
+        ))
+    if lowered.endswith((".query", ".execute")) and first_literal:
+        owner.boundaries.extend(_sql_boundary_references(first_literal, line))
+
+    route_match = re.search(r"(?:^|\.)(get|post|put|patch|delete)$", lowered)
+    if route_match and first_literal and lowered.split(".", 1)[0] in {"app", "router"}:
+        method = route_match.group(1).upper()
+        path = _normalized_boundary_path(first_literal)
+        owner.routes.append((method, path, line))
 
 
 def _parser(language_id: str) -> Parser:
@@ -365,8 +451,12 @@ def _inheritance(node, encoded: bytes, symbol: Symbol) -> None:
 
 
 def _spec(language_id: str, display: str, suffixes: tuple[str, ...], grammar: str, nodes: tuple[str, ...], calls: str = "authoritative_when_resolved") -> ExtractorSpec:
-    return ExtractorSpec(language_id, display, suffixes, (), f"{language_id}-adapter-v1", grammar, nodes,
-                         ("contains", "imports", "reexports", "extends", "implements", "calls"), calls)
+    return ExtractorSpec(language_id, display, suffixes, (), f"{language_id}-adapter-v2", grammar, nodes,
+                         ("contains", "imports", "reexports", "extends", "implements", "calls",
+                          "defines_route", "http_request", "dispatches", "dispatches_job",
+                          "registers_router", "sends_ipc", "handles_ipc", "emits_event",
+                          "listens_event", "reads_data", "writes_data", "raises_failure",
+                          "handles_failure"), calls)
 
 
 register(_spec("python", "Python", (".py", ".pyi"), "python-ast-runtime", ("class", "function", "method", "test")), _python_adapter)
