@@ -1509,6 +1509,85 @@ test("Bridge presents connected AI write-back as a guided workflow", async ({ pa
   }
 });
 
+test("Bridge history can traverse beyond two hundred records", async ({ page }) => {
+  const consoleProblems: string[] = [];
+  page.on("console", (message) => {
+    if (message.type() === "error" || message.type() === "warning") {
+      consoleProblems.push(`${message.type()}: ${message.text()}`);
+    }
+  });
+  page.on("pageerror", (error) => consoleProblems.push(`pageerror: ${error.message}`));
+  const now = "2026-08-12T10:00:00Z";
+  const requests = Array.from({ length: 225 }, (_, index) => ({
+    id: `request-${String(index).padStart(3, "0")}`,
+    client_id: null,
+    client_name: "Long-running client",
+    query: `Historical request ${index}`,
+    mode: "context",
+    decision: "allowed",
+    source_count: 1,
+    response_bytes: 128,
+    created_at: now,
+  }));
+  const requestedOffsets: number[] = [];
+
+  await page.route(`${backendOrigin}/api/v1/bridge/status`, (route) =>
+    route.fulfill({
+      json: {
+        schema_version: 1,
+        enabled: true,
+        mcp: "available",
+        http_api: "available",
+        cli: "available",
+        allowed_vault_ids: ["vault-history"],
+        allowed_cluster_ids: [],
+        allow_raw_snippets: false,
+        allow_cluster_profile: true,
+        bridge_token: "",
+        approval_requests_pending: 0,
+        last_refreshed_at: now,
+      },
+    }),
+  );
+  await page.route(`${backendOrigin}/api/v1/vaults`, (route) =>
+    route.fulfill({
+      json: [{
+        id: "vault-history",
+        name: "History vault",
+        path: "T:\\history",
+        created_at: now,
+        updated_at: now,
+      }],
+    }),
+  );
+  await page.route(`${backendOrigin}/api/v1/bridge/requests*`, (route) => {
+    const url = new URL(route.request().url());
+    const offset = Number(url.searchParams.get("offset") ?? 0);
+    const limit = Number(url.searchParams.get("limit") ?? 50);
+    requestedOffsets.push(offset);
+    return route.fulfill({ json: requests.slice(offset, offset + limit) });
+  });
+
+  await page.goto("/bridge");
+  await expect(page.getByText("Connections allowed", { exact: true })).toBeVisible();
+  expect(consoleProblems).toEqual([]);
+  const activityTab = page.getByRole("button", { name: "Activity", exact: true });
+  await activityTab.click();
+  await expect(activityTab).toHaveAttribute("aria-current", "page");
+  await page.getByText("Historical request 0", { exact: true }).scrollIntoViewIfNeeded();
+  await expect(page.getByText("Historical request 0", { exact: true })).toBeVisible();
+
+  for (const offset of Array.from({ length: 11 }, (_, index) => (index + 1) * 20)) {
+    await page.getByRole("button", { name: "Show more Bridge history" }).click();
+    await expect.poll(() => requestedOffsets.at(-1)).toBe(offset);
+  }
+
+  await expect(page.getByText("Historical request 224", { exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Show more Bridge history" })).toHaveCount(0);
+  expect(requestedOffsets).toContain(200);
+  expect(requestedOffsets).toContain(220);
+});
+
 test("project detail distinguishes Odin freshness from Git changes", async ({ page }) => {
   test.setTimeout(90_000);
   const consoleProblems: string[] = [];
@@ -2066,6 +2145,11 @@ test("window-aware controls never intersect native controls at minimum size", as
   await page.goto("/projects");
   await expect(page.getByRole("heading", { name: "Projects" })).toBeVisible();
   await expect(page.getByLabel("Window controls")).toBeVisible();
+  await page.mouse.move(512, 1);
+  await expect.poll(async () => {
+    const bounds = await page.getByTestId("window-chrome").boundingBox();
+    return bounds?.y;
+  }).toBe(0);
 
   const geometry = await page.evaluate(() => {
     const safe = document

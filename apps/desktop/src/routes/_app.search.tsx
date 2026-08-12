@@ -195,6 +195,10 @@ function SearchView() {
     ? visibleSources.slice(pageStart, pageStart + PAGE_SIZE)
     : visibleSources;
 
+  useEffect(() => {
+    if (page > totalPages) setPage(totalPages);
+  }, [page, totalPages]);
+
   return (
     <div className="relative h-full overflow-y-auto bg-background">
       <main className="min-w-0 xl:overflow-y-auto">
@@ -272,9 +276,11 @@ function SearchView() {
           )}
           <div className="mb-4 flex flex-col gap-2 text-sm sm:flex-row sm:items-center sm:justify-between">
             <div className="text-muted-foreground">
-              {pageSources.length === 0
-                ? `0 of ${totalResults} sources`
-                : `${pageStart + 1}-${Math.min(pageStart + pageSources.length, totalResults)} of ${totalResults} sources`}
+              {semanticQueryActive
+                ? `${totalResults} top semantic match${totalResults === 1 ? "" : "es"}`
+                : pageSources.length === 0
+                  ? `0 of ${totalResults} sources`
+                  : `${pageStart + 1}-${Math.min(pageStart + pageSources.length, totalResults)} of ${totalResults} sources`}
             </div>
             <Button variant="ghost" size="sm" className="gap-2" onClick={() => {
               setSortMode(sortMode === "newest" ? "oldest" : "newest");

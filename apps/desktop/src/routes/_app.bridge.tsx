@@ -1,5 +1,5 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type Dispatch, type SetStateAction } from "react";
 import {
   Cable,
   Copy,
@@ -13,6 +13,7 @@ import {
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ConfirmAction } from "@/components/product/Feedback";
+import { notify } from "@/components/product/Notifications";
 import { PageHeader } from "@/components/layout/WindowAware";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
@@ -79,6 +80,37 @@ export const Route = createFileRoute("/_app/bridge")({
   component: BridgeView,
 });
 
+const BRIDGE_HISTORY_PAGE_SIZE = 20;
+
+type BridgeHistoryKey =
+  | "requests"
+  | "auditEvents"
+  | "rotations"
+  | "captures"
+  | "extensionCaptures"
+  | "extensionPairings"
+  | "extensionAudit";
+
+const EMPTY_HISTORY_FLAGS: Record<BridgeHistoryKey, boolean> = {
+  requests: false,
+  auditEvents: false,
+  rotations: false,
+  captures: false,
+  extensionCaptures: false,
+  extensionPairings: false,
+  extensionAudit: false,
+};
+
+function mergeHistoryHead<T>(current: T[], head: T[], idOf: (item: T) => string) {
+  const headIds = new Set(head.map(idOf));
+  return [...head, ...current.filter((item) => !headIds.has(idOf(item)))];
+}
+
+function appendHistoryPage<T>(current: T[], page: T[], idOf: (item: T) => string) {
+  const ids = new Set(current.map(idOf));
+  return [...current, ...page.filter((item) => !ids.has(idOf(item)))];
+}
+
 function BridgeView() {
   const backend = useBackendHealth();
   const backendGeneration = useBackendGeneration();
@@ -138,10 +170,68 @@ function BridgeView() {
   const [tunnelBusy, setTunnelBusy] = useState(false);
   const [tunnelError, setTunnelError] = useState<string | null>(null);
   const [tourStep, setTourStep] = useState<number | null>(null);
+  const [historyHasMore, setHistoryHasMore] = useState(EMPTY_HISTORY_FLAGS);
+  const [historyLoading, setHistoryLoading] = useState(EMPTY_HISTORY_FLAGS);
+  const historyLengths = useRef<Record<BridgeHistoryKey, number>>(EMPTY_HISTORY_FLAGS as unknown as Record<BridgeHistoryKey, number>);
+  historyLengths.current = {
+    requests: requests.length,
+    auditEvents: auditEvents.length,
+    rotations: rotations.length,
+    captures: captures.length,
+    extensionCaptures: extensionCaptures.length,
+    extensionPairings: extensionPairings.length,
+    extensionAudit: extensionAudit.length,
+  };
+
+  function applyHistoryHead<T>(
+    key: BridgeHistoryKey,
+    result: T[],
+    setItems: Dispatch<SetStateAction<T[]>>,
+    idOf: (item: T) => string,
+  ) {
+    const page = result.slice(0, BRIDGE_HISTORY_PAGE_SIZE);
+    const hasLoadedOlderRows = historyLengths.current[key] > BRIDGE_HISTORY_PAGE_SIZE;
+    setItems((current) => mergeHistoryHead(current, page, idOf));
+    if (!hasLoadedOlderRows) {
+      setHistoryHasMore((current) => ({
+        ...current,
+        [key]: result.length > BRIDGE_HISTORY_PAGE_SIZE,
+      }));
+    }
+  }
+
+  async function loadMoreHistory<T>(
+    key: BridgeHistoryKey,
+    currentItems: T[],
+    fetchPage: (limit: number, offset: number) => Promise<T[]>,
+    setItems: Dispatch<SetStateAction<T[]>>,
+    idOf: (item: T) => string,
+  ) {
+    if (historyLoading[key] || !historyHasMore[key]) return;
+    setHistoryLoading((current) => ({ ...current, [key]: true }));
+    try {
+      const result = await fetchPage(BRIDGE_HISTORY_PAGE_SIZE + 1, currentItems.length);
+      const page = result.slice(0, BRIDGE_HISTORY_PAGE_SIZE);
+      setItems((current) => appendHistoryPage(current, page, idOf));
+      setHistoryHasMore((current) => ({
+        ...current,
+        [key]: result.length > BRIDGE_HISTORY_PAGE_SIZE,
+      }));
+    } catch (error) {
+      notify({
+        title: "Could not load older Bridge history",
+        description: error instanceof Error ? error.message : "Try again in a moment.",
+        tone: "error",
+      });
+    } finally {
+      setHistoryLoading((current) => ({ ...current, [key]: false }));
+    }
+  }
 
   async function loadBridgeState() {
     if (backend.status !== "online") return;
     const sequence = ++loadSequence.current;
+    const historyFetchLimit = BRIDGE_HISTORY_PAGE_SIZE + 1;
     const [
       statusResult,
       requestsResult,
@@ -159,19 +249,19 @@ function BridgeView() {
       extensionAuditResult,
     ] = await Promise.allSettled([
       getBridgeStatus(),
-      listBridgeRequests(),
+      listBridgeRequests({ limit: historyFetchLimit }),
       listBridgeApprovalRequests(),
-      listBridgeAuditEvents(),
-      listBridgeTokenRotations(),
+      listBridgeAuditEvents({ limit: historyFetchLimit }),
+      listBridgeTokenRotations({ limit: historyFetchLimit }),
       listBridgeClients(),
       listVaults(),
       listClusters(),
-      listBridgeCaptures(),
+      listBridgeCaptures(undefined, { limit: historyFetchLimit }),
       listBridgeWritebackReviews(undefined, true),
       listExtensionClients(),
-      listExtensionCaptures(),
-      listExtensionPairings(),
-      listExtensionPermissionAudit(),
+      listExtensionCaptures(undefined, { limit: historyFetchLimit }),
+      listExtensionPairings({ limit: historyFetchLimit }),
+      listExtensionPermissionAudit(historyFetchLimit),
     ] as const);
     if (sequence !== loadSequence.current) return;
     const nextVaults = vaultsResult.status === "fulfilled" ? vaultsResult.value : vaults;
@@ -192,31 +282,54 @@ function BridgeView() {
         setExtensionVaultId(nextStatus.allowed_vault_ids[0] ?? "");
       }
     }
-    if (requestsResult.status === "fulfilled") setRequests(requestsResult.value);
+    if (requestsResult.status === "fulfilled") {
+      applyHistoryHead("requests", requestsResult.value, setRequests, (item) => item.id);
+    }
     if (approvalsResult.status === "fulfilled") setApprovalRequests(approvalsResult.value);
-    if (auditResult.status === "fulfilled") setAuditEvents(auditResult.value);
-    if (rotationsResult.status === "fulfilled") setRotations(rotationsResult.value);
+    if (auditResult.status === "fulfilled") {
+      applyHistoryHead("auditEvents", auditResult.value, setAuditEvents, (item) => item.id);
+    }
+    if (rotationsResult.status === "fulfilled") {
+      applyHistoryHead("rotations", rotationsResult.value, setRotations, (item) => item.id);
+    }
     if (clientsResult.status === "fulfilled") setClients(clientsResult.value);
     if (vaultsResult.status === "fulfilled") setVaults(vaultsResult.value);
     if (clustersResult.status === "fulfilled") setClusters(clustersResult.value);
-    if (capturesResult.status === "fulfilled") setCaptures(capturesResult.value);
+    if (capturesResult.status === "fulfilled") {
+      applyHistoryHead("captures", capturesResult.value, setCaptures, (item) => item.source_id);
+    }
     if (reviewsResult.status === "fulfilled") setReviews(reviewsResult.value);
     if (extensionClientsResult.status === "fulfilled") {
       setExtensionClients(extensionClientsResult.value);
     }
     if (extensionCapturesResult.status === "fulfilled") {
-      setExtensionCaptures(extensionCapturesResult.value);
+      applyHistoryHead(
+        "extensionCaptures",
+        extensionCapturesResult.value,
+        setExtensionCaptures,
+        (item) => item.id,
+      );
     }
     if (extensionPairingsResult.status === "fulfilled") {
-      setExtensionPairings(extensionPairingsResult.value);
+      applyHistoryHead(
+        "extensionPairings",
+        extensionPairingsResult.value,
+        setExtensionPairings,
+        (item) => item.id,
+      );
     }
     if (extensionAuditResult.status === "fulfilled") {
-      setExtensionAudit(extensionAuditResult.value);
+      applyHistoryHead(
+        "extensionAudit",
+        extensionAuditResult.value,
+        setExtensionAudit,
+        (item) => item.id,
+      );
     }
   }
 
   useVisiblePolling(
-    loadBridgeState,
+    () => loadBridgeState(),
     60_000,
     backend.status === "online",
     undefined,
@@ -1285,7 +1398,7 @@ function BridgeView() {
           </div>
           <div className="mt-4 divide-y divide-border border-y border-border">
             {extensionPairings.length > 0 ? (
-              extensionPairings.slice(0, 6).map((pairing) => (
+              extensionPairings.map((pairing) => (
                 <div key={pairing.id} className="grid gap-3 py-3 lg:grid-cols-[minmax(0,1fr)_auto]">
                   <div className="min-w-0">
                     <div className="flex flex-wrap items-center gap-2">
@@ -1332,6 +1445,23 @@ function BridgeView() {
               </div>
             )}
           </div>
+          {historyHasMore.extensionPairings && (
+            <Button
+              className="mt-3"
+              variant="outline"
+              size="sm"
+              disabled={historyLoading.extensionPairings}
+              onClick={() => void loadMoreHistory(
+                "extensionPairings",
+                extensionPairings,
+                (limit, offset) => listExtensionPairings({ limit, offset }),
+                setExtensionPairings,
+                (item) => item.id,
+              )}
+            >
+              {historyLoading.extensionPairings ? "Loading…" : "Show more pairing history"}
+            </Button>
+          )}
         </section>
 
         <section
@@ -1437,7 +1567,7 @@ function BridgeView() {
           </div>
           <div className="mt-4 divide-y divide-border border-y border-border">
             {extensionCaptures.length > 0 ? (
-              extensionCaptures.slice(0, 6).map((capture) => (
+              extensionCaptures.map((capture) => (
                 <div key={capture.id} className="grid gap-3 py-3 sm:grid-cols-[minmax(0,1fr)_auto]">
                   <div className="min-w-0">
                     <div className="truncate text-sm font-medium">{capture.title}</div>
@@ -1453,6 +1583,23 @@ function BridgeView() {
               </div>
             )}
           </div>
+          {historyHasMore.extensionCaptures && (
+            <Button
+              className="mt-3"
+              variant="outline"
+              size="sm"
+              disabled={historyLoading.extensionCaptures}
+              onClick={() => void loadMoreHistory(
+                "extensionCaptures",
+                extensionCaptures,
+                (limit, offset) => listExtensionCaptures(undefined, { limit, offset }),
+                setExtensionCaptures,
+                (item) => item.id,
+              )}
+            >
+              {historyLoading.extensionCaptures ? "Loading…" : "Show more extension captures"}
+            </Button>
+          )}
         </section>
 
         <section
@@ -1470,11 +1617,13 @@ function BridgeView() {
                 approved, denied, or revoked.
               </p>
             </div>
-            <div className="text-xs text-muted-foreground">{extensionAudit.length} recent</div>
+            <div className="text-xs text-muted-foreground">
+              {extensionAudit.length} loaded
+            </div>
           </div>
           <div className="mt-4 divide-y divide-border border-y border-border">
             {extensionAudit.length > 0 ? (
-              extensionAudit.slice(0, 8).map((event) => (
+              extensionAudit.map((event) => (
                 <div key={event.id} className="grid gap-3 py-3 lg:grid-cols-[minmax(0,1fr)_auto]">
                   <div className="min-w-0">
                     <div className="flex flex-wrap items-center gap-2">
@@ -1502,6 +1651,23 @@ function BridgeView() {
               </div>
             )}
           </div>
+          {historyHasMore.extensionAudit && (
+            <Button
+              className="mt-3"
+              variant="outline"
+              size="sm"
+              disabled={historyLoading.extensionAudit}
+              onClick={() => void loadMoreHistory(
+                "extensionAudit",
+                extensionAudit,
+                (limit, offset) => listExtensionPermissionAudit(limit, offset),
+                setExtensionAudit,
+                (item) => item.id,
+              )}
+            >
+              {historyLoading.extensionAudit ? "Loading…" : "Show more permission events"}
+            </Button>
+          )}
         </section>
 
         <section
@@ -1906,11 +2072,13 @@ function BridgeView() {
                 Recent external transcripts and artifacts stored through Bridge.
               </p>
             </div>
-            <div className="text-xs text-muted-foreground">{captures.length} recent</div>
+            <div className="text-xs text-muted-foreground">
+              {captures.length} loaded
+            </div>
           </div>
           <div className="mt-4 divide-y divide-border border-y border-border">
             {captures.length > 0 ? (
-              captures.slice(0, 8).map((capture) => (
+              captures.map((capture) => (
                 <div
                   key={capture.source_id}
                   className="grid gap-3 py-3 sm:grid-cols-[minmax(0,1fr)_auto]"
@@ -1948,6 +2116,23 @@ function BridgeView() {
               </div>
             )}
           </div>
+          {historyHasMore.captures && (
+            <Button
+              className="mt-3"
+              variant="outline"
+              size="sm"
+              disabled={historyLoading.captures}
+              onClick={() => void loadMoreHistory(
+                "captures",
+                captures,
+                (limit, offset) => listBridgeCaptures(undefined, { limit, offset }),
+                setCaptures,
+                (item) => item.source_id,
+              )}
+            >
+              {historyLoading.captures ? "Loading…" : "Show more saved captures"}
+            </Button>
+          )}
         </section>
 
         <section
@@ -1960,7 +2145,7 @@ function BridgeView() {
           </div>
           {requests.length > 0 ? (
             <div className="mt-3 divide-y divide-border text-sm">
-              {requests.slice(0, 5).map((request) => (
+              {requests.map((request) => (
                 <div
                   key={request.id}
                   className="grid gap-1 py-2 sm:grid-cols-[120px_minmax(0,1fr)_90px] sm:gap-3"
@@ -2030,7 +2215,7 @@ function BridgeView() {
                 Token rotation history
               </div>
               <div className="mt-2 space-y-1 text-xs text-muted-foreground">
-                {rotations.slice(0, 3).map((rotation) => (
+                {rotations.map((rotation) => (
                   <div key={rotation.id} className="flex flex-wrap justify-between gap-3">
                     <span className="min-w-0 break-words">
                       {rotation.reason.replace(/_/g, " ")}
@@ -2049,7 +2234,7 @@ function BridgeView() {
                 Recent Bridge security events
               </div>
               <div className="mt-2 space-y-1 text-xs text-muted-foreground">
-                {auditEvents.slice(0, 5).map((event) => (
+                {auditEvents.map((event) => (
                   <div key={event.id} className="flex flex-wrap justify-between gap-3">
                     <span className="min-w-0 break-words">
                       {event.event_type.replace(/_/g, " ")}
@@ -2059,6 +2244,41 @@ function BridgeView() {
                 ))}
               </div>
             </div>
+          )}
+          {(historyHasMore.requests || historyHasMore.rotations || historyHasMore.auditEvents) && (
+            <Button
+              className="mt-4"
+              variant="outline"
+              size="sm"
+              disabled={historyLoading.requests || historyLoading.rotations || historyLoading.auditEvents}
+              onClick={() => void Promise.all([
+                loadMoreHistory(
+                  "requests",
+                  requests,
+                  (limit, offset) => listBridgeRequests({ limit, offset }),
+                  setRequests,
+                  (item) => item.id,
+                ),
+                loadMoreHistory(
+                  "rotations",
+                  rotations,
+                  (limit, offset) => listBridgeTokenRotations({ limit, offset }),
+                  setRotations,
+                  (item) => item.id,
+                ),
+                loadMoreHistory(
+                  "auditEvents",
+                  auditEvents,
+                  (limit, offset) => listBridgeAuditEvents({ limit, offset }),
+                  setAuditEvents,
+                  (item) => item.id,
+                ),
+              ])}
+            >
+              {historyLoading.requests || historyLoading.rotations || historyLoading.auditEvents
+                ? "Loading…"
+                : "Show more Bridge history"}
+            </Button>
           )}
         </section>
       </div>

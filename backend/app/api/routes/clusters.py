@@ -318,6 +318,53 @@ def get_cluster(cluster_id: str) -> dict:
     return dict_from_row(row)
 
 
+@router.get("/{cluster_id}/counts")
+def get_cluster_counts(cluster_id: str) -> dict:
+    """Return exact membership totals without materializing every member."""
+    with connect() as conn:
+        cluster = conn.execute(
+            "SELECT id FROM clusters WHERE id = ?",
+            (cluster_id,),
+        ).fetchone()
+        if cluster is None:
+            raise HTTPException(status_code=404, detail="Cluster not found")
+        source_counts = conn.execute(
+            """
+            SELECT COUNT(*) AS total,
+                   SUM(CASE WHEN state = 'indexed' THEN 1 ELSE 0 END) AS indexed
+            FROM sources
+            WHERE cluster_id = ? AND deleted_at IS NULL
+            """,
+            (cluster_id,),
+        ).fetchone()
+        chat_count = conn.execute(
+            "SELECT COUNT(*) AS total FROM chat_sessions WHERE scope_cluster_id = ?",
+            (cluster_id,),
+        ).fetchone()
+        project_count = conn.execute(
+            """
+            SELECT COUNT(DISTINCT project_id) AS total
+            FROM (
+                SELECT id AS project_id FROM projects
+                WHERE primary_cluster_id = ? AND deleted_at IS NULL
+                UNION ALL
+                SELECT links.project_id
+                FROM project_cluster_links links
+                JOIN projects ON projects.id = links.project_id
+                WHERE links.cluster_id = ? AND projects.deleted_at IS NULL
+            )
+            """,
+            (cluster_id, cluster_id),
+        ).fetchone()
+    return {
+        "cluster_id": cluster_id,
+        "source_count": int(source_counts["total"] or 0),
+        "indexed_source_count": int(source_counts["indexed"] or 0),
+        "chat_count": int(chat_count["total"] or 0),
+        "project_count": int(project_count["total"] or 0),
+    }
+
+
 @router.patch("/{cluster_id}", response_model=ClusterRead)
 def update_cluster(cluster_id: str, payload: ClusterUpdate) -> dict:
     updates = payload.model_dump(exclude_unset=True)

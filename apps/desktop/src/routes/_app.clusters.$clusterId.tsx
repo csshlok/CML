@@ -20,18 +20,20 @@ import {
   createChatSession,
   deleteCluster,
   getCluster,
+  getClusterCounts,
   getMapNeighborhood,
   listClusterMergeArtifacts,
   listClustersPage,
-  listChatSessions,
+  listChatSessionsPage,
   listProjects,
-  listSources,
+  listSourcesPage,
   mergeClusterInto,
   refreshClusterProfile,
   rollbackClusterMerge,
   updateSource,
   updateCluster,
   type ClusterMergeArtifact,
+  type ClusterCountsRecord,
   type ChatSessionRecord,
   type ProjectRecord,
   type MapGraphResponse,
@@ -89,6 +91,11 @@ function ClusterDetail() {
   const [moveDestinationQuery, setMoveDestinationQuery] = useState("");
   const [moveSourceBusy, setMoveSourceBusy] = useState(false);
   const [moveSourceError, setMoveSourceError] = useState<string | null>(null);
+  const [membershipCounts, setMembershipCounts] = useState<ClusterCountsRecord | null>(null);
+  const [sourceCursor, setSourceCursor] = useState<string | null>(null);
+  const [chatCursor, setChatCursor] = useState<string | null>(null);
+  const [loadingMoreSources, setLoadingMoreSources] = useState(false);
+  const [loadingMoreChats, setLoadingMoreChats] = useState(false);
 
   const cluster = backendCluster;
   const activeSources = !mounted ? [] : backendSources;
@@ -101,6 +108,8 @@ function ClusterDetail() {
     let cancelled = false;
     setMounted(true);
     setLoadState("loading");
+    setSourceCursor(null);
+    setChatCursor(null);
     async function loadBackendCluster() {
       try {
         const clusterRow = await getCluster(clusterId);
@@ -111,18 +120,23 @@ function ClusterDetail() {
         setNameDraft(nextCluster.name);
         setLoadState("ready");
 
-        const [sourceResult, chatResult, clusterResult, artifactResult, projectResult, mapResult] = await Promise.allSettled([
-          listSources(clusterRow.vault_id, { clusterId: clusterRow.id, limit: 1000 }),
-          listChatSessions(clusterRow.vault_id, { clusterId: clusterRow.id }),
+        const [sourceResult, chatResult, clusterResult, artifactResult, projectResult, mapResult, countResult] = await Promise.allSettled([
+          listSourcesPage(clusterRow.vault_id, { clusterId: clusterRow.id, limit: 100 }),
+          listChatSessionsPage(clusterRow.vault_id, { clusterId: clusterRow.id, limit: 100 }),
           listClusterDestinations(clusterRow.vault_id),
           listClusterMergeArtifacts(clusterRow.id),
           listProjects(clusterRow.vault_id, { clusterId: clusterRow.id, limit: 200 }),
           getMapNeighborhood(clusterRow.vault_id, clusterRow.id),
+          getClusterCounts(clusterRow.id),
         ]);
         if (cancelled) return;
-        if (sourceResult.status === "fulfilled") setBackendSources(sourceResult.value.map(sourceFromRecord));
+        if (sourceResult.status === "fulfilled") {
+          setBackendSources(sourceResult.value.items.map(sourceFromRecord));
+          setSourceCursor(sourceResult.value.next_cursor);
+        }
         if (chatResult.status === "fulfilled") {
-          setBackendChats(chatResult.value.filter((chat) => chat.scope_cluster_id === clusterRow.id));
+          setBackendChats(chatResult.value.items);
+          setChatCursor(chatResult.value.next_cursor);
         }
         if (clusterResult.status === "fulfilled") {
           setPeerClusters(
@@ -136,6 +150,7 @@ function ClusterDetail() {
           setLinkedProjects(projectResult.value.filter((project) => project.id !== primary?.id));
         }
         if (mapResult.status === "fulfilled") setMapOverview(mapResult.value);
+        if (countResult.status === "fulfilled") setMembershipCounts(countResult.value);
       } catch (error) {
         if (!cancelled) {
           setBackendCluster(null);
@@ -144,6 +159,9 @@ function ClusterDetail() {
           setBackendChats([]);
           setBackendProject(null);
           setLinkedProjects([]);
+          setMembershipCounts(null);
+          setSourceCursor(null);
+          setChatCursor(null);
           setLoadState(
             error instanceof Error && /not found/i.test(error.message) ? "not-found" : "error",
           );
@@ -156,6 +174,58 @@ function ClusterDetail() {
       cancelled = true;
     };
   }, [clusterId]);
+
+  async function loadMoreSources() {
+    if (!backendVaultId || !sourceCursor || loadingMoreSources) return;
+    setLoadingMoreSources(true);
+    try {
+      const page = await listSourcesPage(backendVaultId, {
+        clusterId,
+        limit: 100,
+        cursor: sourceCursor,
+      });
+      setBackendSources((current) => [
+        ...current,
+        ...page.items.map(sourceFromRecord).filter(
+          (source) => !current.some((existing) => existing.id === source.id),
+        ),
+      ]);
+      setSourceCursor(page.next_cursor);
+    } catch (error) {
+      notify({
+        title: "Could not load more sources",
+        description: error instanceof Error ? error.message : "Try again in a moment.",
+        tone: "error",
+      });
+    } finally {
+      setLoadingMoreSources(false);
+    }
+  }
+
+  async function loadMoreChats() {
+    if (!backendVaultId || !chatCursor || loadingMoreChats) return;
+    setLoadingMoreChats(true);
+    try {
+      const page = await listChatSessionsPage(backendVaultId, {
+        clusterId,
+        limit: 100,
+        cursor: chatCursor,
+      });
+      setBackendChats((current) => [
+        ...current,
+        ...page.items.filter((chat) => !current.some((existing) => existing.id === chat.id)),
+      ]);
+      setChatCursor(page.next_cursor);
+    } catch (error) {
+      notify({
+        title: "Could not load more chats",
+        description: error instanceof Error ? error.message : "Try again in a moment.",
+        tone: "error",
+      });
+    } finally {
+      setLoadingMoreChats(false);
+    }
+  }
 
   useEffect(() => {
     if (!backendVaultId || (!manageOpen && !sourceToMove)) return;
@@ -433,8 +503,8 @@ function ClusterDetail() {
               {cluster.summary || cluster.description || "This memory space is ready for sources, chats, and local context."}
             </p>
             <div className="mt-4 flex flex-wrap gap-x-5 gap-y-2 text-xs text-muted-foreground">
-              <span>{clusterSources.length.toLocaleString()} sources</span>
-              <span>{clusterSources.filter((source) => source.state === "indexed").length.toLocaleString()} indexed</span>
+              <span>{(membershipCounts?.source_count ?? clusterSources.length).toLocaleString()} sources</span>
+              <span>{(membershipCounts?.indexed_source_count ?? clusterSources.filter((source) => source.state === "indexed").length).toLocaleString()} indexed</span>
               <span>Updated {formatDate(cluster.lastActive)}</span>
               <span className="capitalize">Profile {cluster.lifecycle.replaceAll("_", " ")}</span>
             </div>
@@ -475,9 +545,19 @@ function ClusterDetail() {
             peerClusters={peerClusters}
             clusterId={clusterIdForActions}
             onMove={openMoveSource}
+            hasMore={Boolean(sourceCursor)}
+            loadingMore={loadingMoreSources}
+            onLoadMore={loadMoreSources}
           />
         )}
-        {activeTab === "Chats" && <ClusterChatsPanel chats={clusterChats} />}
+        {activeTab === "Chats" && (
+          <ClusterChatsPanel
+            chats={clusterChats}
+            hasMore={Boolean(chatCursor)}
+            loadingMore={loadingMoreChats}
+            onLoadMore={loadMoreChats}
+          />
+        )}
         {activeTab === "Map" && backendVaultId && (
           <section className="mt-7">
             {mapOverview ? (
@@ -497,7 +577,7 @@ function ClusterDetail() {
           </section>
         )}
         {activeTab === "Memory profile" && (
-          <ClusterMemoryProfile cluster={cluster} sources={clusterSources} />
+          <ClusterMemoryProfile cluster={cluster} sources={clusterSources} counts={membershipCounts} />
         )}
       </main>
 
@@ -553,7 +633,7 @@ function ClusterDetail() {
                 title={`Merge ${clusterNameForActions}?`}
                 description={
                   mergeTargetId
-                    ? `${clusterSources.length} source${clusterSources.length === 1 ? "" : "s"} and ${clusterChats.length} chat${clusterChats.length === 1 ? "" : "s"} will move to ${peerClusters.find((item) => item.id === mergeTargetId)?.name ?? "the selected cluster"}. You can restore this merge later.`
+                    ? `${membershipCounts?.source_count ?? clusterSources.length} source${(membershipCounts?.source_count ?? clusterSources.length) === 1 ? "" : "s"} and ${membershipCounts?.chat_count ?? clusterChats.length} chat${(membershipCounts?.chat_count ?? clusterChats.length) === 1 ? "" : "s"} will move to ${peerClusters.find((item) => item.id === mergeTargetId)?.name ?? "the selected cluster"}. You can restore this merge later.`
                     : "Choose a destination cluster first."
                 }
                 confirmLabel="Merge cluster"
@@ -587,7 +667,7 @@ function ClusterDetail() {
               </p>
               <ConfirmAction
                 title={`Delete ${clusterNameForActions}?`}
-                description={`This permanently deletes the cluster. Its ${clusterSources.length} source${clusterSources.length === 1 ? "" : "s"} will remain available under Unclustered.`}
+                description={`This permanently deletes the cluster. Its ${membershipCounts?.source_count ?? clusterSources.length} source${(membershipCounts?.source_count ?? clusterSources.length) === 1 ? "" : "s"} will remain available under Unclustered.`}
                 confirmLabel="Delete cluster"
                 onConfirm={deleteCurrentCluster}
                 disabled={manageBusy}
@@ -777,11 +857,17 @@ function ClusterSourcesPanel({
   peerClusters,
   clusterId,
   onMove,
+  hasMore,
+  loadingMore,
+  onLoadMore,
 }: {
   sources: Source[];
   peerClusters: Cluster[];
   clusterId: string;
   onMove: (source: Source) => void;
+  hasMore: boolean;
+  loadingMore: boolean;
+  onLoadMore: () => void | Promise<void>;
 }) {
   const [query, setQuery] = useState("");
   const normalizedQuery = query.trim().toLocaleLowerCase();
@@ -853,12 +939,27 @@ function ClusterSourcesPanel({
         {sources.length > 0 && visibleSources.length === 0 && (
           <div className="py-10 text-sm text-muted-foreground">No cluster sources match this search.</div>
         )}
+        {hasMore && !normalizedQuery && (
+          <Button variant="outline" disabled={loadingMore} onClick={() => void onLoadMore()}>
+            {loadingMore ? "Loading…" : "Load more sources"}
+          </Button>
+        )}
       </div>
     </section>
   );
 }
 
-function ClusterChatsPanel({ chats }: { chats: Array<ChatSessionRecord | { id: string; title: string }> }) {
+function ClusterChatsPanel({
+  chats,
+  hasMore,
+  loadingMore,
+  onLoadMore,
+}: {
+  chats: Array<ChatSessionRecord | { id: string; title: string }>;
+  hasMore: boolean;
+  loadingMore: boolean;
+  onLoadMore: () => void | Promise<void>;
+}) {
   return (
     <section className="mt-7">
       <div className="border-b border-border pb-4">
@@ -881,6 +982,11 @@ function ClusterChatsPanel({ chats }: { chats: Array<ChatSessionRecord | { id: s
           </Link>
         ))}
         {chats.length === 0 && <div className="py-10 text-sm text-muted-foreground">No scoped chats yet.</div>}
+        {hasMore && (
+          <Button variant="outline" disabled={loadingMore} onClick={() => void onLoadMore()}>
+            {loadingMore ? "Loading…" : "Load more chats"}
+          </Button>
+        )}
       </div>
     </section>
   );
@@ -889,9 +995,11 @@ function ClusterChatsPanel({ chats }: { chats: Array<ChatSessionRecord | { id: s
 function ClusterMemoryProfile({
   cluster,
   sources,
+  counts,
 }: {
   cluster: Cluster;
   sources: Source[];
+  counts: ClusterCountsRecord | null;
 }) {
   return (
     <section className="mt-7">
@@ -905,8 +1013,8 @@ function ClusterMemoryProfile({
             {cluster.summary || cluster.description || "Vault has not generated a profile summary for this cluster yet."}
           </p>
           <div className="mt-5 grid grid-cols-1 gap-4 sm:grid-cols-3">
-            <Metric value={sources.length.toLocaleString()} label="Sources" />
-            <Metric value={sources.filter((source) => source.state === "indexed").length.toLocaleString()} label="Indexed" />
+            <Metric value={(counts?.source_count ?? sources.length).toLocaleString()} label="Sources" />
+            <Metric value={(counts?.indexed_source_count ?? sources.filter((source) => source.state === "indexed").length).toLocaleString()} label="Indexed" />
             <Metric value={formatDate(cluster.lastActive)} label="Updated" />
           </div>
         </section>

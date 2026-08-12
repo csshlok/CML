@@ -44,7 +44,7 @@ import {
   deleteSource as deleteBackendSource,
   getSourceStats,
   getSource,
-  listClusters,
+  listClustersPage,
   listProjectsPage,
   listSourceFolders,
   listSourceFolderTree,
@@ -123,8 +123,13 @@ function SourcesView() {
   const [vault, setActiveVault] = useState<VaultRecord | null>(null);
   const [backendSources, setBackendSources] = useState<Source[]>([]);
   const [backendClusters, setBackendClusters] = useState<Cluster[]>([]);
+  const [clusterCursor, setClusterCursor] = useState<string | null>(null);
+  const [clustersLoadingMore, setClustersLoadingMore] = useState(false);
   const [projects, setProjects] = useState<ProjectRecord[]>([]);
   const [sourceFolders, setSourceFolders] = useState<SourceFolderRecord[]>([]);
+  const [projectFolderCursor, setProjectFolderCursor] = useState<string | null>(null);
+  const [sourceFoldersHaveMore, setSourceFoldersHaveMore] = useState(false);
+  const [groupFoldersLoadingMore, setGroupFoldersLoadingMore] = useState(false);
   const [sourceFolderTree, setSourceFolderTree] = useState<SourceFolderTreeRecord[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -180,7 +185,7 @@ function SourcesView() {
           importDirectOnly: Boolean(folderPath),
           excludeGroupedProjects: !clusterId && !projectId && !folderPath && !unclusteredOnly,
         }),
-        listClusters(activeVault.id),
+        listClustersPage(activeVault.id, { limit: 200 }),
         countSources(activeVault.id, clusterId, {
           unclustered: unclusteredOnly,
           states: inboxOnly
@@ -206,11 +211,17 @@ function SourcesView() {
       if (requestId !== sourceRequestRef.current) return;
       if (sourceResult.status === "rejected") throw sourceResult.reason;
       const sourcePage = sourceResult.value;
-      const clusterRows = clusterResult.status === "fulfilled" ? clusterResult.value : null;
+      const clusterPage = clusterResult.status === "fulfilled" ? clusterResult.value : null;
       const count = countResult.status === "fulfilled" ? countResult.value : null;
       const requestedSource = requestedResult.status === "fulfilled" ? requestedResult.value : null;
-      if (projectResult.status === "fulfilled") setProjects(projectResult.value.items);
-      if (folderResult.status === "fulfilled") setSourceFolders(folderResult.value.items);
+      if (projectResult.status === "fulfilled") {
+        setProjects(projectResult.value.items);
+        setProjectFolderCursor(projectResult.value.next_cursor);
+      }
+      if (folderResult.status === "fulfilled") {
+        setSourceFolders(folderResult.value.items);
+        setSourceFoldersHaveMore(folderResult.value.has_more);
+      }
       if (folderTreeResult.status === "fulfilled") setSourceFolderTree(folderTreeResult.value.items);
       if (count && count.total > 0 && sourcePage.items.length === 0 && pageIndex > 0) {
         setPageIndex(Math.max(0, Math.ceil(count.total / pageSize) - 1));
@@ -219,7 +230,10 @@ function SourcesView() {
       const mappedSources = sourcePage.items.map(sourceFromRecord);
       const visibleSources = mappedSources;
       setBackendSources(visibleSources);
-      if (clusterRows) setBackendClusters(clusterRows.map(clusterFromRecord));
+      if (clusterPage) {
+        setBackendClusters(clusterPage.items.map(clusterFromRecord));
+        setClusterCursor(clusterPage.next_cursor);
+      }
       if (count) setSourceTotal(count.total);
       setNextSourceCursor(sourcePage.next_cursor);
       if (sourcePage.next_cursor) {
@@ -263,6 +277,54 @@ function SourcesView() {
     setPageIndex(0);
     setPageCursors([null]);
   }, [deferredQuery, stateFilter, typeFilter]);
+
+  async function loadMoreGroupingFolders() {
+    if (!vault || groupFoldersLoadingMore) return;
+    setGroupFoldersLoadingMore(true);
+    try {
+      const [projectResult, folderResult] = await Promise.allSettled([
+        projectFolderCursor
+          ? listProjectsPage(vault.id, { limit: 200, cursor: projectFolderCursor })
+          : Promise.resolve(null),
+        sourceFoldersHaveMore
+          ? listSourceFolders(vault.id, deferredQuery, { limit: 100, offset: sourceFolders.length })
+          : Promise.resolve(null),
+      ]);
+      if (projectResult.status === "rejected" && folderResult.status === "rejected") {
+        throw projectResult.reason;
+      }
+      if (projectResult.status === "fulfilled" && projectResult.value) {
+        const page = projectResult.value;
+        setProjects((current) => mergeProjects(current, page.items));
+        setProjectFolderCursor(page.next_cursor);
+      }
+      if (folderResult.status === "fulfilled" && folderResult.value) {
+        const page = folderResult.value;
+        setSourceFolders((current) => mergeSourceFolders(current, page.items));
+        setSourceFoldersHaveMore(page.has_more);
+      }
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "More folders could not load.";
+      notify({ title: "Folders could not load", description: message, tone: "error" });
+    } finally {
+      setGroupFoldersLoadingMore(false);
+    }
+  }
+
+  async function loadMoreClusters() {
+    if (!vault || !clusterCursor || clustersLoadingMore) return;
+    setClustersLoadingMore(true);
+    try {
+      const page = await listClustersPage(vault.id, { limit: 200, cursor: clusterCursor });
+      setBackendClusters((current) => mergeClusters(current, page.items.map(clusterFromRecord)));
+      setClusterCursor(page.next_cursor);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "More clusters could not load.";
+      notify({ title: "Clusters could not load", description: message, tone: "error" });
+    } finally {
+      setClustersLoadingMore(false);
+    }
+  }
 
   useEffect(() => {
     const job = sourceImport.job;
@@ -952,6 +1014,11 @@ function SourcesView() {
             {visibleNestedFolders.length > 0 ? ` and ${visibleNestedFolders.length} folders` : ""}
           </span>
           <div className="flex items-center gap-4">
+            {(projectFolderCursor || sourceFoldersHaveMore) && !clusterId && !projectId && !folderPath && !unclusteredOnly ? (
+              <Button variant="ghost" size="sm" disabled={groupFoldersLoadingMore} onClick={() => void loadMoreGroupingFolders()}>
+                {groupFoldersLoadingMore ? "Loadingâ€¦" : "Load more folders"}
+              </Button>
+            ) : null}
             <button
               type="button"
               className="text-muted-foreground disabled:cursor-not-allowed disabled:opacity-40"
@@ -983,6 +1050,9 @@ function SourcesView() {
           source={inspectorSource}
           cluster={inspectorCluster}
           clusters={clusters}
+          clustersHaveMore={Boolean(clusterCursor)}
+          clustersLoadingMore={clustersLoadingMore}
+          onLoadMoreClusters={loadMoreClusters}
           pages={selectedPages}
           stats={selectedStats}
           onClose={() => {
@@ -1074,6 +1144,9 @@ function SourceInspector({
   source,
   cluster,
   clusters,
+  clustersHaveMore,
+  clustersLoadingMore,
+  onLoadMoreClusters,
   pages,
   stats,
   onClose,
@@ -1085,6 +1158,9 @@ function SourceInspector({
   source: Source;
   cluster?: Cluster;
   clusters: Cluster[];
+  clustersHaveMore: boolean;
+  clustersLoadingMore: boolean;
+  onLoadMoreClusters: () => Promise<void>;
   pages: SourcePageRecord[];
   stats: SourceStatsRecord | null;
   onClose: () => void;
@@ -1244,6 +1320,18 @@ function SourceInspector({
             ))}
           </SelectContent>
         </Select>
+        {clustersHaveMore ? (
+          <Button
+            className="mt-2"
+            type="button"
+            variant="ghost"
+            size="sm"
+            disabled={clustersLoadingMore}
+            onClick={() => void onLoadMoreClusters()}
+          >
+            {clustersLoadingMore ? "Loadingâ€¦" : "Load more clusters"}
+          </Button>
+        ) : null}
         <p className="mt-2 text-xs leading-5 text-muted-foreground">
           {moveBusy ? "Moving source…" : "Choose a destination to move this source immediately."}
         </p>
@@ -1359,6 +1447,24 @@ function lastIndexed(source: Source) {
   if (source.ingestionStage === "paused") return "Paused";
   if (source.ingestionStage !== "ready") return "In progress";
   return formatDate(source.ingestionUpdatedAt || source.updatedAt);
+}
+
+function mergeProjects(current: ProjectRecord[], next: ProjectRecord[]) {
+  const byId = new Map(current.map((project) => [project.id, project]));
+  for (const project of next) byId.set(project.id, project);
+  return [...byId.values()];
+}
+
+function mergeClusters(current: Cluster[], next: Cluster[]) {
+  const byId = new Map(current.map((cluster) => [cluster.id, cluster]));
+  for (const cluster of next) byId.set(cluster.id, cluster);
+  return [...byId.values()];
+}
+
+function mergeSourceFolders(current: SourceFolderRecord[], next: SourceFolderRecord[]) {
+  const byPath = new Map(current.map((folder) => [folder.root_path, folder]));
+  for (const folder of next) byPath.set(folder.root_path, folder);
+  return [...byPath.values()];
 }
 
 function formatDate(value: string) {

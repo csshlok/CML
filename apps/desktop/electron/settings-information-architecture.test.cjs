@@ -61,6 +61,17 @@ test("Library security exposes manual scans and a changeable 30-day full-check s
   assert.match(backendSource, /waitForAppJob\(queued\.id\)/);
 });
 
+test("the model connection test performs a real generation probe", () => {
+  assert.match(
+    backendSource,
+    /testModelRuntimeConnection[\s\S]{0,300}models\/runtime\/probe[\s\S]{0,200}method:\s*"POST"/,
+  );
+  assert.match(
+    settingsSource,
+    /async function testRuntimeConnection\(\)[\s\S]{0,250}await testModelRuntimeConnection\(\)/,
+  );
+});
+
 test("the URL is the single owner of the active Settings section", () => {
   assert.match(settingsSource, /const activeSection = canonicalSettingsSection\(section\)/);
   assert.doesNotMatch(settingsSource, /\[activeSection, setActiveSection\]/);
@@ -113,10 +124,19 @@ test("Code Connections leads with setup and exposes the complete Odin command su
 test("Memory history keeps job state live and replaces indefinite loading with a retry", () => {
   assert.match(
     settingsSource,
-    /firstVault && activeSection === "library"[\s\S]{0,200}add\("tasks", getJobStatus\(\)/,
+    /firstVault && activeSection === "library"[\s\S]{0,600}add\("tasks", getJobStatus\(\)/,
   );
   assert.match(settingsSource, /const temporalRefreshPending = temporalBackfillBusy \|\| temporalBackfillActive/);
   assert.match(settingsSource, /memoryInsightsError[\s\S]{0,120}"Unavailable"/);
   assert.match(settingsSource, /<span role="alert">\{memoryInsightsError\}<\/span>/);
   assert.match(settingsSource, /onClick=\{\(\) => void refreshMemoryInsights\(\)\}[\s\S]{0,100}Try again/);
+});
+
+test("long Settings lists retain continuation controls", () => {
+  assert.match(settingsSource, /Show more connected clients/);
+  assert.match(settingsSource, /Show more projects/);
+  assert.match(settingsSource, /Show more synced folders/);
+  assert.match(settingsSource, /mergePolledCliClients/);
+  assert.match(settingsSource, /mergePolledProjects/);
+  assert.match(settingsSource, /mergePolledIntegrationImports/);
 });

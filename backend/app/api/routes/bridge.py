@@ -1253,7 +1253,7 @@ def list_bridge_requests(limit: int = 50, offset: int = 0) -> list[dict]:
 
 @router.get("/token-rotations", response_model=list[BridgeTokenRotationRead])
 def list_bridge_token_rotations(limit: int = 20, offset: int = 0) -> list[dict]:
-    bounded_limit = max(1, min(limit, 100))
+    bounded_limit = max(1, min(limit, 200))
     bounded_offset = max(offset, 0)
     with connect() as conn:
         rows = conn.execute(

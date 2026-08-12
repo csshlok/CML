@@ -74,6 +74,38 @@ class ClusterSourceMoveTests(unittest.TestCase):
             reindex_source_chunks(conn, source)
         return source
 
+    def test_cluster_counts_are_exact_beyond_list_page_sizes(self) -> None:
+        from backend.app.api.routes.clusters import get_cluster_counts
+        from backend.app.core.database import connect, utc_now
+
+        self.seed_clusters()
+        now = utc_now()
+        with connect() as conn:
+            conn.executemany(
+                """
+                INSERT INTO sources (
+                    id, vault_id, cluster_id, title, source_type, state, created_at, updated_at
+                ) VALUES (?, 'vault-1', 'cluster-a', ?, 'note', ?, ?, ?)
+                """,
+                (
+                    (f"source-{index}", f"Source {index}", "indexed" if index < 1001 else "waiting", now, now)
+                    for index in range(1005)
+                ),
+            )
+            conn.executemany(
+                """
+                INSERT INTO chat_sessions (id, vault_id, title, scope_cluster_id, created_at, updated_at)
+                VALUES (?, 'vault-1', ?, 'cluster-a', ?, ?)
+                """,
+                ((f"chat-{index}", f"Chat {index}", now, now) for index in range(101)),
+            )
+
+        counts = get_cluster_counts("cluster-a")
+
+        self.assertEqual(counts["source_count"], 1005)
+        self.assertEqual(counts["indexed_source_count"], 1001)
+        self.assertEqual(counts["chat_count"], 101)
+
     def test_one_source_moves_between_clusters_and_refreshes_membership(self) -> None:
         from backend.app.api.routes.sources import update_source
         from backend.app.core.database import connect

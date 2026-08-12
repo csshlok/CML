@@ -70,7 +70,7 @@ import {
   listCliClientsPage,
   listCliPairingChallenges,
   listVaults,
-  listProjects,
+  listProjectsPage,
   listTemporalFacts,
   scanLocalFolderIntegration,
   runSecurityScan,
@@ -81,6 +81,7 @@ import {
   rotateCliClient,
   startModelDownload,
   startEmbeddingDownload,
+  testModelRuntimeConnection,
   unlockVaultWithPassphrase,
   updateIntegrationImport,
   updateSecurityScanSchedule,
@@ -93,6 +94,7 @@ import {
   type HardwareStatusRead,
   type CliClientRecord,
   type CliPairingChallenge,
+  type CursorPage,
   type IntegrationImportRecord,
   type JobQueueStatus,
   type DiscoveredInstalledModelRecord,
@@ -224,9 +226,18 @@ function SettingsView() {
   const [factReviewBusyId, setFactReviewBusyId] = useState<string | null>(null);
   const [retractConfirmId, setRetractConfirmId] = useState<string | null>(null);
   const [projects, setProjects] = useState<ProjectRecord[]>([]);
+  const [projectCursor, setProjectCursor] = useState<string | null>(null);
+  const [projectsHaveMore, setProjectsHaveMore] = useState(false);
+  const [projectsLoadingMore, setProjectsLoadingMore] = useState(false);
+  const projectsLoadedOlderRef = useRef(false);
+  const projectsVaultRef = useRef<string | null>(null);
   const [cliPairings, setCliPairings] = useState<CliPairingChallenge[]>([]);
   const [cliClients, setCliClients] = useState<CliClientRecord[]>([]);
   const [cliActiveTotal, setCliActiveTotal] = useState(0);
+  const [cliActiveCursor, setCliActiveCursor] = useState<string | null>(null);
+  const [cliActiveHasMore, setCliActiveHasMore] = useState(false);
+  const [cliActiveLoadingMore, setCliActiveLoadingMore] = useState(false);
+  const cliLoadedOlderRef = useRef(false);
   const [cliClientHistory, setCliClientHistory] = useState<CliClientRecord[]>([]);
   const [cliHistoryOpen, setCliHistoryOpen] = useState(false);
   const [cliHistoryCursor, setCliHistoryCursor] = useState<string | null>(null);
@@ -246,6 +257,10 @@ function SettingsView() {
   const [odinLauncherBusy, setOdinLauncherBusy] = useState(false);
   const [addingProject, setAddingProject] = useState(false);
   const [integrationImports, setIntegrationImports] = useState<IntegrationImportRecord[]>([]);
+  const [integrationImportsHaveMore, setIntegrationImportsHaveMore] = useState(false);
+  const [integrationImportsLoadingMore, setIntegrationImportsLoadingMore] = useState(false);
+  const integrationImportsLoadedOlderRef = useRef(false);
+  const integrationImportsVaultRef = useRef<string | null>(null);
   const [reconciliationRunsByImport, setReconciliationRunsByImport] = useState<Record<string, ReconciliationRunRecord[]>>({});
   const [reconciliationItemsByRun, setReconciliationItemsByRun] = useState<Record<string, ReconciliationItemPage>>({});
   const [expandedImportId, setExpandedImportId] = useState<string | null>(null);
@@ -350,8 +365,12 @@ function SettingsView() {
     if (pairings.status === "fulfilled") setCliPairings(pairings.value);
     else failures.push("pairing requests");
     if (clients.status === "fulfilled") {
-      setCliClients(clients.value.items);
+      setCliClients((current) => mergePolledCliClients(current, clients.value.items, 50));
       setCliActiveTotal(clients.value.total ?? clients.value.items.length);
+      if (!cliLoadedOlderRef.current) {
+        setCliActiveCursor(clients.value.next_cursor);
+        setCliActiveHasMore(clients.value.has_more);
+      }
     }
     else failures.push("connected clients");
     setCliAccessError(
@@ -381,13 +400,28 @@ function SettingsView() {
         try {
           const scanStatus = await getSecurityScanStatus();
           setSecurityScan(scanStatus);
-          setSecurityScanIntervalDraft(String(scanStatus.interval_days));
+          if (Number.isFinite(scanStatus.interval_days)) {
+            setSecurityScanIntervalDraft(String(scanStatus.interval_days));
+          }
         } catch {
           setSecurityScan(null);
         }
       }
       const vaultRows = await listVaults();
       const firstVault = vaultRows[0] ?? null;
+      if ((firstVault?.id ?? null) !== projectsVaultRef.current) {
+        projectsVaultRef.current = firstVault?.id ?? null;
+        projectsLoadedOlderRef.current = false;
+        setProjects([]);
+        setProjectCursor(null);
+        setProjectsHaveMore(false);
+      }
+      if ((firstVault?.id ?? null) !== integrationImportsVaultRef.current) {
+        integrationImportsVaultRef.current = firstVault?.id ?? null;
+        integrationImportsLoadedOlderRef.current = false;
+        setIntegrationImports([]);
+        setIntegrationImportsHaveMore(false);
+      }
       setBackendVault(firstVault ?? null);
       if (firstVault && !pathDraftDirtyRef.current) setPathDraft(firstVault.path);
 
@@ -442,8 +476,13 @@ function SettingsView() {
           setRetentionPolicy(value as ChatEvidenceRetentionPolicy));
       }
       if (firstVault && activeSection === "library") {
-        add("folder sync", listIntegrationImports(firstVault.id), (value) =>
-          setIntegrationImports(value as IntegrationImportRecord[]));
+        add("folder sync", listIntegrationImports(firstVault.id, { limit: 100 }), (value) => {
+          const firstPage = value as IntegrationImportRecord[];
+          setIntegrationImports((current) => mergePolledIntegrationImports(current, firstPage, 100));
+          if (!integrationImportsLoadedOlderRef.current) {
+            setIntegrationImportsHaveMore(firstPage.length === 100);
+          }
+        });
         add("tasks", getJobStatus(), (value) => setJobs(value as JobQueueStatus));
         add("memory status", getTemporalFactStatus(firstVault.id), (value) =>
           setTemporalFacts(value as TemporalFactDiagnostics));
@@ -451,8 +490,14 @@ function SettingsView() {
           setReviewableFacts(value as TemporalFactRecord[]));
       }
       if (firstVault && activeSection === "connections") {
-        add("projects", listProjects(firstVault.id), (value) =>
-          setProjects(value as ProjectRecord[]));
+        add("projects", listProjectsPage(firstVault.id, { limit: 200 }), (value) => {
+          const page = value as CursorPage<ProjectRecord>;
+          setProjects((current) => mergePolledProjects(current, page.items, 200));
+          if (!projectsLoadedOlderRef.current) {
+            setProjectCursor(page.next_cursor);
+            setProjectsHaveMore(page.has_more);
+          }
+        });
       }
       const results = await Promise.allSettled(loads.map((item) => item.request));
       const failures: string[] = [];
@@ -841,7 +886,9 @@ function SettingsView() {
       const summary = await runSecurityScan(scanType);
       const next = await getSecurityScanStatus();
       setSecurityScan(next);
-      setSecurityScanIntervalDraft(String(next.interval_days));
+      if (Number.isFinite(next.interval_days)) {
+        setSecurityScanIntervalDraft(String(next.interval_days));
+      }
       setStatusMessage(
         summary.status === "passed"
           ? `${scanType === "full" ? "Full security check" : "Antivirus scan"} passed.`
@@ -868,7 +915,9 @@ function SettingsView() {
         interval_days: intervalDays,
       });
       setSecurityScan(next);
-      setSecurityScanIntervalDraft(String(next.interval_days));
+      if (Number.isFinite(next.interval_days)) {
+        setSecurityScanIntervalDraft(String(next.interval_days));
+      }
       setStatusMessage(next.enabled ? `Full security checks will run every ${next.interval_days} days.` : "Automatic full security checks are off.");
     } catch (error) {
       setStatusMessage(error instanceof Error ? error.message : "Could not update the security-check schedule.");
@@ -918,7 +967,29 @@ function SettingsView() {
       setIntegrationImports([]);
       return;
     }
-    setIntegrationImports(await listIntegrationImports(backendVault.id));
+    const firstPage = await listIntegrationImports(backendVault.id, { limit: 100 });
+    setIntegrationImports((current) => mergePolledIntegrationImports(current, firstPage, 100));
+    if (!integrationImportsLoadedOlderRef.current) {
+      setIntegrationImportsHaveMore(firstPage.length === 100);
+    }
+  }
+
+  async function loadMoreIntegrationImports() {
+    if (!backendVault || integrationImportsLoadingMore || !integrationImportsHaveMore) return;
+    setIntegrationImportsLoadingMore(true);
+    try {
+      const page = await listIntegrationImports(backendVault.id, {
+        limit: 100,
+        offset: integrationImports.length,
+      });
+      setIntegrationImports((current) => mergeIntegrationImports(current, page));
+      setIntegrationImportsHaveMore(page.length === 100);
+      integrationImportsLoadedOlderRef.current = true;
+    } catch (error) {
+      setStatusMessage(error instanceof Error ? error.message : "More synced folders could not load.");
+    } finally {
+      setIntegrationImportsLoadingMore(false);
+    }
   }
 
   async function toggleImportHistory(importId: string) {
@@ -1034,11 +1105,11 @@ function SettingsView() {
   async function testRuntimeConnection() {
     setActionBusy("runtime-test", true);
     try {
-      const nextRuntime = await getModelRuntimeStatus();
+      const nextRuntime = await testModelRuntimeConnection();
       setRuntime(nextRuntime);
       setStatusMessage(
         nextRuntime.available
-          ? `Connected to the local synthesis runtime at ${nextRuntime.base_url}.`
+          ? `The local model completed a test generation at ${nextRuntime.base_url}.`
           : "The configured synthesis runtime is not responding.",
       );
     } catch (error) {
@@ -1263,7 +1334,12 @@ function SettingsView() {
           sync: true,
         });
       }
-      setProjects(await listProjects(backendVault.id));
+      const page = await listProjectsPage(backendVault.id, { limit: 200 });
+      setProjects((current) => mergePolledProjects(current, page.items, 200));
+      if (!projectsLoadedOlderRef.current) {
+        setProjectCursor(page.next_cursor);
+        setProjectsHaveMore(page.has_more);
+      }
       setStatusMessage(folders.length === 1 ? "Project added." : `${folders.length} projects added.`);
     } catch (error) {
       setStatusMessage(error instanceof Error ? error.message : "Could not add this project.");
@@ -1349,8 +1425,12 @@ function SettingsView() {
       }
       setCliPairings(await listCliPairingChallenges());
       const activeClients = await listCliClientsPage("active", { limit: 50 });
-      setCliClients(activeClients.items);
+      setCliClients((current) => mergePolledCliClients(current, activeClients.items, 50));
       setCliActiveTotal(activeClients.total ?? activeClients.items.length);
+      if (!cliLoadedOlderRef.current) {
+        setCliActiveCursor(activeClients.next_cursor);
+        setCliActiveHasMore(activeClients.has_more);
+      }
     } catch (error) {
       setCliAccessError(error instanceof Error ? error.message : "The access request could not be updated.");
     } finally {
@@ -1370,8 +1450,14 @@ function SettingsView() {
         setStatusMessage(`${client.display_name} must pair again before its next Odin command.`);
       }
       const activeClients = await listCliClientsPage("active", { limit: 50 });
-      setCliClients(activeClients.items);
+      setCliClients((current) =>
+        mergePolledCliClients(current.filter((item) => item.id !== client.id), activeClients.items, 50),
+      );
       setCliActiveTotal(activeClients.total ?? activeClients.items.length);
+      if (!cliLoadedOlderRef.current) {
+        setCliActiveCursor(activeClients.next_cursor);
+        setCliActiveHasMore(activeClients.has_more);
+      }
       if (cliHistoryOpen) {
         const history = await listCliClientsPage("history", { limit: 30 });
         setCliClientHistory(history.items);
@@ -1399,6 +1485,38 @@ function SettingsView() {
       setCliAccessError(error instanceof Error ? error.message : "Connection history could not load.");
     } finally {
       setCliHistoryLoading(false);
+    }
+  }
+
+  async function loadMoreProjects() {
+    if (!backendVault || !projectCursor || projectsLoadingMore) return;
+    setProjectsLoadingMore(true);
+    try {
+      const page = await listProjectsPage(backendVault.id, { limit: 200, cursor: projectCursor });
+      setProjects((current) => mergeProjects(current, page.items));
+      setProjectCursor(page.next_cursor);
+      setProjectsHaveMore(page.has_more);
+      projectsLoadedOlderRef.current = true;
+    } catch (error) {
+      setStatusMessage(error instanceof Error ? error.message : "More Odin projects could not load.");
+    } finally {
+      setProjectsLoadingMore(false);
+    }
+  }
+
+  async function loadMoreActiveCliClients() {
+    if (!cliActiveCursor || cliActiveLoadingMore) return;
+    setCliActiveLoadingMore(true);
+    try {
+      const page = await listCliClientsPage("active", { limit: 50, cursor: cliActiveCursor });
+      setCliClients((current) => mergeCliClients(current, page.items));
+      setCliActiveCursor(page.next_cursor);
+      setCliActiveHasMore(page.has_more);
+      cliLoadedOlderRef.current = true;
+    } catch (error) {
+      setCliAccessError(error instanceof Error ? error.message : "More connected clients could not load.");
+    } finally {
+      setCliActiveLoadingMore(false);
     }
   }
 
@@ -1694,7 +1812,7 @@ function SettingsView() {
               icon={<Folder className="h-4 w-4" />}
               title="Odin code projects"
               description="Code projects available in this library. Odin reads and indexes them without changing repository files."
-              status={projects.length ? `${projects.length} registered` : "None"}
+              status={projects.length ? `${projects.length.toLocaleString()}${projectsHaveMore ? "+" : ""} registered` : "None"}
               statusTone={projects.some((project) => project.status === "issue") ? "issue" : "ready"}
             >
               <div className="mt-4 flex flex-wrap gap-2">
@@ -1727,6 +1845,13 @@ function SettingsView() {
                 )) : (
                   <div className="py-3 text-sm text-muted-foreground">No code projects are registered yet.</div>
                 )}
+                {projectsHaveMore ? (
+                  <div className="py-3">
+                    <Button variant="ghost" size="sm" disabled={projectsLoadingMore} onClick={() => void loadMoreProjects()}>
+                      {projectsLoadingMore ? "Loadingâ€¦" : "Show more projects"}
+                    </Button>
+                  </div>
+                ) : null}
               </div>
             </SettingsCard>
 
@@ -1801,6 +1926,19 @@ function SettingsView() {
                   )) : (
                     <div className="px-3 py-4 text-sm text-muted-foreground">No computers have been approved for Odin yet.</div>
                   )}
+                  {cliActiveHasMore ? (
+                    <div className="p-2">
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="ghost"
+                        disabled={cliActiveLoadingMore}
+                        onClick={() => void loadMoreActiveCliClients()}
+                      >
+                        {cliActiveLoadingMore ? "Loadingâ€¦" : "Show more connected clients"}
+                      </Button>
+                    </div>
+                  ) : null}
                 </div>
               </div>
 
@@ -2535,7 +2673,7 @@ function SettingsView() {
               </p>
             </div>
 
-            {securityScan?.last_summary.checks?.length ? (
+            {securityScan?.last_summary?.checks?.length ? (
               <details className="mt-4 rounded-md border border-border bg-background">
                 <summary className="cursor-pointer px-3 py-3 text-sm font-medium">Last check details</summary>
                 <div className="divide-y divide-border border-t border-border">
@@ -2919,6 +3057,13 @@ function SettingsView() {
                   </div>
                 ))
               )}
+              {integrationImportsHaveMore ? (
+                <div className="py-3">
+                  <Button variant="ghost" size="sm" disabled={integrationImportsLoadingMore} onClick={() => void loadMoreIntegrationImports()}>
+                    {integrationImportsLoadingMore ? "Loadingâ€¦" : "Show more synced folders"}
+                  </Button>
+                </div>
+              ) : null}
             </div>
           </SettingsCard>
           )}
@@ -3528,4 +3673,61 @@ function jobHealthLabel(jobs: JobQueueStatus | null) {
 function jobHealthDetail(jobs: JobQueueStatus | null) {
   if (!jobs) return "Waiting for the queue status check.";
   return `${jobs.queued} queued / ${jobs.running} running / ${jobs.failed} failed / ${jobs.blocked_by_dependency} blocked`;
+}
+
+function mergeCliClients(current: CliClientRecord[], next: CliClientRecord[]) {
+  const byId = new Map(current.map((client) => [client.id, client]));
+  for (const client of next) byId.set(client.id, client);
+  return [...byId.values()];
+}
+
+function mergeProjects(current: ProjectRecord[], next: ProjectRecord[]) {
+  const byId = new Map(current.map((project) => [project.id, project]));
+  for (const project of next) byId.set(project.id, project);
+  return [...byId.values()];
+}
+
+function mergeIntegrationImports(
+  current: IntegrationImportRecord[],
+  next: IntegrationImportRecord[],
+) {
+  const byId = new Map(current.map((record) => [record.id, record]));
+  for (const record of next) byId.set(record.id, record);
+  return [...byId.values()];
+}
+
+function mergePolledIntegrationImports(
+  current: IntegrationImportRecord[],
+  firstPage: IntegrationImportRecord[],
+  pageSize: number,
+) {
+  const firstPageIds = new Set(firstPage.map((record) => record.id));
+  return mergeIntegrationImports(
+    firstPage,
+    current.slice(pageSize).filter((record) => !firstPageIds.has(record.id)),
+  );
+}
+
+function mergePolledProjects(
+  current: ProjectRecord[],
+  firstPage: ProjectRecord[],
+  pageSize: number,
+) {
+  const firstPageIds = new Set(firstPage.map((project) => project.id));
+  return mergeProjects(
+    firstPage,
+    current.slice(pageSize).filter((project) => !firstPageIds.has(project.id)),
+  );
+}
+
+function mergePolledCliClients(
+  current: CliClientRecord[],
+  firstPage: CliClientRecord[],
+  pageSize: number,
+) {
+  const firstPageIds = new Set(firstPage.map((client) => client.id));
+  return mergeCliClients(
+    firstPage,
+    current.slice(pageSize).filter((client) => !firstPageIds.has(client.id)),
+  );
 }

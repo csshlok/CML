@@ -421,11 +421,11 @@ export function KnowledgeMap({
             <RotateCcw className="h-4 w-4" />
             Reset view
           </Button>
-          {graph.truncated && (root || onExpandOverview) ? (
+          {graph.truncated && (onExpandOverview || (Boolean(root) && neighborhoodLimit < 200)) ? (
             <Button
               variant="outline"
               size="sm"
-              disabled={loadingFocus || (Boolean(root) && neighborhoodLimit >= 200)}
+              disabled={loadingFocus}
               onClick={() => {
                 if (root) void focus(root, Math.min(200, neighborhoodLimit + 60));
                 else onExpandOverview?.();
@@ -457,6 +457,7 @@ export function KnowledgeMap({
             <span className="font-medium text-[var(--status-warn-ink)]">
               Showing {Math.max(0, graph.nodes.length - 1).toLocaleString()} of{" "}
               {root?.source_count?.toLocaleString() ?? "the available"} related items
+              {root && neighborhoodLimit >= 200 ? " (map limit reached)" : ""}
             </span>
           ) : null}
           {unclusteredNode ? (

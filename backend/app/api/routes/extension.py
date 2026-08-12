@@ -303,7 +303,7 @@ def approve_extension_pairing(pairing_id: str) -> dict:
 
 @router.get("/pairing", response_model=list[ExtensionPairingRead])
 def list_extension_pairings(limit: int = 50, offset: int = 0) -> list[dict]:
-    safe_limit = max(1, min(int(limit), 100))
+    safe_limit = max(1, min(int(limit), 200))
     safe_offset = max(0, int(offset))
     with connect() as conn:
         rows = conn.execute(
@@ -315,7 +315,7 @@ def list_extension_pairings(limit: int = 50, offset: int = 0) -> list[dict]:
 
 @router.get("/permission-audit", response_model=list[ExtensionPermissionAuditRead])
 def list_extension_permission_audit(limit: int = 50, offset: int = 0) -> list[dict]:
-    safe_limit = max(1, min(int(limit), 100))
+    safe_limit = max(1, min(int(limit), 200))
     safe_offset = max(0, int(offset))
     with connect() as conn:
         rows = conn.execute(
@@ -327,7 +327,7 @@ def list_extension_permission_audit(limit: int = 50, offset: int = 0) -> list[di
 
 @router.get("/captures", response_model=list[ExtensionCaptureRead])
 def list_extension_captures(vault_id: str | None = None, limit: int = 50, offset: int = 0) -> list[dict]:
-    safe_limit = max(1, min(int(limit), 100))
+    safe_limit = max(1, min(int(limit), 200))
     safe_offset = max(0, int(offset))
     with connect() as conn:
         if vault_id:

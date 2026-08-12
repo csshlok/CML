@@ -13,6 +13,9 @@ test("source inspector exposes an immediate cluster destination selector", () =>
   assert.match(sourcesRoute, /aria-label="Move source to cluster"/);
   assert.match(sourcesRoute, /value=\{source\.clusterId \?\? "__unclustered__"\}/);
   assert.match(sourcesRoute, /onValueChange=\{\(targetId\) => void moveToCluster\(targetId\)\}/);
+  assert.match(sourcesRoute, /listClustersPage\(activeVault\.id, \{ limit: 200 \}\)/);
+  assert.match(sourcesRoute, /Load more clusters/);
+  assert.match(sourcesRoute, /Load more folders/);
 });
 
 test("source moves are confirmed before local source state changes", () => {

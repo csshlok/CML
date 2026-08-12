@@ -23,4 +23,6 @@ test("Tasks relies on automatic refresh and keeps one page-level action", () => 
   const header = route.slice(headerStart, headerEnd);
   assert.match(header, /Run due jobs/);
   assert.doesNotMatch(header, />Refresh</);
+  assert.match(route, /Load more project tasks/);
+  assert.match(route, /listProjectRunSummary\(200, false, projectTasks\.length\)/);
 });

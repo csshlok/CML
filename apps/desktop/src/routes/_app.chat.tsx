@@ -43,6 +43,7 @@ function ChatIndex() {
   const [clusterCursor, setClusterCursor] = useState<string | null>(null);
   const [loadingMore, setLoadingMore] = useState(false);
   const [hasLoadedOlderChats, setHasLoadedOlderChats] = useState(false);
+  const [hasLoadedOlderClusters, setHasLoadedOlderClusters] = useState(false);
   const [backendReady, setBackendReady] = useState(false);
   const [prompt, setPrompt] = useState("");
   const [attachments, setAttachments] = useState<string[]>([]);
@@ -73,8 +74,8 @@ function ChatIndex() {
         setBackendReady(false);
       }
       if (clusterResult.status === "fulfilled") {
-        setBackendClusters(clusterResult.value.items);
-        setClusterCursor(clusterResult.value.next_cursor);
+        setBackendClusters((current) => mergePolledPage(current, clusterResult.value.items, 200));
+        if (!hasLoadedOlderClusters) setClusterCursor(clusterResult.value.next_cursor);
       }
     } catch {
       setBackendReady(false);
@@ -84,6 +85,7 @@ function ChatIndex() {
   useEffect(() => {
     let cancelled = false;
     setHasLoadedOlderChats(false);
+    setHasLoadedOlderClusters(false);
 
     async function loadIfMounted() {
       try {
@@ -214,6 +216,7 @@ function ChatIndex() {
       const page = await listClustersPage(vault.id, { limit: 200, cursor: clusterCursor });
       setBackendClusters((current) => [...current, ...page.items]);
       setClusterCursor(page.next_cursor);
+      setHasLoadedOlderClusters(true);
     } finally {
       setLoadingMore(false);
     }

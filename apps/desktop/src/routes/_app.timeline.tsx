@@ -116,6 +116,10 @@ function TimelineRoute() {
   const pageActivities = activities;
   const activeItem = activities.find((item) => item.id === selected?.id) ?? null;
 
+  useEffect(() => {
+    if (page > totalPages) setPage(totalPages);
+  }, [page, totalPages]);
+
   return (
     <div
       className={

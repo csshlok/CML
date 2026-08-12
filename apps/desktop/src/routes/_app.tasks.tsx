@@ -56,6 +56,9 @@ function TasksView() {
   const [nextJobCursor, setNextJobCursor] = useState<string | null>(null);
   const [loadingMore, setLoadingMore] = useState(false);
   const [hasLoadedOlderJobs, setHasLoadedOlderJobs] = useState(false);
+  const [projectTaskTotal, setProjectTaskTotal] = useState(0);
+  const [projectTaskVisibleCount, setProjectTaskVisibleCount] = useState(20);
+  const [loadingMoreProjectTasks, setLoadingMoreProjectTasks] = useState(false);
   const [hasLoaded, setHasLoaded] = useState(false);
 
   async function load() {
@@ -73,11 +76,12 @@ function TasksView() {
       if (!hasLoadedOlderJobs) setNextJobCursor(jobsResult.value.next_cursor);
     }
     if (summaryResult.status === "fulfilled") {
-      setProjectTasks(
-        summaryResult.value.items
-          .map(({ project, run }) => ({ project: project as ProjectRecord, run }))
-          .sort((a, b) => b.run.updated_at.localeCompare(a.run.updated_at)),
-      );
+      const firstPage = summaryResult.value.items.map(({ project, run }) => ({
+        project: project as ProjectRecord,
+        run,
+      }));
+      setProjectTasks((current) => mergePolledProjectTasks(current, firstPage, 200));
+      setProjectTaskTotal(summaryResult.value.total);
     }
     if (statusResult.status === "rejected" && jobsResult.status === "rejected") {
       setJobs(null);
@@ -134,6 +138,26 @@ function TasksView() {
       setMessage(error instanceof Error ? error.message : "Could not load more tasks.");
     } finally {
       setLoadingMore(false);
+    }
+  }
+
+  async function showMoreProjectTasks() {
+    if (projectTaskVisibleCount < visibleProjectTasks.length) {
+      setProjectTaskVisibleCount((current) => Math.min(visibleProjectTasks.length, current + 20));
+      return;
+    }
+    if (projectTasks.length >= projectTaskTotal || loadingMoreProjectTasks) return;
+    setLoadingMoreProjectTasks(true);
+    try {
+      const page = await listProjectRunSummary(200, false, projectTasks.length);
+      const next = page.items.map(({ project, run }) => ({ project: project as ProjectRecord, run }));
+      setProjectTasks((current) => mergeProjectTasks(current, next));
+      setProjectTaskTotal(page.total);
+      setProjectTaskVisibleCount((current) => current + 20);
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Could not load more project tasks.");
+    } finally {
+      setLoadingMoreProjectTasks(false);
     }
   }
   const visibleProjectTasks = useMemo(() => {
@@ -277,7 +301,7 @@ function TasksView() {
           <section className="mt-6">
             <h2 className="mb-3 text-sm font-semibold">Project indexing</h2>
             <div className="divide-y divide-border overflow-hidden rounded-md border border-border bg-card">
-              {visibleProjectTasks.slice(0, 20).map(({ project, run }) => {
+              {visibleProjectTasks.slice(0, projectTaskVisibleCount).map(({ project, run }) => {
                 const detail = parseRunDetail(run.detail_json);
                 const total = run.phase_total_count || run.eligible_total;
                 const complete = run.phase_completed_count || run.completed_count;
@@ -358,6 +382,16 @@ function TasksView() {
                 );
               })}
             </div>
+            {projectTaskVisibleCount < visibleProjectTasks.length || projectTasks.length < projectTaskTotal ? (
+              <Button
+                className="mt-3"
+                variant="outline"
+                disabled={loadingMoreProjectTasks}
+                onClick={() => void showMoreProjectTasks()}
+              >
+                {loadingMoreProjectTasks ? "Loading..." : "Load more project tasks"}
+              </Button>
+            ) : null}
           </section>
         )}
 
@@ -569,6 +603,24 @@ function mergePolledJobs(
     ...firstPage,
     ...current.slice(pageSize).filter((job) => !firstPageIds.has(job.id)),
   ]);
+}
+
+function mergeProjectTasks(current: ProjectTask[], next: ProjectTask[]) {
+  const byRunId = new Map<string, ProjectTask>();
+  for (const task of [...current, ...next]) byRunId.set(task.run.id, task);
+  return [...byRunId.values()];
+}
+
+function mergePolledProjectTasks(
+  current: ProjectTask[],
+  firstPage: ProjectTask[],
+  pageSize: number,
+) {
+  const firstPageIds = new Set(firstPage.map((task) => task.run.id));
+  return mergeProjectTasks([
+    ...firstPage,
+    ...current.slice(pageSize).filter((task) => !firstPageIds.has(task.run.id)),
+  ], []);
 }
 
 function ImportFailures({
