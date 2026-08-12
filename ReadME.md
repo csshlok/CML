@@ -66,6 +66,7 @@ Vault keeps that context outside the model and retrieves only what a question ne
 - **Shape Home around your workflow** with Focused, Library, and Activity presets, type and sort controls, density choices, and reorderable sections.
 - **Continue where you left off** across recently opened sources, chats, clusters, and projects.
 - **Index codebases with Odin** and ask how a project works without browsing every file manually.
+- **Trace project behavior with Flow** to see a plain-English, step-by-step path through indexed code, with source evidence for every verified step.
 - **Request graphs and trees when needed** while keeping the normal interface focused on useful summaries and answers.
 - **Connect ChatGPT and other tools deliberately** through authenticated Bridge, MCP, the local API, and approved command-line clients.
 - **Use a profile that stays consistent** across onboarding, Settings, and the sidebar, including your display name and profile photo.
@@ -170,6 +171,7 @@ odin project reindex . --layer retrieval
 odin context "How does authentication work?" --project .
 odin project explain . register_project
 odin project path . register_project build_structure_graph
+odin project flow . "How does a request enter and move through the system?"
 
 # Request structural output
 odin project graph . --query "project indexing" --depth 2 --format markdown
@@ -180,6 +182,66 @@ odin project remove .
 ```
 
 Odin never executes imported code and never writes into the registered repository. Scope changes build a candidate snapshot while the last usable snapshot remains active. Graph and tree views stay out of the way until you explicitly request them. Registered computers and command-line clients remain visible and revocable in Settings.
+
+### Trace project behavior with Flow
+
+Flow turns Odin's indexed project structure into a focused explanation of one
+behavior. Instead of displaying every function and connection in a repository, it
+finds a small path that answers a question such as:
+
+- “Show how a request enters and moves through the system.”
+- “Trace the main data-processing pipeline.”
+- “Show how stored data reaches the user interface.”
+
+Open a project and ask Odin to show or trace a flow, or open **Project map** and
+choose **Flow**. Vault presents the result in plain English first, followed by the
+verified steps. Selecting a step shows the underlying symbol, file and line,
+signature, source excerpt, and the indexed relationship to the next step.
+
+When several paths are plausible, Flow keeps the best match and bounded
+alternatives separate. It can also surface supporting architectural signals,
+related tests, freshness warnings, and explicit limitations. If Odin cannot join
+the relevant areas with verified relationships, it says so and offers specific
+symbols or entrypoints to try instead of inventing a path.
+
+Flow reads the active indexed snapshot and never executes the project. If the
+working tree has changed since that snapshot, Vault identifies the excluded newer
+files so the explanation is not mistaken for the current unindexed code.
+
+#### Why this makes Odin more useful
+
+A project graph can tell you which symbols are connected. Flow adds the missing
+explanation: what those connections do together, where a behavior begins, what
+happens next, and why each step matters. This makes Odin useful before you know the
+right function names or understand the repository's internal vocabulary.
+
+For developers, that means less time jumping between definitions while onboarding,
+debugging, reviewing a change, or locating the safest place to extend a feature.
+The plain-English overview gives you the mental model first; the step inspector then
+lets you verify it against exact files, lines, signatures, excerpts, and relationship
+evidence. Alternatives and limitations remain visible instead of being blended into
+one overconfident explanation.
+
+For LLMs, Flow provides a compact, ordered representation of the relevant behavior.
+An assistant no longer needs a large repository dump or a loose collection of search
+matches just to reconstruct the execution path. The bounded flow preserves the
+symbols, relationships, source evidence, snapshot freshness, and known uncertainty
+needed for better explanations, debugging suggestions, implementation planning, and
+test-impact reasoning. This reduces irrelevant prompt material and gives the model
+clear evidence boundaries: verified steps can be used confidently, while missing or
+stale relationships must remain qualified.
+
+The same result is available from the Odin command as Markdown for reading or
+sharing, and as JSON for tools that need structured context:
+
+```powershell
+odin project flow . "How does authentication reach the session store?" --format markdown
+odin project flow . "How does authentication reach the session store?" --format json
+```
+
+This lets you inspect the flow yourself, give it to an LLM as focused project
+context, or build a repeatable workflow around the structured output without giving
+the model unrestricted access to the repository.
 
 ## How retrieval works
 
@@ -443,7 +505,8 @@ MCP connection. Published installers are built from tagged release revisions.
 
 The core local workflow is implemented: vaults, durable ingestion, indexing,
 retrieval, grounded chat, clusters, source moves, memory, configurable Home
-workspaces, Bridge/MCP delivery, approved command-line access, and Odin projects.
+workspaces, Bridge/MCP delivery, approved command-line access, Odin projects, and
+evidence-backed project Flow explanations.
 
 The latest tagged build is **v0.1.14**. The current security and stability
 remediation includes durable job recovery, bounded watched-folder reconciliation,
