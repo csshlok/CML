@@ -228,6 +228,31 @@ test("desktop window and preload are wired to the custom frameless chrome", () =
     /\.vault-window-chrome\s*\{[^}]*width:\s*100%;[^}]*-webkit-app-region:\s*drag/s,
     "the restored window must expose a full-width drag surface",
   );
+  assert.match(
+    stylesSource,
+    /\.vault-window-chrome\s*\{[^}]*position:\s*absolute;[^}]*transform:\s*translateY\(calc\(-100% \+ 3px\)\)/s,
+    "the chrome must leave only a small hover target without reserving layout space",
+  );
+  assert.match(
+    stylesSource,
+    /\.vault-window-reveal-zone\s*\{[^}]*height:\s*6px;[^}]*pointer-events:\s*auto;[^}]*-webkit-app-region:\s*no-drag/s,
+    "Electron must expose a non-draggable sensor above the draggable chrome",
+  );
+  assert.match(
+    stylesSource,
+    /\.vault-window-chrome-layer:hover \.vault-window-chrome,[\s\S]*?\.vault-window-chrome-layer:focus-within \.vault-window-chrome\s*\{[^}]*transform:\s*translateY\(0\)/s,
+    "pointer and keyboard users must both be able to reveal the drag surface",
+  );
+  assert.match(
+    stylesSource,
+    /@media \(hover:\s*none\), \(pointer:\s*coarse\)\s*\{[\s\S]*?\.vault-window-chrome\s*\{[^}]*transform:\s*translateY\(0\)/s,
+    "devices without dependable hover must retain visible window controls",
+  );
+  assert.match(
+    stylesSource,
+    /@media \(prefers-reduced-motion:\s*reduce\)\s*\{[\s\S]*?\.vault-window-chrome\s*\{[^}]*transition-duration:\s*0\.01ms/s,
+    "the reveal must respect reduced-motion preferences",
+  );
   assert.doesNotMatch(
     stylesSource,
     /\.vault-desktop-content\s*\{[^}]*padding-top:/s,

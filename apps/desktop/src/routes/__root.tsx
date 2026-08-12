@@ -159,7 +159,7 @@ function RootComponent() {
     <QueryClientProvider client={queryClient}>
       <div className={hasDesktopChrome ? "vault-desktop-frame" : "h-screen"}>
         {hasDesktopChrome ? <WindowChrome /> : null}
-        <div className={hasDesktopChrome ? "vault-desktop-content" : undefined}>
+        <div className={hasDesktopChrome ? "vault-desktop-content" : "h-full min-h-0"}>
           <Outlet />
         </div>
       </div>

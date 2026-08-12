@@ -29,49 +29,52 @@ export function WindowChrome() {
   const isExpanded = windowState.maximized || windowState.fullScreen;
 
   return (
-    <header
-      className="vault-window-chrome"
-      data-testid="window-chrome"
-      aria-hidden={controls ? undefined : true}
-    >
-      {controls ? <div
-        className="vault-window-controls"
-        data-window-control-safe-zone=""
-        aria-label="Window controls"
+    <div className="vault-window-chrome-layer">
+      <div className="vault-window-reveal-zone" aria-hidden="true" />
+      <header
+        className="vault-window-chrome"
+        data-testid="window-chrome"
+        aria-hidden={controls ? undefined : true}
       >
-        <button
-          type="button"
-          className="vault-window-control"
-          aria-label="Minimize"
-          title="Minimize"
-          onClick={() => void controls.minimize()}
+        {controls ? <div
+          className="vault-window-controls"
+          data-window-control-safe-zone=""
+          aria-label="Window controls"
         >
-          <span className="vault-window-icon vault-window-icon-minimize" aria-hidden="true" />
-        </button>
-        <button
-          type="button"
-          className="vault-window-control"
-          aria-label={isExpanded ? "Restore" : "Maximize"}
-          title={isExpanded ? "Restore" : "Maximize"}
-          onClick={() => void controls.toggleMaximize().then(setWindowState)}
-        >
-          <span
-            className={`vault-window-icon ${
-              isExpanded ? "vault-window-icon-restore" : "vault-window-icon-maximize"
-            }`}
-            aria-hidden="true"
-          />
-        </button>
-        <button
-          type="button"
-          className="vault-window-control vault-window-control-close"
-          aria-label="Close"
-          title="Close"
-          onClick={() => void controls.close()}
-        >
-          <span className="vault-window-icon vault-window-icon-close" aria-hidden="true" />
-        </button>
-      </div> : null}
-    </header>
+          <button
+            type="button"
+            className="vault-window-control"
+            aria-label="Minimize"
+            title="Minimize"
+            onClick={() => void controls.minimize()}
+          >
+            <span className="vault-window-icon vault-window-icon-minimize" aria-hidden="true" />
+          </button>
+          <button
+            type="button"
+            className="vault-window-control"
+            aria-label={isExpanded ? "Restore" : "Maximize"}
+            title={isExpanded ? "Restore" : "Maximize"}
+            onClick={() => void controls.toggleMaximize().then(setWindowState)}
+          >
+            <span
+              className={`vault-window-icon ${
+                isExpanded ? "vault-window-icon-restore" : "vault-window-icon-maximize"
+              }`}
+              aria-hidden="true"
+            />
+          </button>
+          <button
+            type="button"
+            className="vault-window-control vault-window-control-close"
+            aria-label="Close"
+            title="Close"
+            onClick={() => void controls.close()}
+          >
+            <span className="vault-window-icon vault-window-icon-close" aria-hidden="true" />
+          </button>
+        </div> : null}
+      </header>
+    </div>
   );
 }

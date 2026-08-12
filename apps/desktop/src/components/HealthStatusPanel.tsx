@@ -1,4 +1,4 @@
-import { useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
+import { useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
 import { GripHorizontal, HeartPulse, RefreshCw, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import type {
@@ -37,7 +37,39 @@ export function HealthStatusPanel({
     pointerY: number;
     left: number;
     top: number;
+    width: number;
+    height: number;
   } | null>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const move = (event: PointerEvent) => {
+      const start = dragStart.current;
+      if (!start) return;
+      setPosition({
+        left: Math.max(
+          12,
+          Math.min(window.innerWidth - start.width - 12, start.left + event.clientX - start.pointerX),
+        ),
+        top: Math.max(
+          12,
+          Math.min(window.innerHeight - start.height - 12, start.top + event.clientY - start.pointerY),
+        ),
+      });
+    };
+    const stop = () => {
+      dragStart.current = null;
+    };
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", stop);
+    window.addEventListener("pointercancel", stop);
+    return () => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", stop);
+      window.removeEventListener("pointercancel", stop);
+      dragStart.current = null;
+    };
+  }, [open]);
 
   if (!open) return null;
 
@@ -64,19 +96,11 @@ export function HealthStatusPanel({
       pointerY: event.clientY,
       left: bounds.left,
       top: bounds.top,
+      width: bounds.width,
+      height: bounds.height,
     };
+    event.preventDefault();
     event.currentTarget.setPointerCapture(event.pointerId);
-  }
-
-  function drag(event: ReactPointerEvent<HTMLDivElement>) {
-    const start = dragStart.current;
-    if (!start) return;
-    const panelWidth = Math.min(380, window.innerWidth - 24);
-    const panelHeight = 390;
-    setPosition({
-      left: Math.max(12, Math.min(window.innerWidth - panelWidth - 12, start.left + event.clientX - start.pointerX)),
-      top: Math.max(12, Math.min(window.innerHeight - panelHeight - 12, start.top + event.clientY - start.pointerY)),
-    });
   }
 
   function stopDrag(event: ReactPointerEvent<HTMLDivElement>) {
@@ -97,7 +121,6 @@ export function HealthStatusPanel({
       <div
         className="flex cursor-move touch-none items-center gap-2 border-b border-border px-4 py-3 select-none"
         onPointerDown={startDrag}
-        onPointerMove={drag}
         onPointerUp={stopDrag}
         onPointerCancel={stopDrag}
       >
