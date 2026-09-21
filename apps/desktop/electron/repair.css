@@ -5,8 +5,8 @@
 body {
   margin: 0;
   min-height: 100vh;
-  background: #fbfaf6;
-  color: #1f1a17;
+  background: var(--bg-canvas);
+  color: var(--text-primary);
   font-family: "Segoe UI", ui-sans-serif, system-ui, sans-serif;
 }
 
@@ -35,7 +35,7 @@ h1 {
 #repair-detail {
   max-width: 680px;
   margin: 0;
-  color: #5f524b;
+  color: var(--text-muted);
   font-size: 16px;
   line-height: 1.6;
   overflow-wrap: anywhere;
@@ -45,9 +45,9 @@ h1 {
 dl {
   margin: 24px 0 0;
   padding: 18px 20px;
-  border: 1px solid #d7cfc5;
+  border: 1px solid var(--border-input);
   border-radius: 10px;
-  background: #fffdf9;
+  background: var(--bg-surface);
 }
 
 .repair-guidance strong {
@@ -56,7 +56,7 @@ dl {
 
 .repair-guidance p {
   margin: 7px 0 0;
-  color: #5f524b;
+  color: var(--text-muted);
   font-size: 13px;
   line-height: 1.55;
 }
@@ -64,7 +64,7 @@ dl {
 dl {
   display: grid;
   gap: 14px;
-  background: #fff;
+  background: var(--bg-card);
 }
 
 dl[hidden] {
@@ -72,7 +72,7 @@ dl[hidden] {
 }
 
 dt {
-  color: #8b7d72;
+  color: var(--text-subtle);
   font-size: 12px;
 }
 
@@ -91,28 +91,33 @@ dd {
 .repair-actions button {
   height: 40px;
   padding: 0 16px;
-  border: 1px solid #ded6cc;
+  border: 1px solid var(--border-input);
   border-radius: 8px;
-  background: #fffdf9;
-  color: #1f1a17;
+  background: var(--bg-surface);
+  color: var(--text-primary);
   font: inherit;
 }
 
 .repair-actions button:hover:not(:disabled) {
-  border-color: #bcaea2;
-  background: #f7f2eb;
+  border-color: var(--border-strong);
+  background: color-mix(in srgb, var(--primary) 8%, var(--bg-surface));
 }
 
 .repair-actions button:focus-visible {
-  outline: 2px solid #765f4d;
+  outline: 2px solid var(--primary);
   outline-offset: 2px;
 }
 
 .repair-actions button.primary {
-  border-color: #765f4d;
-  background: #765f4d;
-  color: #fff;
+  border-color: var(--primary);
+  background: var(--primary);
+  color: var(--primary-text);
   font-weight: 600;
+}
+
+.repair-actions button.primary:hover:not(:disabled) {
+  border-color: var(--primary-hover);
+  background: var(--primary-hover);
 }
 
 .repair-actions button:disabled {
@@ -123,7 +128,7 @@ dd {
 .repair-status {
   min-height: 20px;
   margin: 12px 0 0;
-  color: #7c6f65;
+  color: var(--text-muted);
   font-size: 13px;
 }
 
