@@ -1265,14 +1265,14 @@ function Onboarding() {
   if (!setupLoaded) {
     return (
       <main
-        className="flex h-full items-center justify-center bg-[#fbfbfb] px-6 text-[#171717]"
+        className="flex h-full items-center justify-center bg-background px-6 text-[var(--text-primary)]"
         aria-label="Loading setup"
       >
         <section className="w-full max-w-sm text-center" role="status" aria-live="polite">
           <BrandLogo className="mx-auto h-12 w-auto select-none" />
-          <Loader2 className="mx-auto mt-8 h-5 w-5 animate-spin text-[#655f58] motion-reduce:animate-none" />
+          <Loader2 className="mx-auto mt-8 h-5 w-5 animate-spin text-muted-foreground motion-reduce:animate-none" />
           <h1 className="mt-4 text-lg font-semibold">Restoring setup</h1>
-          <p className="mt-2 text-sm leading-6 text-[#655f58]">
+          <p className="mt-2 text-sm leading-6 text-muted-foreground">
             Vault is checking your saved library and completed setup steps.
           </p>
         </section>
@@ -1282,18 +1282,18 @@ function Onboarding() {
 
   if (missingLibraryPath) {
     return (
-      <main className="flex h-full items-center justify-center bg-[#fbfbfb] px-6 text-[#171717]">
-        <section className="w-full max-w-xl rounded-lg border border-[#dedbd5] bg-white p-8 shadow-[0_18px_60px_rgba(50,43,35,0.08)]">
+      <main className="flex h-full items-center justify-center bg-background px-6 text-[var(--text-primary)]">
+        <section className="w-full max-w-xl rounded-lg border border-border bg-card p-8 shadow-[var(--soft-shadow)]">
           <BrandLogo className="h-12 w-auto select-none" />
-          <div className="mt-10 flex h-11 w-11 items-center justify-center rounded-md bg-[#f4e9dc] text-[#9a5d26]">
+          <div className="mt-10 flex h-11 w-11 items-center justify-center rounded-md bg-[var(--status-warn-bg)] text-[var(--status-warn-ink)]">
             <AlertTriangle className="h-5 w-5" />
           </div>
           <h1 className="mt-5 text-2xl font-semibold tracking-[-0.025em]">Your library data is missing</h1>
-          <p className="mt-3 max-w-lg text-sm leading-6 text-[#655f58]">
+          <p className="mt-3 max-w-lg text-sm leading-6 text-muted-foreground">
             Vault found your completed setup, but the <code>.vault</code> folder is no longer at
             the saved location. It may have been moved or deleted.
           </p>
-          <div className="mt-5 rounded-md bg-[#f6f4f0] px-3 py-2 font-mono text-xs text-[#655f58]">
+          <div className="mt-5 rounded-md bg-secondary px-3 py-2 font-mono text-xs text-muted-foreground">
             {displayPath(missingLibraryPath)}/.vault
           </div>
           <div className="mt-7 flex flex-wrap gap-3">
@@ -1307,7 +1307,7 @@ function Onboarding() {
               Open saved location
             </Button>
           </div>
-          <p className="mt-4 text-xs leading-5 text-[#777069]">
+          <p className="mt-4 text-xs leading-5 text-[var(--text-subtle)]">
             Starting again clears the broken setup pointer. It does not delete downloaded models
             or files outside the missing library folder.
           </p>
@@ -1318,12 +1318,12 @@ function Onboarding() {
 
   if (step === 0) {
     return (
-      <main className="flex h-full items-center justify-center bg-[#fbfbfb] text-[#171717]">
+      <main className="flex h-full items-center justify-center bg-background text-[var(--text-primary)]">
         <div className="flex -translate-y-28 flex-col items-center">
           <BrandLogo className="h-[132px] w-auto select-none" />
           <h1 className="mt-20 text-[46px] font-bold tracking-[-0.035em]">Welcome to Vault</h1>
           <Button
-            className="mt-11 h-[53px] min-w-[194px] rounded-[3px] bg-[#8d806e] text-white hover:bg-[#786d5f]"
+            className="mt-11 h-[53px] min-w-[194px] rounded-[3px]"
             onClick={() => void runSetupTransition(next)}
             disabled={transitionBusy}
           >
