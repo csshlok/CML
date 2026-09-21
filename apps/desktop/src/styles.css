@@ -2,6 +2,13 @@
 @source "../src";
 @import "tw-animate-css";
 
+/* theme-literal-color-allowed: file — this is the centralized palette
+   definition (locked CONTEXT.md decision: "Literal colors are allowed only
+   inside the centralized palette definitions or an explicitly documented
+   media-preservation exception"). Every literal hex value in this file is
+   a primitive declaration; all other files must reference these via
+   semantic var() aliases instead of introducing their own literal colors. */
+
 @keyframes vault-download-sweep {
   from { transform: translateX(-100%); }
   to { transform: translateX(320%); }

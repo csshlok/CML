@@ -814,6 +814,8 @@ function FirstUseTour({
 
   return (
     <div className="fixed inset-0 z-[80]" role="presentation">
+      {/* theme-literal-color-allowed: modal/tour scrim stays a fixed dark
+          dimmer in both themes (established Plan 00-03/00-04 pattern) */}
       <div className="absolute inset-0 bg-black/35" />
       {targetRect ? (
         <div

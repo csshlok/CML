@@ -463,6 +463,9 @@ export function ProjectGraphWorkspace({
                     width={size.width}
                     height={size.height}
                     graphData={graphData}
+                    // theme-literal-color-allowed: fully transparent (alpha
+                    // 0) — not a presentation color, lets the themed card
+                    // surface behind the canvas show through in both themes.
                     backgroundColor="rgba(0,0,0,0)"
                     warmupTicks={80}
                     cooldownTicks={150}

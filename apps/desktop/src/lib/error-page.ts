@@ -1,3 +1,9 @@
+// theme-literal-color-allowed: file — this is a standalone SSR-rendered
+// fallback document (returned when the app's own server entry throws
+// catastrophically), so it has no access to the React tree, app CSS bundle,
+// or Electron's theme IPC. Like startup.html/repair.html it is themed via
+// a `prefers-color-scheme` media query instead, matching styles.css's
+// light/dark primitive values by hand since it cannot import that file.
 export function renderErrorPage(): string {
   return `<!doctype html>
 <html lang="en">
@@ -5,6 +11,7 @@ export function renderErrorPage(): string {
     <meta charset="utf-8" />
     <title>Vault could not open this page</title>
     <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="light dark" />
     <style>
       * { box-sizing: border-box; }
       body { font: 15px/1.5 system-ui, -apple-system, sans-serif; background: rgb(250 250 248); color: rgb(26 25 22); display: grid; place-items: center; min-height: 100vh; margin: 0; padding: 1.5rem; }
@@ -16,6 +23,12 @@ export function renderErrorPage(): string {
       a, button { padding: 0.5rem 1rem; border-radius: 0.375rem; font: inherit; cursor: pointer; text-decoration: none; border: 1px solid transparent; }
       .primary { background: rgb(124 110 90); color: white; }
       .secondary { background: white; color: rgb(26 25 22); border-color: rgb(216 215 210); }
+      @media (prefers-color-scheme: dark) {
+        body { background: rgb(33 29 25); color: rgb(242 236 227); }
+        p { color: rgb(183 169 154); }
+        .primary { background: rgb(201 169 125); color: rgb(33 29 25); }
+        .secondary { background: rgb(44 38 33); color: rgb(242 236 227); border-color: rgb(78 67 57); }
+      }
     </style>
   </head>
   <body>

@@ -560,6 +560,8 @@ function ClustersList() {
 
       </div>
       {renamingCluster ? (
+        // theme-literal-color-allowed: modal scrim stays a fixed dark dimmer
+        // in both themes (established Plan 00-03/00-04 pattern)
         <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/30 p-4">
           <div
             role="dialog"

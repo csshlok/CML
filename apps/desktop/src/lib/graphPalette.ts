@@ -1,3 +1,11 @@
+// theme-literal-color-allowed: file — the fallback literals below are
+// defensive values for readVar()'s second argument (used only if
+// getComputedStyle somehow returns an empty string before styles.css has
+// applied), and they are the exact light-theme values already declared as
+// primitives in styles.css, the actual centralized palette. This module is
+// the canvas-only counterpart of that palette (Canvas 2D cannot resolve
+// var() itself), not an independent source of color.
+//
 // Theme-aware color palette for canvas-rendered graphs (Knowledge Map,
 // Project Graph/Odin). Canvas 2D contexts cannot resolve CSS custom
 // properties on their own (fillStyle/strokeStyle only accept literal color

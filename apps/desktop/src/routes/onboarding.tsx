@@ -2108,6 +2108,8 @@ function Onboarding() {
         />
       )}
       {showSkipModels && (
+        // theme-literal-color-allowed: modal scrim stays a fixed dark dimmer
+        // in both themes (established Plan 00-03/00-04 pattern)
         <div
           className="fixed inset-0 z-[60] flex items-center justify-center bg-black/30 p-4"
           role="presentation"
@@ -2143,6 +2145,8 @@ function Onboarding() {
         </div>
       )}
       {showSkipSecurity && (
+        // theme-literal-color-allowed: modal scrim stays a fixed dark dimmer
+        // in both themes (established Plan 00-03/00-04 pattern)
         <div
           className="fixed inset-0 z-[60] flex items-center justify-center bg-black/30 p-4"
           role="presentation"
@@ -2178,6 +2182,8 @@ function Onboarding() {
         </div>
       )}
       {showEmbeddingConsent && (
+        // theme-literal-color-allowed: modal scrim stays a fixed dark dimmer
+        // in both themes (established Plan 00-03/00-04 pattern)
         <div
           className="fixed inset-0 z-[60] flex items-center justify-center bg-black/30 p-4"
           role="presentation"

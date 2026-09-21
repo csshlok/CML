@@ -1,3 +1,9 @@
+/* theme-literal-color-allowed: file — this is the centralized static-
+   document palette mirror (see comment below): startup.html and repair.html
+   cannot import the Tailwind-processed src/styles.css, so this file's
+   literal hex values ARE its primitive declarations, kept in 1:1 sync with
+   styles.css by hand. Do not add literal colors outside this file to the
+   static documents that consume it. */
 :root {
   --vault-window-controls-width: 138px;
   --vault-window-controls-height: 32px;
