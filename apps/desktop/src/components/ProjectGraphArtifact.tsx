@@ -26,6 +26,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { PageHeader } from "@/components/layout/WindowAware";
 import { displayPath } from "@/lib/displayPath";
+import { categoryForKind, useGraphPalette, type GraphPalette } from "@/lib/graphPalette";
 
 type GraphNode = ProjectGraphNode & { x?: number; y?: number; color?: string };
 type GraphLink = ProjectGraphEdge & { source: string | GraphNode; target: string | GraphNode };
@@ -109,6 +110,7 @@ export function ProjectGraphWorkspace({
   const [containerElement, setContainerElement] = useState<HTMLDivElement | null>(null);
   const [size, setSize] = useState({ width: 900, height: 620 });
   const [ForceGraph, setForceGraph] = useState<ComponentType<any> | null>(null);
+  const palette = useGraphPalette();
 
   useEffect(() => {
     if (mode !== "graph") {
@@ -188,10 +190,10 @@ export function ProjectGraphWorkspace({
 
   const graphData = useMemo(
     () => ({
-      nodes: (view?.nodes ?? []).map((node) => ({ ...node, color: colorForKind(node.kind) })),
+      nodes: (view?.nodes ?? []).map((node) => ({ ...node, color: colorForKind(node.kind, palette) })),
       links: (view?.edges ?? []).map((edge) => ({ ...edge })),
     }),
-    [view],
+    [view, palette],
   );
   const selected = view?.nodes.find((node) => node.id === selectedId) ?? null;
   const selectedConnections = useMemo(() => {
@@ -449,10 +451,10 @@ export function ProjectGraphWorkspace({
                   <div className="pointer-events-none absolute left-4 top-4 z-10 border border-border bg-card/95 px-3 py-2 text-[11px] text-muted-foreground">
                     <div className="font-medium text-foreground">Color key</div>
                     <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1">
-                      <LegendDot color={colorForKind("file")} label="file" />
-                      <LegendDot color={colorForKind("function")} label="function" />
-                      <LegendDot color={colorForKind("class")} label="class" />
-                      <LegendDot color={colorForKind("route")} label="route" />
+                      <LegendDot color={colorForKind("file", palette)} label="file" />
+                      <LegendDot color={colorForKind("function", palette)} label="function" />
+                      <LegendDot color={colorForKind("class", palette)} label="class" />
+                      <LegendDot color={colorForKind("route", palette)} label="route" />
                     </div>
                     <div className="mt-1">Arrows follow the indexed relationship.</div>
                   </div>
@@ -467,19 +469,32 @@ export function ProjectGraphWorkspace({
                     d3VelocityDecay={0.34}
                     nodeRelSize={5}
                     nodeLabel={(node: GraphNode) => `${node.kind}: ${node.label}`}
-                    nodeColor={(node: GraphNode) => node.color ?? "#6B6A66"}
-                    linkColor={() => "#B9B7B0"}
+                    nodeColor={(node: GraphNode) => node.color ?? palette.neutral}
+                    linkColor={() => palette.edge}
                     linkWidth={(link: GraphLink) => (link.type === "calls" ? 1.8 : 1)}
                     linkDirectionalArrowLength={3}
                     linkDirectionalArrowRelPos={0.86}
                     onNodeClick={(node: GraphNode) => setSelectedId(node.id)}
                     nodeCanvasObjectMode={() => "after"}
                     nodeCanvasObject={(node: GraphNode, context: CanvasRenderingContext2D, scale: number) => {
-                      const important = node.id === selectedId || (view.insights.key_areas ?? []).some((area) => area.id === node.id);
-                      if (!important || node.x == null || node.y == null) return;
+                      if (node.x == null || node.y == null) return;
+                      const isSelected = node.id === selectedId;
+                      if (isSelected) {
+                        context.beginPath();
+                        context.arc(node.x, node.y, 8 / scale, 0, Math.PI * 2);
+                        context.lineWidth = 2 / scale;
+                        context.strokeStyle = palette.nodeSelectedRing;
+                        context.stroke();
+                      }
+                      const important = isSelected || (view.insights.key_areas ?? []).some((area) => area.id === node.id);
+                      if (!important) return;
                       const fontSize = Math.max(11 / scale, 3);
                       context.font = `${fontSize}px sans-serif`;
-                      context.fillStyle = "#25231F";
+                      context.lineJoin = "round";
+                      context.lineWidth = Math.max(2, 3 / scale);
+                      context.strokeStyle = palette.labelHalo;
+                      context.strokeText(node.label, node.x + 8 / scale, node.y + 3 / scale);
+                      context.fillStyle = palette.label;
                       context.fillText(node.label, node.x + 8 / scale, node.y + 3 / scale);
                     }}
                   />
@@ -734,13 +749,9 @@ function ProjectTree({
   );
 }
 
-function colorForKind(kind: string) {
-  if (kind === "route") return "#C0704A";
-  if (kind === "class") return "#8A7CC0";
-  if (kind === "function" || kind === "method") return "#5B8A5B";
-  if (kind === "file" || kind === "module") return "#4A78A8";
-  if (kind === "package") return "#B8944A";
-  return "#7C6E5A";
+function colorForKind(kind: string, palette: GraphPalette) {
+  const category = categoryForKind(kind);
+  return category ? palette.categorical[category] : palette.neutral;
 }
 
 function humanize(value: string) {

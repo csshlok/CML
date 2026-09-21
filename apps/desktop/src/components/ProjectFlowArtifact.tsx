@@ -340,16 +340,20 @@ function FlowAnalysis({ view }: { view: ProjectFlowView }) {
 function FlowStatus({ view }: { view: ProjectFlowView }) {
   const stale = view.freshness.changed_file_count > 0 || view.freshness.structure_status === "stale";
   return (
-    <div className={stale || view.warnings.length ? "bg-amber-500/10" : "bg-card/40"}>
+    <div className={stale || view.warnings.length ? "bg-[var(--status-warn-bg)]" : "bg-card/40"}>
       <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border px-4 py-2 text-xs sm:px-6">
         <span className="flex items-center gap-2">
-          {stale || view.warnings.length ? <AlertTriangle className="h-4 w-4 text-amber-700" /> : <CheckCircle2 className="h-4 w-4 text-emerald-700" />}
+          {stale || view.warnings.length ? (
+            <AlertTriangle className="h-4 w-4 text-[var(--status-warn-ink)]" />
+          ) : (
+            <CheckCircle2 className="h-4 w-4 text-[var(--status-ready)]" />
+          )}
           {stale ? `Last indexed snapshot · ${view.freshness.changed_file_count} changed files excluded` : "Current indexed snapshot"}
         </span>
         <span>{view.indexed_commit ? `Commit ${view.indexed_commit.slice(0, 8)}` : "Folder snapshot"}</span>
       </div>
       {view.warnings.length ? (
-        <div className="border-b border-border px-4 py-2 text-xs leading-5 text-amber-900 dark:text-amber-200 sm:px-6" role="status">
+        <div className="border-b border-border px-4 py-2 text-xs leading-5 text-[var(--status-warn-ink)] sm:px-6" role="status">
           {view.warnings.join(" ")}
         </div>
       ) : null}
