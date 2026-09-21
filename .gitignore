@@ -60,6 +60,13 @@ tmp-data/
 **/.playwright-mcp/
 .wrangler/
 .dev.vars
+
+# Local-only planning and benchmark work. Never publish these paths.
+/.planning/
+/scripts/backend/benchmark_odin_graphify.py
+/scripts/backend/benchmark_odin_project.py
+/docs/ODIN_GRAPHIFY_BENCHMARK_2026-09-21.md
+/docs/benchmarks/odin-graphify-2026-09-21-summary.json
 external/
 mock-data/**/.vault/.vault.lock
 mock-data/**/.vault/embedding-runtime.json
@@ -168,3 +175,4 @@ docs/ODIN_PROJECT_INTELLIGENCE_IMPLEMENTATION_PLAN_2026-07-31.md
 /docs/*
 /docs/FEATURE_AND_QUALITY_CATALOG.md
 !/docs/STABILITY_AND_SECURITY_REMEDIATION_PLAN.md
+brag-output/
