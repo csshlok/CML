@@ -22,6 +22,14 @@ export interface GraphPalette {
   categorical: Record<GraphCategory, string>;
   /** Neutral fallback for kinds that don't map to one of the six categories. */
   neutral: string;
+  /** A warmer, brand-toned neutral for a second uncategorized kind that
+   * still needs to read as distinct from `neutral` (e.g. "source" vs.
+   * "unclustered collection" in the Knowledge Map). */
+  accentNeutral: string;
+  /** The canvas/card surface a force-graph instance should paint as its own
+   * backgroundColor, so it matches the surrounding chrome in both themes
+   * instead of hardcoding white. */
+  canvasBackground: string;
   /** Default node/edge label text color. */
   label: string;
   /** De-emphasized label text (e.g. edge/link labels). */
@@ -73,6 +81,8 @@ export function readGraphPalette(): GraphPalette {
       blush: readVar("--cluster-blush", "#C06878"),
     },
     neutral: readVar("--graph-label-muted", "#6B6A66"),
+    accentNeutral: readVar("--primary", "#7C6E5A"),
+    canvasBackground: readVar("--bg-card", "#FFFFFF"),
     label: readVar("--graph-label", "#3D3C39"),
     labelMuted: readVar("--graph-label-muted", "#6B6A66"),
     labelHalo: readVar("--bg-canvas", "#FAFAF8"),

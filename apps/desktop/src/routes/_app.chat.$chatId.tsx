@@ -1202,9 +1202,9 @@ function ChatView() {
               className={
                 "mx-auto mb-2 max-w-3xl rounded-md border px-3 py-2 text-xs " +
                 (statusToneForPartialFailure(latestPartialFailure) === "critical"
-                  ? "border-red-300 bg-red-50 text-red-950"
+                  ? "border-[var(--status-error-border)] bg-[var(--status-error-bg)] text-[var(--status-error)]"
                   : statusToneForPartialFailure(latestPartialFailure) === "warning"
-                    ? "border-amber-300 bg-amber-50 text-amber-950"
+                    ? "border-[var(--status-warn-border)] bg-[var(--status-warn-bg)] text-[var(--status-warn-ink)]"
                     : "border-border bg-background text-muted-foreground")
               }
             >
@@ -1425,11 +1425,11 @@ function Message({
   }
   if (msg.role === "retriable") {
     return (
-      <div className="rounded-md border border-amber-300 bg-amber-50 p-4 text-sm text-amber-950">
+      <div className="rounded-md border border-[var(--status-warn-border)] bg-[var(--status-warn-bg)] p-4 text-sm text-[var(--status-warn-ink)]">
         <div className="font-medium">Interrupted answer</div>
-        <p className="mt-1 break-words text-amber-900">{msg.content}</p>
+        <p className="mt-1 break-words">{msg.content}</p>
         {msg.prompt ? (
-          <p className="mt-2 break-words rounded border border-amber-200 bg-white/60 px-2 py-1 text-xs text-amber-900">
+          <p className="mt-2 break-words rounded border border-[var(--status-warn-border)] bg-card/60 px-2 py-1 text-xs">
             {msg.prompt}
           </p>
         ) : null}

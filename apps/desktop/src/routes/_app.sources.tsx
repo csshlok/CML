@@ -1219,8 +1219,8 @@ function SourceInspector({
       <div className="mt-8 border-b border-border pb-3 text-sm font-medium">Source details</div>
 
       {source.ingestionStage === "paused" ? (
-        <section className="mt-6 rounded-md border border-[var(--status-warning)]/35 bg-[var(--status-warning-bg)] p-4">
-          <div className="font-medium text-[var(--status-warning)]">Indexing is paused</div>
+        <section className="mt-6 rounded-md border border-[var(--status-warn)]/35 bg-[var(--status-warn-bg)] p-4">
+          <div className="font-medium text-[var(--status-warn)]">Indexing is paused</div>
           <p className="mt-1 break-words text-sm leading-6 text-[var(--text-body)]">
             {source.ingestionStatusDetail || "A required local runtime is unavailable. Vault will resume automatically when it is ready."}
           </p>
@@ -1259,7 +1259,7 @@ function SourceInspector({
           <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Description</div>
           {source.state === "indexed" && source.metadataQuality !== "semantic" ? (
             <span className="inline-flex items-center gap-1.5 text-xs text-muted-foreground">
-              <span className="h-1.5 w-1.5 rounded-full bg-[var(--status-warning)]" aria-hidden="true" />
+              <span className="h-1.5 w-1.5 rounded-full bg-[var(--status-warn)]" aria-hidden="true" />
               Improving
             </span>
           ) : null}
@@ -1419,7 +1419,7 @@ function StateChip({ source }: { source: Source }) {
       : ingestionStage === "needs_attention"
         ? "var(--status-issue)"
         : ingestionStage === "paused"
-          ? "var(--status-warning)"
+          ? "var(--status-warn)"
         : "var(--status-learning)";
   return (
     <span className="inline-flex items-center gap-1.5 text-xs text-muted-foreground">

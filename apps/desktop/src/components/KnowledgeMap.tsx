@@ -14,15 +14,7 @@ import {
   type MapNodeRecord,
 } from "@/lib/backend";
 import { DegradedState, EmptyState, SkeletonRegion, StatusLabel } from "@/components/product/Feedback";
-
-const clusterColors: Record<string, string> = {
-  sage: "#5B8A5B",
-  terracotta: "#C0704A",
-  sky: "#4A78A8",
-  sand: "#9A762F",
-  lavender: "#7A6BAF",
-  blush: "#A94F64",
-};
+import { useGraphPalette, type GraphPalette } from "@/lib/graphPalette";
 
 export function KnowledgeMap({
   vaultId,
@@ -69,6 +61,7 @@ export function KnowledgeMap({
   const [zoomLevel, setZoomLevel] = useState(restoredViewRef.current?.zoom ?? 1);
   const [viewRestored, setViewRestored] = useState(!persistView);
   const deferredQuery = useDeferredValue(query.trim().toLowerCase());
+  const palette = useGraphPalette();
 
   useEffect(() => {
     if (listMode) {
@@ -437,9 +430,9 @@ export function KnowledgeMap({
           ) : null}
         </div>
         <div className="flex flex-wrap items-center gap-x-5 gap-y-2 border-b border-border bg-[var(--bg-canvas)] px-4 py-2.5 text-xs text-muted-foreground">
-          <MapLegend color={clusterColors.sage} label="Cluster" />
-          <MapLegend color="#7C6E5A" label="Source" />
-          <MapLegend color="#9B9A96" label="Unclustered collection" />
+          <MapLegend color={palette.categorical.sage} label="Cluster" />
+          <MapLegend color={palette.accentNeutral} label="Source" />
+          <MapLegend color={palette.neutral} label="Unclustered collection" />
           <MapLineLegend label="Verified" />
           {connectionMode === "similar" && !root ? (
             <MapLineLegend dashed label="Similar" />
@@ -472,7 +465,7 @@ export function KnowledgeMap({
         </div>
         {error ? <div className="p-3"><DegradedState compact description={error} onRetry={root ? () => void focus(root) : onReload} /></div> : null}
         {loadingFocus ? <SkeletonRegion className="p-6" lines={6} /> : listMode ? (
-          <MapList nodes={visibleNodes} edges={visibleEdges} selectedId={selected?.id} onInspect={inspect} onFocus={focus} />
+          <MapList nodes={visibleNodes} edges={visibleEdges} selectedId={selected?.id} onInspect={inspect} onFocus={focus} palette={palette} />
         ) : (
           <div ref={containerRef} className="h-[620px] min-w-0" aria-label="Knowledge relationship graph">
             {ForceGraph ? (
@@ -482,15 +475,15 @@ export function KnowledgeMap({
                 width={size.width}
                 height={size.height}
                 graphData={graphData}
-                backgroundColor="#FFFFFF"
+                backgroundColor={palette.canvasBackground}
                 nodeLabel={(node: MapNodeRecord) => `${kindLabel(node.kind)}: ${node.label}`}
-                nodeColor={(node: MapNodeRecord) => nodeColor(node)}
+                nodeColor={(node: MapNodeRecord) => nodeColor(node, palette)}
                 nodeVal={(node: MapNodeRecord) => node.kind === "cluster" || node.kind === "collection" ? Math.max(5, Math.min(16, 5 + (node.source_count ?? 0) / 4)) : 4}
                 nodeCanvasObjectMode={() => "replace"}
                 nodeCanvasObject={(node: CanvasMapNode, context: CanvasRenderingContext2D, globalScale: number) =>
-                  drawMapNode(node, context, globalScale)
+                  drawMapNode(node, context, globalScale, palette)
                 }
-                linkColor={(edge: MapEdgeRecord) => edge.kind === "similarity" ? "#8C857A" : "#77736C"}
+                linkColor={(edge: MapEdgeRecord) => edge.kind === "similarity" ? palette.edgeMuted : palette.edge}
                 linkWidth={(edge: MapEdgeRecord) => edge.kind === "similarity" ? 1.15 : 1.5}
                 linkLineDash={(edge: MapEdgeRecord) => edge.kind === "similarity" ? [4, 3] : null}
                 linkDirectionalArrowLength={(edge: MapEdgeRecord) => edge.direction === "undirected" ? 0 : 4}
@@ -498,7 +491,7 @@ export function KnowledgeMap({
                 linkLabel={(edge: MapEdgeRecord) => mapEdgeTooltip(edge)}
                 linkCanvasObjectMode={() => "after"}
                 linkCanvasObject={(edge: CanvasMapEdge, context: CanvasRenderingContext2D, globalScale: number) =>
-                  drawMapLinkLabel(edge, context, globalScale, graphData.nodes.length)
+                  drawMapLinkLabel(edge, context, globalScale, graphData.nodes.length, palette)
                 }
                 onNodeClick={(node: MapNodeRecord) => void focus(node)}
                 onNodeRightClick={(node: MapNodeRecord) => void inspect(node)}
@@ -527,12 +520,14 @@ function MapList({
   selectedId,
   onInspect,
   onFocus,
+  palette,
 }: {
   nodes: MapNodeRecord[];
   edges: MapEdgeRecord[];
   selectedId?: string;
   onInspect: (node: MapNodeRecord) => void;
   onFocus: (node: MapNodeRecord) => void;
+  palette: GraphPalette;
 }) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const rowVirtualizer = useVirtualizer({
@@ -568,7 +563,7 @@ function MapList({
             >
               <span
                 className="h-2.5 w-2.5 shrink-0 rounded-full"
-                style={{ background: nodeColor(node) }}
+                style={{ background: nodeColor(node, palette) }}
                 aria-hidden="true"
               />
               <button
@@ -669,11 +664,14 @@ function InspectorRow({ label, value }: { label: string; value: string }) {
   return <div className="flex justify-between gap-4"><dt className="text-muted-foreground">{label}</dt><dd className="break-words text-right font-medium">{value}</dd></div>;
 }
 
-function nodeColor(node: MapNodeRecord) {
-  if (node.kind === "cluster") return clusterColors[node.color ?? "sage"] ?? clusterColors.sage;
-  if (node.kind === "collection") return "#9B9A96";
-  if (node.kind === "fact") return "#4A78A8";
-  return "#7C6E5A";
+function nodeColor(node: MapNodeRecord, palette: GraphPalette) {
+  if (node.kind === "cluster") {
+    const tint = node.color as keyof GraphPalette["categorical"] | undefined;
+    return (tint && palette.categorical[tint]) ?? palette.categorical.sage;
+  }
+  if (node.kind === "collection") return palette.neutral;
+  if (node.kind === "fact") return palette.categorical.sky;
+  return palette.accentNeutral;
 }
 
 function kindLabel(kind: MapNodeRecord["kind"]) {
@@ -692,11 +690,19 @@ function MapLegend({ color, label }: { color: string; label: string }) {
   );
 }
 
-function MapLineLegend({ label, dashed = false }: { label: string; dashed?: boolean }) {
+function MapLineLegend({
+  label,
+  dashed = false,
+}: {
+  label: string;
+  dashed?: boolean;
+}) {
+  const palette = useGraphPalette();
   return (
     <span className="inline-flex items-center gap-2">
       <span
-        className={`w-5 border-t-2 ${dashed ? "border-dashed border-[#8C857A]" : "border-[#77736C]"}`}
+        className={`w-5 border-t-2 ${dashed ? "border-dashed" : ""}`}
+        style={{ borderColor: dashed ? palette.edgeMuted : palette.edge }}
         aria-hidden="true"
       />
       {label}
@@ -726,16 +732,17 @@ function drawMapNode(
   node: CanvasMapNode,
   context: CanvasRenderingContext2D,
   globalScale: number,
+  palette: GraphPalette,
 ) {
   const radius = node.kind === "cluster" || node.kind === "collection"
     ? Math.max(6, Math.min(13, 6 + (node.source_count ?? 0) / 12))
     : node.kind === "fact" ? 4 : 5;
   context.beginPath();
   context.arc(node.x, node.y, radius, 0, Math.PI * 2);
-  context.fillStyle = nodeColor(node);
+  context.fillStyle = nodeColor(node, palette);
   context.fill();
   context.lineWidth = 1.5 / globalScale;
-  context.strokeStyle = "#FFFFFF";
+  context.strokeStyle = palette.nodeStroke;
   context.stroke();
 
   if (!node.showLabel && globalScale < (node.denseGraph ? 2.4 : 1.25)) return;
@@ -746,9 +753,9 @@ function drawMapNode(
   context.textBaseline = "top";
   context.lineJoin = "round";
   context.lineWidth = Math.max(1.5, 3 / Math.sqrt(Math.max(globalScale, 0.08)));
-  context.strokeStyle = "rgba(255,255,255,0.94)";
+  context.strokeStyle = palette.labelHalo;
   context.strokeText(label, node.x, node.y + radius + 3 / globalScale);
-  context.fillStyle = "#3D3C39";
+  context.fillStyle = palette.label;
   context.fillText(label, node.x, node.y + radius + 3 / globalScale);
 }
 
@@ -757,6 +764,7 @@ function drawMapLinkLabel(
   context: CanvasRenderingContext2D,
   globalScale: number,
   nodeCount: number,
+  palette: GraphPalette,
 ) {
   if (nodeCount > 28 || globalScale < 1.15 || typeof edge.source !== "object" || typeof edge.target !== "object") {
     return;
@@ -769,9 +777,9 @@ function drawMapLinkLabel(
   context.textAlign = "center";
   context.textBaseline = "middle";
   context.lineWidth = Math.max(1.25, 2.5 / Math.sqrt(Math.max(globalScale, 0.08)));
-  context.strokeStyle = "rgba(255,255,255,0.92)";
+  context.strokeStyle = palette.labelHalo;
   context.strokeText(label, x, y);
-  context.fillStyle = "#6B6A66";
+  context.fillStyle = palette.labelMuted;
   context.fillText(label, x, y);
 }
 
