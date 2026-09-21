@@ -817,12 +817,18 @@ function FirstUseTour({
       <div className="absolute inset-0 bg-black/35" />
       {targetRect ? (
         <div
-          className="pointer-events-none fixed rounded-md border-2 border-white bg-white/10 shadow-[0_0_0_4px_rgba(255,255,255,0.2)]"
+          className="pointer-events-none fixed rounded-md border-2"
           style={{
             left: targetRect.left - 4,
             top: targetRect.top - 4,
             width: targetRect.width + 8,
             height: targetRect.height + 8,
+            // Theme-aware highlight ring: derives from --primary (brand focus
+            // identity) via color-mix so it stays legible against both the
+            // light and dark canvas instead of assuming a white backdrop.
+            borderColor: "var(--primary)",
+            background: "color-mix(in srgb, var(--primary) 14%, transparent)",
+            boxShadow: "0 0 0 4px color-mix(in srgb, var(--primary) 22%, transparent)",
           }}
         />
       ) : null}
