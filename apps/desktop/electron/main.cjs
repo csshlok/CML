@@ -1,4 +1,4 @@
-const { app, BrowserWindow, clipboard, dialog, ipcMain, safeStorage, shell } = require("electron");
+const { app, BrowserWindow, clipboard, dialog, ipcMain, nativeTheme, safeStorage, shell } = require("electron");
 const { spawn } = require("node:child_process");
 const crypto = require("node:crypto");
 const fsSync = require("node:fs");
@@ -35,6 +35,12 @@ const {
   attachWindowStateEvents,
   registerWindowControlHandlers,
 } = require("./window-controls.cjs");
+const {
+  createThemeController,
+  isThemePreference,
+  themeBackgroundColor,
+  LIGHT_BACKGROUND_COLOR,
+} = require("./theme.cjs");
 const { TunnelManager } = require("./tunnel-manager.cjs");
 const { resolveMcpFeatureFlags } = require("./mcp-feature-flags.cjs");
 const {
@@ -91,6 +97,7 @@ const executableSourceExtensions = new Set([
 const skippedFolderNames = new Set([".git", "node_modules", ".venv", "dist", "build"]);
 
 let mainWindow = null;
+let themeController = null;
 
 function truncateDesktopLogValue(value, limit = desktopRuntimeLogValueLimit) {
   const text = String(value || "");
@@ -189,7 +196,9 @@ async function createWindow() {
     minWidth: 1024,
     minHeight: 680,
     title: "Vault",
-    backgroundColor: "#fbfaf6",
+    backgroundColor: themeController
+      ? themeBackgroundColor(themeController.getSnapshot().resolved)
+      : LIGHT_BACKGROUND_COLOR,
     autoHideMenuBar: true,
     frame: false,
     show: false,
@@ -201,6 +210,7 @@ async function createWindow() {
     },
   });
   mainWindow = window;
+  themeController?.applyToWindow(window);
   attachWindowStateEvents(window);
   window.setMenuBarVisibility(false);
 
@@ -499,6 +509,23 @@ if (!gotSingleInstanceLock) {
 if (gotSingleInstanceLock) {
   app.whenReady().then(async () => {
     registerWindowControlHandlers({ ipcMain, BrowserWindow });
+    themeController = createThemeController({
+      userDataPath: app.getPath("userData"),
+      nativeTheme,
+      getWindows: () => BrowserWindow.getAllWindows(),
+      onDiagnostic: (category) => writeDesktopRuntimeLog(`theme diagnostic: ${category}`),
+    });
+    await themeController.initialize();
+    ipcMain.handle("cml:get-theme", async () => themeController.getSnapshot());
+    ipcMain.handle("cml:set-theme", async (_event, preference) => {
+      if (!isThemePreference(preference)) {
+        throw new Error("Theme preference must be system, light, or dark.");
+      }
+      return themeController.setPreference(preference);
+    });
+    ipcMain.on("cml:get-theme-sync", (event) => {
+      event.returnValue = themeController.getSnapshot();
+    });
     tunnelManager = new TunnelManager({
       appDataDir: app.getPath("userData"),
       safeStorage,
@@ -2143,6 +2170,7 @@ app.on("window-all-closed", () => {
 });
 
 async function shutdownApplication() {
+  themeController?.dispose();
   tunnelManager?.shutdownSync();
   if (odinRuntimeDescriptorPath) {
     try {

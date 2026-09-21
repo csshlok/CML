@@ -68,6 +68,14 @@ declare global {
     fullScreen: boolean;
   }
 
+  type DesktopThemePreference = "system" | "light" | "dark";
+  type DesktopResolvedTheme = "light" | "dark";
+
+  interface DesktopThemeSnapshot {
+    preference: DesktopThemePreference;
+    resolved: DesktopResolvedTheme;
+  }
+
   interface DesktopMcpLauncher {
     version: 1;
     app_version: string;
@@ -196,6 +204,9 @@ declare global {
       ) => Promise<{ files: string[]; truncated: boolean; limit: number }>;
       getDroppedFilePaths: () => string[];
       showItemInFolder: (targetPath: string) => Promise<boolean>;
+      getTheme: () => Promise<DesktopThemeSnapshot>;
+      setTheme: (preference: DesktopThemePreference) => Promise<DesktopThemeSnapshot>;
+      onThemeChanged: (listener: (snapshot: DesktopThemeSnapshot) => void) => () => void;
     };
   }
 }

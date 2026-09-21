@@ -13,6 +13,8 @@ import {
   Layers,
   Lock,
   MessageSquare,
+  Monitor,
+  Moon,
   Play,
   RefreshCw,
   RotateCcw,
@@ -20,6 +22,7 @@ import {
   Settings2,
   ShieldCheck,
   SlidersHorizontal,
+  Sun,
   TerminalSquare,
   UserRound,
   X,
@@ -139,6 +142,14 @@ import {
   settingsNoticeIsError,
   type SettingsSectionId,
 } from "@/lib/settingsController";
+import {
+  getThemeSnapshot,
+  initializeTheme,
+  setThemePreference,
+  subscribeTheme,
+  type ThemePreference,
+  type ThemeSnapshot,
+} from "@/lib/theme";
 
 export const Route = createFileRoute("/_app/settings")({
   validateSearch: (search: Record<string, unknown>): { section?: string; guide?: "odin" } => ({
@@ -1627,6 +1638,7 @@ function SettingsView() {
                 onSaveName={saveDisplayName}
                 onChooseImage={chooseProfileImage}
               />
+              <AppearanceSettings />
               <SettingsCard
                 icon={<RotateCcw className="h-4 w-4" />}
                 title="Vault tour"
@@ -3549,6 +3561,104 @@ function ProfileSettings({
       </section>
 
     </>
+  );
+}
+
+const APPEARANCE_OPTIONS: {
+  value: ThemePreference;
+  label: string;
+  description: string;
+  icon: ReactNode;
+}[] = [
+  {
+    value: "system",
+    label: "Match system",
+    description: "Follow Windows' current appearance.",
+    icon: <Monitor className="h-4 w-4" />,
+  },
+  {
+    value: "light",
+    label: "Light",
+    description: "Always use the light appearance.",
+    icon: <Sun className="h-4 w-4" />,
+  },
+  {
+    value: "dark",
+    label: "Dark",
+    description: "Always use the dark appearance.",
+    icon: <Moon className="h-4 w-4" />,
+  },
+];
+
+function AppearanceSettings() {
+  const [snapshot, setSnapshot] = useState<ThemeSnapshot>(() => getThemeSnapshot());
+  const [pending, setPending] = useState(false);
+
+  useEffect(() => {
+    void initializeTheme().then(setSnapshot);
+    return subscribeTheme(setSnapshot);
+  }, []);
+
+  async function choose(preference: ThemePreference) {
+    if (preference === snapshot.preference || pending) return;
+    setPending(true);
+    try {
+      setSnapshot(await setThemePreference(preference));
+    } catch {
+      // The theme runtime always resolves to a valid snapshot; a rejected
+      // IPC call leaves the prior selection visibly unchanged.
+    } finally {
+      setPending(false);
+    }
+  }
+
+  return (
+    <SettingsCard
+      icon={<Monitor className="h-4 w-4" />}
+      title="Appearance"
+      description="Choose how Vault looks on this device. This does not require your library to be unlocked."
+    >
+      <fieldset className="mt-5" disabled={pending}>
+        <legend className="sr-only">Appearance</legend>
+        <div className="grid gap-2 sm:grid-cols-3">
+          {APPEARANCE_OPTIONS.map((option) => {
+            const checked = snapshot.preference === option.value;
+            return (
+              <label
+                key={option.value}
+                className={cn(
+                  "flex cursor-pointer items-start gap-3 rounded-md border border-border bg-background p-3 text-sm transition-colors hover:bg-accent focus-within:ring-2 focus-within:ring-ring",
+                  checked && "border-primary bg-accent",
+                )}
+              >
+                <input
+                  type="radio"
+                  name="theme-preference"
+                  value={option.value}
+                  checked={checked}
+                  onChange={() => void choose(option.value)}
+                  className="mt-0.5 h-4 w-4 accent-primary"
+                />
+                <span className="min-w-0">
+                  <span className="flex items-center gap-2 font-medium">
+                    {option.icon}
+                    {option.label}
+                  </span>
+                  <span className="mt-1 block text-xs text-muted-foreground">{option.description}</span>
+                </span>
+              </label>
+            );
+          })}
+        </div>
+      </fieldset>
+      <p className="mt-4 text-xs text-muted-foreground">
+        Currently showing:{" "}
+        <span className="font-medium text-foreground">
+          {snapshot.resolved === "dark" ? "Dark" : "Light"}
+        </span>
+        {snapshot.preference === "system" ? " (matching your system)" : ""}
+      </p>
+    </SettingsCard>
   );
 }
 

@@ -12,6 +12,7 @@ import { useEffect, useRef, useState } from "react";
 import { BrandLogo, VAULT_OPENING_WORDMARK } from "@/components/BrandLogo";
 import { NotificationViewport } from "@/components/product/Notifications";
 import { WindowChrome } from "@/components/WindowChrome";
+import { initializeTheme, THEME_BOOTSTRAP_SCRIPT } from "@/lib/theme";
 
 import appCss from "../styles.css?url";
 
@@ -130,6 +131,13 @@ function RootShell({ children }: { children: React.ReactNode }) {
   return (
     <html lang="en">
       <head>
+        {/*
+          Pre-paint theme bootstrap: applies data-theme/.dark/color-scheme
+          before route content renders. Electron's preload already applied
+          this synchronously via IPC before any script here runs; this is the
+          dev-web/packaged-file fallback and is a no-op when preload beat it.
+        */}
+        <script dangerouslySetInnerHTML={{ __html: THEME_BOOTSTRAP_SCRIPT }} />
         <HeadContent />
       </head>
       <body>
@@ -148,6 +156,10 @@ function RootComponent() {
   useEffect(() => {
     void window.cmlDesktop?.notifyRendererReady?.(pathname);
   }, [pathname]);
+
+  useEffect(() => {
+    void initializeTheme();
+  }, []);
 
   useEffect(() => {
     const auditChrome = import.meta.env.DEV
