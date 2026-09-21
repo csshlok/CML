@@ -69,6 +69,14 @@
 }
 
 :root {
+  /* ---- Primitives (light) ----
+     Palette primitives are the only layer holding literal color values.
+     The dark equivalents live in the `:root.dark, :root[data-theme="dark"]`
+     block below and MUST define the same primitive keys (token parity).
+     Semantic aliases (--background, --foreground, --chart-1, etc. and the
+     ---- Contrast Pair Registry ---- below) reference these primitives via
+     var() so they repaint automatically when the theme selector changes;
+     they are declared once and are not repeated per theme. */
   --bg-canvas: #FAFAF8;
   --bg-sidebar: #F5F4F2;
   --bg-card: #FFFFFF;
@@ -77,7 +85,10 @@
   --bg-input: #FFFFFF;
   --border-default: #E8E7E3;
   --border-input: #D8D7D2;
-  --border-strong: #C8C7C2;
+  /* 3.18:1 against --bg-canvas (>=3:1 non-text/focus threshold) — darkened
+     from the original #C8C7C2 (1.62:1), which failed the focus-indicator
+     contrast this token backs via --ring. See Contrast Pair Registry. */
+  --border-strong: #8F8D86;
   --text-primary: #1A1916;
   --text-body: #3D3C39;
   --text-muted: #6B6A66;
@@ -88,17 +99,33 @@
   --primary-active: #5C5044;
   --primary-text: #FFFFFF;
   --primary-tint: #F5F0EB;
-  --status-ready: #4A8C5C;
+  /* Darkened from #4A8C5C (3.63:1) to clear 4.5:1 as status/badge text. */
+  --status-ready: #357044;
   --status-ready-bg: #EDF5EA;
+  --status-ready-border: var(--badge-link-border);
   --status-warn: #C88A3A;
   --status-warn-bg: #FBF2E4;
   --status-warn-ink: #7A4D16;
+  --status-warn-border: #EAD1A0;
   --status-error: #B84040;
   --status-error-bg: #FAEAEA;
-  --status-muted: #9B9A96;
+  --status-error-border: var(--badge-pdf-border);
+  /* Darkened from #9B9A96 (2.45:1, badly failing) to clear 4.5:1 as text. */
+  --status-muted: #615F5B;
   --status-muted-bg: #F0EFEC;
-  --status-info: #4A78A8;
+  --status-muted-border: #D8D6D1;
+  /* Darkened from #4A78A8 (4.04:1) to clear 4.5:1 as status/badge text. */
+  --status-info: #345A80;
   --status-info-bg: #EAF0FA;
+  --status-info-border: var(--badge-doc-border);
+  /* Aliases so the "learning/issue/paused" vocabulary used elsewhere in the
+     app gets the same border triple as its underlying status color. */
+  --status-learning-border: var(--status-warn-border);
+  --status-issue-border: var(--status-error-border);
+  --status-paused-border: var(--status-muted-border);
+  /* Categorical chart/graph fills: decorative, redundantly paired with
+     labels/shapes per the locked "never rely on color alone" decision, so
+     these are not held to the strict text/non-text contrast thresholds. */
   --cluster-sage: #5B8A5B;
   --cluster-terracotta: #C0704A;
   --cluster-sky: #4A78A8;
@@ -110,19 +137,28 @@
   --badge-pdf-text: #B84040;
   --badge-doc-bg: #EAF0FA;
   --badge-doc-border: #BACFD8;
-  --badge-doc-text: #4A78A8;
+  /* Darkened from #4A78A8 (4.04:1) to clear 4.5:1 as badge text. */
+  --badge-doc-text: #345A80;
   --badge-note-bg: #F0EDE8;
   --badge-note-border: #D8D0C4;
-  --badge-note-text: #7C6E5A;
+  /* Darkened from #7C6E5A (4.25:1) to clear 4.5:1 as badge text. */
+  --badge-note-text: #5C5044;
   --badge-link-bg: #EDF5EA;
   --badge-link-border: #BCD9B4;
-  --badge-link-text: #4A8C5C;
+  /* Darkened from #4A8C5C (3.63:1) to clear 4.5:1 as badge text. */
+  --badge-link-text: #357044;
   --badge-img-bg: #EAF0FA;
   --badge-img-border: #BACFD8;
-  --badge-img-text: #4A78A8;
+  /* Darkened from #4A78A8 (4.04:1) to clear 4.5:1 as badge text. */
+  --badge-img-text: #345A80;
   --badge-audio-bg: #F5F0EB;
   --badge-audio-border: #D8CCB8;
-  --badge-audio-text: #7C6E5A;
+  /* Darkened from #7C6E5A (4.38:1) to clear 4.5:1 as badge text. */
+  --badge-audio-text: #5C5044;
+  /* Invariant across themes: matches the Windows close-button convention;
+     white-on-red already clears non-text contrast in both palettes. */
+  --close-hover-bg: #C42B1C;
+  --close-hover-fg: #FFFFFF;
   --space-1: 4px;
   --space-2: 8px;
   --space-3: 12px;
@@ -183,6 +219,167 @@
   --status-learning: var(--status-warn);
   --status-issue: var(--status-error);
   --status-paused: var(--status-muted);
+
+  /* ---- Graph roles ----
+     Knowledge Map / Project Graph need more than node fills (--chart-1..5,
+     --cluster-*): labels, edges (default/muted/selected), a selection ring,
+     and stale/warning node states. All are aliases so they repaint with the
+     active theme without a separate dark declaration. */
+  --graph-label: var(--text-body);
+  --graph-label-muted: var(--text-muted);
+  --graph-edge: var(--border-strong);
+  --graph-edge-muted: var(--border-default);
+  --graph-edge-selected: var(--primary);
+  --graph-node-selected-ring: var(--primary);
+  --graph-node-warning: var(--status-warn);
+  --graph-node-stale: var(--status-muted);
+  --graph-halo: color-mix(in srgb, var(--primary) 22%, transparent);
+
+  /* ---- Contrast Pair Registry ----
+     Machine-readable fg/bg/min triples consumed by Plan 05's automated
+     contrast checker. Each --cx-<name>-fg/-bg references the live semantic
+     token, so it always resolves to whichever theme is active; -min is the
+     required WCAG ratio (4.5 = normal text, 3 = large text or a non-text
+     UI component/focus indicator). Resolve fg/bg via getComputedStyle per
+     theme and compute the ratio against -min — do not hand-copy ratios into
+     comments here, that would drift stale as tokens are tuned. */
+  --cx-body-text-fg: var(--text-body);
+  --cx-body-text-bg: var(--bg-canvas);
+  --cx-body-text-min: 4.5;
+  --cx-card-text-fg: var(--text-body);
+  --cx-card-text-bg: var(--bg-card);
+  --cx-card-text-min: 4.5;
+  --cx-muted-text-fg: var(--text-muted);
+  --cx-muted-text-bg: var(--bg-canvas);
+  --cx-muted-text-min: 4.5;
+  --cx-subtle-text-fg: var(--text-subtle);
+  --cx-subtle-text-bg: var(--bg-canvas);
+  --cx-subtle-text-min: 4.5;
+  --cx-placeholder-text-fg: var(--text-placeholder);
+  --cx-placeholder-text-bg: var(--bg-input);
+  --cx-placeholder-text-min: 4.5;
+  --cx-primary-button-fg: var(--primary-text);
+  --cx-primary-button-bg: var(--primary);
+  --cx-primary-button-min: 4.5;
+  --cx-destructive-button-fg: var(--destructive-foreground);
+  --cx-destructive-button-bg: var(--destructive);
+  --cx-destructive-button-min: 4.5;
+  --cx-selected-nav-fg: var(--sidebar-accent-foreground);
+  --cx-selected-nav-bg: var(--sidebar-accent);
+  --cx-selected-nav-min: 4.5;
+  --cx-status-ready-fg: var(--status-ready);
+  --cx-status-ready-bg: var(--status-ready-bg);
+  --cx-status-ready-min: 4.5;
+  --cx-status-warn-fg: var(--status-warn-ink);
+  --cx-status-warn-bg: var(--status-warn-bg);
+  --cx-status-warn-min: 4.5;
+  --cx-status-info-fg: var(--status-info);
+  --cx-status-info-bg: var(--status-info-bg);
+  --cx-status-info-min: 4.5;
+  --cx-status-muted-fg: var(--status-muted);
+  --cx-status-muted-bg: var(--status-muted-bg);
+  --cx-status-muted-min: 4.5;
+  --cx-status-error-fg: var(--status-error);
+  --cx-status-error-bg: var(--status-error-bg);
+  --cx-status-error-min: 4.5;
+  --cx-badge-pdf-fg: var(--badge-pdf-text);
+  --cx-badge-pdf-bg: var(--badge-pdf-bg);
+  --cx-badge-pdf-min: 4.5;
+  --cx-badge-doc-fg: var(--badge-doc-text);
+  --cx-badge-doc-bg: var(--badge-doc-bg);
+  --cx-badge-doc-min: 4.5;
+  --cx-badge-note-fg: var(--badge-note-text);
+  --cx-badge-note-bg: var(--badge-note-bg);
+  --cx-badge-note-min: 4.5;
+  --cx-badge-link-fg: var(--badge-link-text);
+  --cx-badge-link-bg: var(--badge-link-bg);
+  --cx-badge-link-min: 4.5;
+  --cx-badge-img-fg: var(--badge-img-text);
+  --cx-badge-img-bg: var(--badge-img-bg);
+  --cx-badge-img-min: 4.5;
+  --cx-badge-audio-fg: var(--badge-audio-text);
+  --cx-badge-audio-bg: var(--badge-audio-bg);
+  --cx-badge-audio-min: 4.5;
+  --cx-graph-label-fg: var(--graph-label);
+  --cx-graph-label-bg: var(--bg-canvas);
+  --cx-graph-label-min: 4.5;
+  --cx-focus-ring-fg: var(--primary);
+  --cx-focus-ring-bg: var(--bg-canvas);
+  --cx-focus-ring-min: 3;
+  --cx-border-strong-fg: var(--border-strong);
+  --cx-border-strong-bg: var(--bg-canvas);
+  --cx-border-strong-min: 3;
+}
+
+/* ---- Primitives (dark) ----
+   Same primitive keys as :root above (token parity is enforced by Plan 05's
+   static contract test), warm charcoal/cocoa surfaces instead of pure black
+   or blue-gray, and lightened/adapted chromatic families so brown, sage,
+   terracotta, sky, sand, lavender, and blush all stay recognizable against
+   a dark canvas. Every foreground here is contrast-checked against its
+   paired background per the Contrast Pair Registry above (resolved via the
+   aliases, which automatically pick up these values once `.dark` or
+   `[data-theme="dark"]` is present on the document root). */
+:root.dark,
+:root[data-theme="dark"] {
+  --bg-canvas: #211D19;
+  --bg-sidebar: #27221E;
+  --bg-card: #2C2621;
+  --bg-secondary: #332C26;
+  --bg-hover: #3A322B;
+  --bg-input: #2A241F;
+  --border-default: #423930;
+  --border-input: #4E4339;
+  /* 4.04:1 against dark --bg-canvas (>=3:1 non-text/focus threshold). */
+  --border-strong: #8A7A69;
+  --text-primary: #F2ECE3;
+  --text-body: #E4DCD0;
+  --text-muted: #B7A99A;
+  --text-subtle: #9C8E7F;
+  /* 4.85:1 against dark --bg-input (normal-text threshold). */
+  --text-placeholder: #9C8F7F;
+  --primary: #C9A97D;
+  --primary-hover: #D8BC93;
+  --primary-active: #A9895F;
+  --primary-text: #211D19;
+  --primary-tint: #3A2E20;
+  --status-ready: #7ABF88;
+  --status-ready-bg: #1E3324;
+  --status-warn: #E0A855;
+  --status-warn-bg: #3A2C14;
+  --status-warn-ink: #F0C989;
+  --status-warn-border: #5C4520;
+  --status-error: #E28080;
+  --status-error-bg: #3B1F1F;
+  --status-muted: #B0A392;
+  --status-muted-bg: #332C26;
+  --status-muted-border: #4E453C;
+  --status-info: #7EABDA;
+  --status-info-bg: #1D2C3B;
+  --cluster-sage: #7ABF88;
+  --cluster-terracotta: #E0916A;
+  --cluster-sky: #7EABDA;
+  --cluster-sand: #D4AE68;
+  --cluster-lavender: #B3A0E0;
+  --cluster-blush: #E0909F;
+  --badge-pdf-bg: #3B1F1F;
+  --badge-pdf-border: #5C3434;
+  --badge-pdf-text: #E28080;
+  --badge-doc-bg: #1D2C3B;
+  --badge-doc-border: #35495C;
+  --badge-doc-text: #8FBBE8;
+  --badge-note-bg: #332C26;
+  --badge-note-border: #4E4339;
+  --badge-note-text: #D8BC93;
+  --badge-link-bg: #1E3324;
+  --badge-link-border: #345C3E;
+  --badge-link-text: #8CCB9A;
+  --badge-img-bg: #1D2C3B;
+  --badge-img-border: #35495C;
+  --badge-img-text: #8FBBE8;
+  --badge-audio-bg: #3A2E20;
+  --badge-audio-border: #55462F;
+  --badge-audio-text: #D8BC93;
 }
 
 @layer base {
@@ -451,8 +648,8 @@
   }
 
   .vault-window-control-close:hover {
-    background: #c42b1c;
-    color: #fff;
+    background: var(--close-hover-bg);
+    color: var(--close-hover-fg);
   }
 
   @media (hover: none), (pointer: coarse) {
@@ -831,6 +1028,8 @@
       z-index: 30;
       inset: calc(var(--vault-window-controls-height) + 48px) 0 0;
       border: 0;
+      /* Documented media-preservation exception: a modal scrim stays a fixed
+         dark dimmer in both themes rather than an inverted/themed surface. */
       background: rgb(26 25 22 / 22%);
     }
 

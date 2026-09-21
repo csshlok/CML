@@ -8,6 +8,53 @@
   --vault-window-controls-safe-height: calc(
     var(--vault-window-controls-height) + var(--vault-window-controls-gap)
   );
+
+  /* Static-document token mirror. startup.html, repair.html, and this
+     stylesheet are separate Electron documents that cannot import the
+     Tailwind-processed src/styles.css, so this is a small, deliberately
+     duplicated primitive contract using the SAME names/values as that
+     file's light `:root` block. Keep these two in sync by hand; the
+     `:root.dark, :root[data-theme="dark"]` block below mirrors
+     styles.css's dark block the same way. `data-theme`/`.dark` are applied
+     to this document's <html> element pre-paint by preload.cjs and kept
+     live by the theme-reactor in static-window-chrome.js. */
+  --bg-canvas: #FAFAF8;
+  --bg-card: #FFFFFF;
+  --bg-surface: #FFFDF9;
+  --text-primary: #1A1916;
+  --text-body: #3D3C39;
+  --text-muted: #6B6A66;
+  --text-subtle: #716F6A;
+  --border-default: #E8E7E3;
+  --border-input: #D8D7D2;
+  --border-strong: #8F8D86;
+  --primary: #7C6E5A;
+  --primary-hover: #9E8C74;
+  --primary-text: #FFFFFF;
+  --status-error: #B84040;
+  --status-error-bg: #FAEAEA;
+  /* Invariant across themes: matches the Windows close-button convention. */
+  --close-hover-bg: #C42B1C;
+  --close-hover-fg: #FFFFFF;
+}
+
+:root.dark,
+:root[data-theme="dark"] {
+  --bg-canvas: #211D19;
+  --bg-card: #2C2621;
+  --bg-surface: #2A241F;
+  --text-primary: #F2ECE3;
+  --text-body: #E4DCD0;
+  --text-muted: #B7A99A;
+  --text-subtle: #9C8E7F;
+  --border-default: #423930;
+  --border-input: #4E4339;
+  --border-strong: #8A7A69;
+  --primary: #C9A97D;
+  --primary-hover: #D8BC93;
+  --primary-text: #211D19;
+  --status-error: #E28080;
+  --status-error-bg: #3B1F1F;
 }
 
 .vault-static-window-chrome {
@@ -37,27 +84,27 @@
   border: 0;
   border-radius: 0;
   background: transparent;
-  color: #27211d;
+  color: var(--text-primary);
   cursor: default;
 }
 
 .vault-static-window-control:hover {
-  background: rgba(39, 33, 29, 0.08);
+  background: color-mix(in srgb, var(--text-primary) 8%, transparent);
 }
 
 .vault-static-window-control:disabled {
-  color: #27211d;
+  color: var(--text-primary);
   opacity: 1;
 }
 
 .vault-static-window-control:focus-visible {
-  outline: 2px solid #765f4d;
+  outline: 2px solid var(--primary);
   outline-offset: -3px;
 }
 
 .vault-static-window-control[data-action="close"]:hover {
-  background: #c42b1c;
-  color: #fff;
+  background: var(--close-hover-bg);
+  color: var(--close-hover-fg);
 }
 
 .vault-static-window-control-icon,
@@ -97,7 +144,7 @@
   width: 8px;
   height: 7px;
   border: 1px solid currentColor;
-  background: #fbfaf6;
+  background: var(--bg-canvas);
 }
 
 .vault-static-window-control[data-action="close"] .vault-static-window-control-icon {
