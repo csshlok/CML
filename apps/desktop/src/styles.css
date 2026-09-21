@@ -216,9 +216,15 @@
   --brand-ink: var(--text-primary);
   --soft-shadow: none;
   --hairline: var(--border-default);
+  /* Full surface/ink/border triples under the "learning/issue/paused"
+     vocabulary used by product routes, aliasing the underlying status
+     tokens so both naming conventions stay in lockstep. */
   --status-learning: var(--status-warn);
+  --status-learning-bg: var(--status-warn-bg);
   --status-issue: var(--status-error);
+  --status-issue-bg: var(--status-error-bg);
   --status-paused: var(--status-muted);
+  --status-paused-bg: var(--status-muted-bg);
 
   /* ---- Graph roles ----
      Knowledge Map / Project Graph need more than node fills (--chart-1..5,
@@ -246,6 +252,9 @@
   --cx-body-text-fg: var(--text-body);
   --cx-body-text-bg: var(--bg-canvas);
   --cx-body-text-min: 4.5;
+  --cx-heading-text-fg: var(--text-primary);
+  --cx-heading-text-bg: var(--bg-canvas);
+  --cx-heading-text-min: 4.5;
   --cx-card-text-fg: var(--text-body);
   --cx-card-text-bg: var(--bg-card);
   --cx-card-text-min: 4.5;
