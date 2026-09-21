@@ -102,8 +102,13 @@ export function NotificationViewport() {
               leavingIds.has(notification.id) &&
                 "translate-y-1 opacity-0 motion-reduce:translate-y-0",
               tone === "error" && "bg-destructive text-destructive-foreground",
+              // --primary-text is chosen (not a hardcoded #fff fallback) because it
+              // already carries the "light ink in light mode, dark ink in dark mode"
+              // pairing this solid status-ready swatch needs — status-ready flips
+              // from a dark green (light theme) to a light green (dark theme), so a
+              // literal white fallback would fail contrast once dark mode is active.
               tone === "success" &&
-                "bg-[var(--status-ready)] text-[var(--status-ready-foreground,#fff)]",
+                "bg-[var(--status-ready)] text-[var(--primary-text)]",
               tone === "info" && "bg-foreground text-background",
             )}
           >

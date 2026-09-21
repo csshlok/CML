@@ -468,7 +468,10 @@ function SourceImportStatus({
       className={
         compact
           ? "rounded-md border border-border bg-card px-3 py-3"
-          : "rounded-md border border-border bg-card p-4 shadow-[0_2px_8px_rgb(26_25_22_/_0.12)]"
+          // shadow-[var(--soft-shadow)] (not a literal rgb shadow) matches the
+          // rest of the app's border-driven elevation convention (ClusterChip,
+          // vault-onboarding-card) instead of a hardcoded light-ink shadow color.
+          : "rounded-md border border-border bg-card p-4 shadow-[var(--soft-shadow)]"
       }
       aria-label="File import progress"
       aria-live="polite"
