@@ -98,7 +98,24 @@ export function applyThemeAttributes(resolved: ResolvedTheme, target: Document |
  */
 export const THEME_BOOTSTRAP_SCRIPT = `(function(){try{var d=document.documentElement;if(d.getAttribute('data-theme'))return;var pref='system';try{var raw=window.localStorage.getItem(${JSON.stringify(THEME_STORAGE_KEY)});if(raw){var parsed=JSON.parse(raw);if(parsed&&(parsed.preference==='light'||parsed.preference==='dark'||parsed.preference==='system')){pref=parsed.preference;}}}catch(e){}var systemDark=false;try{systemDark=window.matchMedia&&window.matchMedia('(prefers-color-scheme: dark)').matches;}catch(e){}var resolved=pref==='light'?'light':pref==='dark'?'dark':(systemDark?'dark':'light');d.setAttribute('data-theme',resolved);d.classList.toggle('dark',resolved==='dark');d.style.colorScheme=resolved;}catch(e){}})();`;
 
+function isValidThemeSnapshot(value: unknown): value is ThemeSnapshot {
+  const candidate = value as Partial<ThemeSnapshot> | null | undefined;
+  return (
+    isThemePreference(candidate?.preference) &&
+    (candidate?.resolved === "light" || candidate?.resolved === "dark")
+  );
+}
+
+/**
+ * Synchronous best-known snapshot for initial render (e.g. a useState
+ * initializer). In Electron this reads the value preload already resolved
+ * via a synchronous IPC call before any script ran, so it reflects the real
+ * main-process preference immediately rather than guessing from
+ * localStorage/matchMedia and waiting for an async correction.
+ */
 export function getInitialThemeSnapshot(): ThemeSnapshot {
+  const desktopInitial = typeof window !== "undefined" ? window.cmlDesktop?.initialTheme : undefined;
+  if (isValidThemeSnapshot(desktopInitial)) return desktopInitial;
   const preference = readStoredThemePreference();
   return { preference, resolved: resolveTheme(preference, getSystemPrefersDark()) };
 }
@@ -128,14 +145,20 @@ export async function initializeTheme(): Promise<ThemeSnapshot> {
 
   const desktop = typeof window !== "undefined" ? window.cmlDesktop : undefined;
   if (desktop?.getTheme) {
+    // Apply the pre-paint snapshot immediately: it is already correct (same
+    // authoritative source the async call below re-confirms), so the JS-side
+    // store never has a window where it reflects a Light/localStorage guess
+    // while waiting on the IPC round trip.
+    notify(getInitialThemeSnapshot());
     try {
       const snapshot = await desktop.getTheme();
-      notify(isThemePreference(snapshot?.preference) ? snapshot : getInitialThemeSnapshot());
+      if (isValidThemeSnapshot(snapshot)) notify(snapshot);
     } catch {
-      notify(getInitialThemeSnapshot());
+      // The pre-paint snapshot above is already applied; a rejected getTheme()
+      // call leaves the last-known-good theme in place instead of resetting.
     }
     desktopUnsubscribe = desktop.onThemeChanged?.((snapshot) => {
-      if (isThemePreference(snapshot?.preference)) notify(snapshot);
+      if (isValidThemeSnapshot(snapshot)) notify(snapshot);
     }) ?? null;
     return currentSnapshot!;
   }
@@ -177,7 +200,7 @@ export async function setThemePreference(preference: ThemePreference): Promise<T
   const desktop = typeof window !== "undefined" ? window.cmlDesktop : undefined;
   if (desktop?.setTheme) {
     const snapshot = await desktop.setTheme(preference);
-    notify(isThemePreference(snapshot?.preference) ? snapshot : { preference, resolved: resolveTheme(preference, getSystemPrefersDark()) });
+    notify(isValidThemeSnapshot(snapshot) ? snapshot : { preference, resolved: resolveTheme(preference, getSystemPrefersDark()) });
     return currentSnapshot!;
   }
   writeStoredThemePreference(preference);

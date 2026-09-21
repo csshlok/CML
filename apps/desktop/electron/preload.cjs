@@ -51,26 +51,39 @@ const droppedFilePaths = createDroppedFilePathStore(window, (file) =>
   webUtils.getPathForFile(file),
 );
 
-// Pre-paint theme application: resolve and apply the effective theme to the
-// document element synchronously, before any page script (including the
-// web-fallback bootstrap script in the document head) runs. This is the
-// mechanism that satisfies "no visible flash" for Electron windows.
-function applyPrePaintTheme() {
+// Pre-paint theme resolution: read the authoritative main-process snapshot
+// synchronously, before any page script (including the web-fallback
+// bootstrap script in the document head) runs. The same snapshot is both
+// applied to the document element here and exposed on cmlDesktop below, so
+// the renderer's synchronous initial-state reads (e.g. Settings' Appearance
+// control) see the real preference immediately instead of a localStorage/
+// matchMedia guess that a later async getTheme() call would have to correct.
+function readInitialThemeSnapshot() {
   try {
     const snapshot = ipcRenderer.sendSync("cml:get-theme-sync");
     const resolved = snapshot?.resolved;
-    if (resolved !== "light" && resolved !== "dark") return;
-    const root = document.documentElement;
-    root.setAttribute("data-theme", resolved);
-    root.classList.toggle("dark", resolved === "dark");
-    root.style.colorScheme = resolved;
+    if (resolved !== "light" && resolved !== "dark") return null;
+    const preference = snapshot?.preference;
+    if (preference !== "system" && preference !== "light" && preference !== "dark") return null;
+    return { preference, resolved };
   } catch {
     // Startup, static, and repair documents run this same preload but may
     // not have theme IPC handlers registered yet (or at all); the bootstrap
     // script and React runtime still resolve the theme once scripts run.
+    return null;
   }
 }
-applyPrePaintTheme();
+
+const initialThemeSnapshot = readInitialThemeSnapshot();
+
+function applyPrePaintTheme(snapshot) {
+  if (!snapshot) return;
+  const root = document.documentElement;
+  root.setAttribute("data-theme", snapshot.resolved);
+  root.classList.toggle("dark", snapshot.resolved === "dark");
+  root.style.colorScheme = snapshot.resolved;
+}
+applyPrePaintTheme(initialThemeSnapshot);
 
 async function notifyRendererReady(detail) {
   if (rendererReadySent) return true;
@@ -186,6 +199,7 @@ contextBridge.exposeInMainWorld("cmlDesktop", {
     ipcRenderer.invoke("cml:scan-supported-files", targetPaths, limit),
   getDroppedFilePaths: () => droppedFilePaths.consume(),
   showItemInFolder: (targetPath) => ipcRenderer.invoke("cml:show-item-in-folder", targetPath),
+  initialTheme: initialThemeSnapshot,
   getTheme: () => ipcRenderer.invoke("cml:get-theme"),
   setTheme: (preference) => {
     if (preference !== "system" && preference !== "light" && preference !== "dark") {

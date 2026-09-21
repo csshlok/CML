@@ -204,6 +204,7 @@ declare global {
       ) => Promise<{ files: string[]; truncated: boolean; limit: number }>;
       getDroppedFilePaths: () => string[];
       showItemInFolder: (targetPath: string) => Promise<boolean>;
+      initialTheme: DesktopThemeSnapshot | null;
       getTheme: () => Promise<DesktopThemeSnapshot>;
       setTheme: (preference: DesktopThemePreference) => Promise<DesktopThemeSnapshot>;
       onThemeChanged: (listener: (snapshot: DesktopThemeSnapshot) => void) => () => void;
