@@ -1904,7 +1904,7 @@ function BridgeView() {
             </div>
           )}
           {clientNotice && (
-            <div role="status" className="mt-4 rounded-md border border-amber-500/35 bg-amber-500/10 px-3 py-2 text-xs">
+            <div role="status" className="mt-4 rounded-md border border-[var(--status-warn-border)] bg-[var(--status-warn-bg)] px-3 py-2 text-xs text-[var(--status-warn-ink)]">
               {clientNotice}
             </div>
           )}

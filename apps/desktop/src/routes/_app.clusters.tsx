@@ -598,7 +598,7 @@ function ClustersList() {
 function ClusterDocument({ tint }: { tint: ClusterTint }) {
   return (
     <span
-      className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md text-white"
+      className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md text-[var(--primary-text)]"
       style={{ background: `var(--cluster-${tint})` }}
     >
       <FileText className="h-4 w-4" />

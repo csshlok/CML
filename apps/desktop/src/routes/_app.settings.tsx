@@ -3035,7 +3035,7 @@ function SettingsView() {
                                             ) : null}
                                           </div>
                                           <div className="mt-1 break-all">{item.item_reference}</div>
-                                          {item.error ? <div className="mt-1 text-red-300">{item.error}</div> : null}
+                                          {item.error ? <div className="mt-1 text-destructive">{item.error}</div> : null}
                                         </div>
                                       ))
                                     )}
