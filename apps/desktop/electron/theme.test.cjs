@@ -197,6 +197,29 @@ test("system preference changes live when OS theme changes", async () => {
   controller.dispose();
 });
 
+test("an OS change while System is active updates every open window identically", async () => {
+  const userDataPath = makeTempDir();
+  const nativeTheme = new FakeNativeTheme(false);
+  const windowA = new FakeWindow();
+  const windowB = new FakeWindow();
+  const controller = createThemeController({
+    userDataPath,
+    nativeTheme,
+    getWindows: () => [windowA, windowB],
+  });
+  await controller.initialize();
+
+  nativeTheme.setSystemPrefersDark(true);
+
+  const expectedSnapshot = { preference: "system", resolved: "dark" };
+  assert.equal(windowA.backgroundColor, DARK_BACKGROUND_COLOR);
+  assert.equal(windowB.backgroundColor, DARK_BACKGROUND_COLOR);
+  assert.deepEqual(windowA.sent.at(-1).payload, expectedSnapshot);
+  assert.deepEqual(windowB.sent.at(-1).payload, expectedSnapshot);
+
+  controller.dispose();
+});
+
 test("explicit overrides ignore OS changes", async () => {
   const userDataPath = makeTempDir();
   const nativeTheme = new FakeNativeTheme(false);
@@ -260,6 +283,19 @@ test("dispose removes the nativeTheme listener so teardown leaves nothing retain
 
   controller.dispose();
   assert.equal(nativeTheme.listenerCount("updated"), 0);
+});
+
+test("listener registration is idempotent across repeated initialize() calls", async () => {
+  const userDataPath = makeTempDir();
+  const nativeTheme = new FakeNativeTheme(false);
+  const controller = createThemeController({ userDataPath, nativeTheme });
+
+  await controller.initialize();
+  await controller.initialize();
+  await controller.initialize();
+
+  assert.equal(nativeTheme.listenerCount("updated"), 1);
+  controller.dispose();
 });
 
 test("createThemeController requires userDataPath and nativeTheme", () => {
