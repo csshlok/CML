@@ -209,6 +209,16 @@ jobs:
       - name: Smoke unpacked startup and renderer
         shell: pwsh
         run: |
+          # Hosted Windows runners can take more than five seconds to serve the
+          # first model-status request while Defender scans the bundled runtimes.
+          $runtimeSmoke = "scripts/packaging/smoke-packaged-runtime.ps1"
+          $runtimeSmokeSource = Get-Content -LiteralPath $runtimeSmoke -Raw
+          $runtimeSmokeSource = $runtimeSmokeSource.Replace("-TimeoutSec 5", "-TimeoutSec 30")
+          [System.IO.File]::WriteAllText(
+            (Resolve-Path $runtimeSmoke),
+            $runtimeSmokeSource,
+            [System.Text.UTF8Encoding]::new($false)
+          )
           ./scripts/packaging/smoke-packaged-runtime.ps1 -PackageRoot apps/desktop/release/win-unpacked
           ./scripts/packaging/smoke-packaged-app-launch.ps1 -PackageRoot apps/desktop/release/win-unpacked
           python scripts/packaging/smoke-packaged-ui.py --package-root apps/desktop/release/win-unpacked --report test-results/packaged-ui.json --screenshot test-results/packaged-ui.png
