@@ -162,6 +162,30 @@ jobs:
         with:
           python-version: "3.12"
       - run: npm ci
+      - name: Provision native OCR packaging dependencies
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          choco install tesseract ghostscript --yes --no-progress
+
+          $qpdfRelease = gh api repos/qpdf/qpdf/releases/latest | ConvertFrom-Json
+          $qpdfAsset = $qpdfRelease.assets |
+            Where-Object { $_.name -match "msvc64\.zip$" } |
+            Select-Object -First 1
+          if (-not $qpdfAsset) {
+            throw "No qpdf msvc64 release asset was found."
+          }
+
+          $cacheDir = ".tmp/ocr-download-cache"
+          New-Item -ItemType Directory -Force -Path $cacheDir | Out-Null
+          $cacheFile = Join-Path $cacheDir $qpdfAsset.name
+          gh api `
+            -H "Accept: application/octet-stream" `
+            "repos/qpdf/qpdf/releases/assets/$($qpdfAsset.id)" > $cacheFile
+          if ((Get-Item -LiteralPath $cacheFile).Length -ne $qpdfAsset.size) {
+            throw "The cached qpdf asset size does not match its GitHub release metadata."
+          }
       - name: Provision packaging virtual environment
         shell: pwsh
         run: |
