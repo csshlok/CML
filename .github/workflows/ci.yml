@@ -200,7 +200,9 @@ jobs:
             if ([string]::IsNullOrWhiteSpace("${{ inputs.release_tag }}")) {
               throw "release_tag is required when publish_release is enabled."
             }
-            npm --workspace @cml/desktop run package:win -- --Release
+            pwsh -NoProfile -File ./scripts/packaging/package-windows.ps1 `
+              -OutputDir ./apps/desktop/release `
+              -Release
           } else {
             npm run package:win
           }
