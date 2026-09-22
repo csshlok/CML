@@ -15,12 +15,10 @@
 //   - A single violating line is exempt if that line OR the line immediately
 //     above it contains the substring `theme-literal-color-allowed`.
 //
-// Scope: .ts, .tsx, .css, and .html files under apps/desktop/src and
-// apps/desktop/electron. Electron main-process .cjs/.js files are out of
-// scope by design — Electron's native BrowserWindow APIs (e.g.
-// backgroundColor) require literal hex strings and cannot consume CSS
-// custom properties, so electron/theme.cjs's two literal background colors
-// are a structural necessity, not a themeable surface.
+// Scope: renderer and Electron source files under apps/desktop/src and
+// apps/desktop/electron. Native APIs and last-resort data: documents still
+// need concrete colors, but those values must live in the explicitly exempt
+// centralized electron/theme.cjs palette rather than leak into main.cjs.
 
 import { readFileSync, readdirSync, statSync } from "node:fs";
 import path from "node:path";
@@ -168,7 +166,7 @@ function checkTokenParity(css) {
 // ---------------------------------------------------------------------------
 
 const SCAN_ROOTS = ["src", "electron"];
-const SCAN_EXTENSIONS = new Set([".ts", ".tsx", ".css", ".html"]);
+const SCAN_EXTENSIONS = new Set([".ts", ".tsx", ".js", ".cjs", ".css", ".html"]);
 const SKIP_DIR_NAMES = new Set(["node_modules", "dist", "__screenshots__"]);
 const SKIP_FILE_NAMES = new Set(["routeTree.gen.ts"]);
 

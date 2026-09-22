@@ -43,6 +43,21 @@ export function HealthStatusPanel({
 
   useEffect(() => {
     if (!open) return;
+    // This panel is labeled role="dialog" but has no scrim/focus trap (it is
+    // a non-modal floating panel a keyboard/pointer user can drag while the
+    // rest of the page stays interactive) — it still needs the standard
+    // dialog keyboard-dismiss affordance (WAI-ARIA APG: Escape closes a
+    // dialog) since the only other way to close it today is a mouse click
+    // on the X button, which fails a keyboard-only traversal.
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [open, onClose]);
+
+  useEffect(() => {
+    if (!open) return;
     const move = (event: PointerEvent) => {
       const start = dragStart.current;
       if (!start) return;

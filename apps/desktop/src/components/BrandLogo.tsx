@@ -3,20 +3,17 @@ type BrandLogoProps = {
   alt?: string;
 };
 
-export const VAULT_OPENING_WORDMARK = "/brand/Container.svg";
 export const VAULT_SIDEBAR_WORDMARK = "/brand/Frame%208.png";
+export const VAULT_OPENING_WORDMARK = VAULT_SIDEBAR_WORDMARK;
 
 export function BrandLogo({
   className = "",
   alt = "Vault",
 }: BrandLogoProps) {
   return (
-    <img
-      src={VAULT_OPENING_WORDMARK}
-      alt={alt}
-      className={className}
-      draggable={false}
-    />
+    <span className={`vault-brand-logo ${className}`} role="img" aria-label={alt}>
+      <span className="vault-brand-art" aria-hidden="true" />
+    </span>
   );
 }
 
@@ -26,11 +23,7 @@ export function SidebarBrandLogo({
 }: BrandLogoProps) {
   return (
     <span className={`vault-sidebar-wordmark ${className}`}>
-      <img
-        src={VAULT_SIDEBAR_WORDMARK}
-        alt={alt}
-        draggable={false}
-      />
+      <span className="vault-brand-art" role="img" aria-label={alt} />
     </span>
   );
 }

@@ -9,15 +9,17 @@ function readDesktopFile(...parts) {
   return fs.readFileSync(path.join(desktopRoot, ...parts), "utf8");
 }
 
-test("dedicated error pages use the opening-library wordmark", () => {
+test("dedicated error pages use the canonical Vault artwork", () => {
   const rootRoute = readDesktopFile("src", "routes", "__root.tsx");
   const serverErrorPage = readDesktopFile("src", "lib", "error-page.ts");
   const repairPage = readDesktopFile("electron", "repair.html");
+  const repairStyles = readDesktopFile("electron", "repair.css");
 
   assert.match(rootRoute, /<BrandLogo/);
   assert.match(rootRoute, /href:\s*VAULT_OPENING_WORDMARK/);
-  assert.match(serverErrorPage, /brand\/Container\.svg/);
-  assert.match(repairPage, /dist\/client\/brand\/Container\.svg/);
+  assert.match(serverErrorPage, /brand\/Frame%208\.png/);
+  assert.match(repairPage, /repair-logo-art/);
+  assert.match(repairStyles, /dist\/client\/brand\/Frame%208\.png/);
 });
 
 test("legacy app branding and embedded startup artwork are removed", () => {

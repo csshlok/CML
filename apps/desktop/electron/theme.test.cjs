@@ -14,11 +14,22 @@ const {
   isThemePreference,
   resolveEffectiveTheme,
   themeBackgroundColor,
+  themeFallbackPalette,
   themePreferenceFilePath,
   readThemePreferenceFile,
   writeThemePreferenceFile,
   createThemeController,
 } = require("./theme.cjs");
+
+test("themeFallbackPalette supplies distinct complete palettes for last-resort startup UI", () => {
+  const light = themeFallbackPalette("light");
+  const dark = themeFallbackPalette("dark");
+  assert.deepEqual(Object.keys(light).sort(), Object.keys(dark).sort());
+  assert.notEqual(light.background, dark.background);
+  assert.notEqual(light.foreground, dark.foreground);
+  assert.equal(light.background, themeBackgroundColor("light"));
+  assert.equal(dark.background, themeBackgroundColor("dark"));
+});
 
 const temporaryDirectories = new Set();
 

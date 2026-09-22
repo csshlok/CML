@@ -28,10 +28,25 @@
         min-height: 96px;
       }
       .brand-logo {
+        position: relative;
         display: block;
         width: min(260px, 100%);
-        height: auto;
+        aspect-ratio: 260 / 118;
+        overflow: hidden;
         user-select: none;
+      }
+      .brand-logo-art {
+        position: absolute;
+        inset: 0;
+        background-image: url("../dist/client/brand/Frame%208.png");
+        background-position: center;
+        background-repeat: no-repeat;
+        background-size: 320% auto;
+        mix-blend-mode: multiply;
+      }
+      :root[data-theme="dark"] .brand-logo-art {
+        background-image: url("../dist/client/brand/Frame%208%20inverted.svg?v=3");
+        mix-blend-mode: normal;
       }
       p {
         margin: 24px 0 0;
@@ -78,13 +93,9 @@
     </header>
     <main role="status" aria-live="polite">
       <div class="brand">
-        <img
-          class="brand-logo"
-          src="../dist/client/brand/Container.svg"
-          alt="Vault"
-          draggable="false"
-          onerror="this.hidden=true"
-        >
+        <span class="brand-logo" role="img" aria-label="Vault">
+          <span class="brand-logo-art" aria-hidden="true"></span>
+        </span>
       </div>
       <p>Opening your library…</p>
       <div class="track" aria-hidden="true"><div class="bar"></div></div>

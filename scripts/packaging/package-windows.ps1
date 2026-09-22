@@ -567,6 +567,7 @@ Complete-PackagePhase
 $env:CSC_IDENTITY_AUTO_DISCOVERY = "false"
 $builderCompression = if ($Release) { "maximum" } else { "store" }
 $builderTarget = if ($PackagedOnly) { "dir" } else { "nsis" }
+$installerArtifactBase = if ($Release) { "CML-$desktopVersion-Setup" } else { "test-$desktopVersion-Setup" }
 $builderConfigPath = Join-Path $tmpDir "electron-builder.generated.json"
 Start-PackagePhase "Package Windows app" "electron-builder target=$builderTarget; compression=$builderCompression"
 New-Item -ItemType Directory -Force -Path $tmpDir | Out-Null
@@ -646,7 +647,7 @@ New-Item -ItemType Directory -Force -Path $tmpDir | Out-Null
     "runAfterFinish": true,
     "include": "build/installer.nsh",
     "deleteAppDataOnUninstall": false,
-    "artifactName": "test-$desktopVersion-Setup.`${ext}"
+    "artifactName": "$installerArtifactBase.`${ext}"
   }
 }
 "@ | Set-Content -Path $builderConfigPath -Encoding ascii
@@ -717,7 +718,7 @@ $expectedUnpackedExeItem = Get-Item -LiteralPath $expectedUnpackedExe
 Write-PackageDetail "Unpacked executable: $expectedUnpackedExe ($(Format-FileSize $expectedUnpackedExeItem.Length))"
 
 if (-not $PackagedOnly) {
-  $expectedInstaller = Join-Path $outputDirPath "test-$desktopVersion-Setup.exe"
+  $expectedInstaller = Join-Path $outputDirPath "$installerArtifactBase.exe"
   if (-not (Test-Path -LiteralPath $expectedInstaller)) {
     throw "electron-builder completed but did not produce expected installer: $expectedInstaller"
   }

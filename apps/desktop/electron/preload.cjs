@@ -78,10 +78,24 @@ const initialThemeSnapshot = readInitialThemeSnapshot();
 
 function applyPrePaintTheme(snapshot) {
   if (!snapshot) return;
-  const root = document.documentElement;
-  root.setAttribute("data-theme", snapshot.resolved);
-  root.classList.toggle("dark", snapshot.resolved === "dark");
-  root.style.colorScheme = snapshot.resolved;
+  const applyToRoot = () => {
+    const root = document.documentElement;
+    if (!root) return false;
+    root.setAttribute("data-theme", snapshot.resolved);
+    root.classList.toggle("dark", snapshot.resolved === "dark");
+    root.style.colorScheme = snapshot.resolved;
+    return true;
+  };
+  if (applyToRoot()) return;
+
+  // A sandboxed preload can run before the parser creates <html>. Observe the
+  // document instead of throwing and aborting the rest of the preload bridge;
+  // the first parser mutation still happens before the renderer paints.
+  const observer = new MutationObserver(() => {
+    if (!applyToRoot()) return;
+    observer.disconnect();
+  });
+  observer.observe(document, { childList: true });
 }
 applyPrePaintTheme(initialThemeSnapshot);
 

@@ -39,7 +39,7 @@ const {
   createThemeController,
   isThemePreference,
   themeBackgroundColor,
-  LIGHT_BACKGROUND_COLOR,
+  themeFallbackPalette,
 } = require("./theme.cjs");
 const { TunnelManager } = require("./tunnel-manager.cjs");
 const { resolveMcpFeatureFlags } = require("./mcp-feature-flags.cjs");
@@ -316,20 +316,23 @@ async function loadStartupProgress(window, baseDir = __dirname) {
     }, baseDir);
     return;
   }
+  const resolvedTheme = themeController?.getSnapshot().resolved === "dark" ? "dark" : "light";
+  const fallbackPalette = themeFallbackPalette(resolvedTheme);
   const html = `<!doctype html>
     <html>
       <head>
         <meta charset="utf-8">
-        <meta name="color-scheme" content="light">
+        <meta name="color-scheme" content="${resolvedTheme}">
         <title>Vault</title>
         <style>
           * { box-sizing: border-box; }
-          body { margin: 0; min-height: 100vh; display: grid; place-items: center; background: #fbfaf6; color: #27211d; font-family: "Segoe UI", sans-serif; }
+          :root { color-scheme: ${resolvedTheme}; --fallback-bg: ${fallbackPalette.background}; --fallback-fg: ${fallbackPalette.foreground}; --fallback-muted: ${fallbackPalette.muted}; --fallback-track: ${fallbackPalette.track}; --fallback-progress: ${fallbackPalette.progress}; }
+          body { margin: 0; min-height: 100vh; display: grid; place-items: center; background: var(--fallback-bg); color: var(--fallback-fg); font-family: "Segoe UI", sans-serif; }
           main { width: min(420px, calc(100vw - 48px)); text-align: center; }
           h1 { margin: 0; font-size: 24px; letter-spacing: -.02em; }
-          p { margin: 24px 0 0; color: #766b64; font-size: 14px; }
-          .track { width: 100%; height: 3px; margin-top: 18px; overflow: hidden; border-radius: 999px; background: #e8e1d8; }
-          .bar { width: 35%; height: 100%; border-radius: inherit; background: #27211d; animation: move 1.4s ease-in-out infinite; }
+          p { margin: 24px 0 0; color: var(--fallback-muted); font-size: 14px; }
+          .track { width: 100%; height: 3px; margin-top: 18px; overflow: hidden; border-radius: 999px; background: var(--fallback-track); }
+          .bar { width: 35%; height: 100%; border-radius: inherit; background: var(--fallback-progress); animation: move 1.4s ease-in-out infinite; }
           @keyframes move { 0% { transform: translateX(-110%); } 100% { transform: translateX(390%); } }
           @media (prefers-reduced-motion: reduce) { .bar { width: 100%; animation: none; opacity: .55; } }
         </style>

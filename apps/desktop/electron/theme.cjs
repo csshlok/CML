@@ -10,10 +10,30 @@ const THEME_SCHEMA_VERSION = 1;
 const THEME_PREFERENCE_FILE_NAME = "theme-preference.json";
 const THEME_CHANGED_CHANNEL = "cml:theme-changed";
 
+// theme-literal-color-allowed: file -- this module is the centralized native
+// Electron palette. BrowserWindow and last-resort data: documents cannot read
+// renderer CSS custom properties, so their concrete colors live here only.
 // Matches the existing BrowserWindow default so light mode is unaffected.
 const LIGHT_BACKGROUND_COLOR = "#fbfaf6";
 // Warm charcoal, not pure black, per the locked visual direction.
 const DARK_BACKGROUND_COLOR = "#211d19";
+
+const FALLBACK_PALETTES = Object.freeze({
+  light: Object.freeze({
+    background: LIGHT_BACKGROUND_COLOR,
+    foreground: "#27211d",
+    muted: "#766b64",
+    track: "#e8e1d8",
+    progress: "#27211d",
+  }),
+  dark: Object.freeze({
+    background: DARK_BACKGROUND_COLOR,
+    foreground: "#f2ece3",
+    muted: "#b7a99a",
+    track: "#423930",
+    progress: "#c9a97d",
+  }),
+});
 
 function isThemePreference(value) {
   return THEME_PREFERENCES.includes(value);
@@ -27,6 +47,10 @@ function resolveEffectiveTheme(preference, systemPrefersDark) {
 
 function themeBackgroundColor(resolved) {
   return resolved === "dark" ? DARK_BACKGROUND_COLOR : LIGHT_BACKGROUND_COLOR;
+}
+
+function themeFallbackPalette(resolved) {
+  return resolved === "dark" ? FALLBACK_PALETTES.dark : FALLBACK_PALETTES.light;
 }
 
 function themePreferenceFilePath(userDataPath) {
@@ -161,6 +185,7 @@ module.exports = {
   isThemePreference,
   resolveEffectiveTheme,
   themeBackgroundColor,
+  themeFallbackPalette,
   themePreferenceFilePath,
   readThemePreferenceFile,
   writeThemePreferenceFile,

@@ -701,7 +701,7 @@ test("packaged static asset server serves FAQ walkthrough images as PNGs", async
   assert.deepEqual(response?.body, pngHeader);
 });
 
-test("startup progress loads a small packaged document that references the onboarding wordmark", async () => {
+test("startup progress loads a small packaged document that references the canonical artwork", async () => {
   const { exported } = loadMainModule();
   const root = makeTempDir("cml-startup-brand-large-");
   const electronDir = path.join(root, "electron");
@@ -720,12 +720,12 @@ test("startup progress loads a small packaged document that references the onboa
   assert.equal(loadedFile, startupPath);
   const html = fs.readFileSync(startupPath, "utf8");
   assert.ok(html.length < 20_000, `startup document was unexpectedly large: ${html.length}`);
-  assert.match(html, /\.\.\/dist\/client\/brand\/Container\.svg/);
+  assert.match(html, /\.\.\/dist\/client\/brand\/Frame%208\.png/);
   assert.match(html, /vault-static-window-controls/);
   assert.match(html, /static-window-chrome\.js/);
   assert.doesNotMatch(html, /data:image\/svg\+xml;base64/);
   assert.doesNotMatch(html, /brand-fallback/);
-  assert.equal((html.match(/alt="Vault"/g) || []).length, 1);
+  assert.equal((html.match(/aria-label="Vault"/g) || []).length, 1);
 });
 
 test("startup progress uses the branded repair page when its document is missing", async () => {

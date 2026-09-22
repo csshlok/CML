@@ -17,11 +17,28 @@ main {
 }
 
 .repair-logo {
+  position: relative;
   display: block;
   width: 220px;
-  height: auto;
+  aspect-ratio: 260 / 118;
   margin-bottom: 40px;
+  overflow: hidden;
   user-select: none;
+}
+
+.repair-logo-art {
+  position: absolute;
+  inset: 0;
+  background-image: url("../dist/client/brand/Frame%208.png");
+  background-position: center;
+  background-repeat: no-repeat;
+  background-size: 320% auto;
+  mix-blend-mode: multiply;
+}
+
+:root[data-theme="dark"] .repair-logo-art {
+  background-image: url("../dist/client/brand/Frame%208%20inverted.svg?v=3");
+  mix-blend-mode: normal;
 }
 
 h1 {

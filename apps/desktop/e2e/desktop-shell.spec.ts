@@ -2183,17 +2183,19 @@ test("requested sidebar artwork renders cleanly in the desktop shell", async ({ 
   await expect(page.getByRole("heading", { name: "Projects" })).toBeVisible();
 
   const artwork = await page.evaluate(() => {
-    const sidebarArtwork = document.querySelector<HTMLImageElement>(".vault-sidebar-wordmark img");
+    const sidebarArtwork = document.querySelector<HTMLElement>(".vault-sidebar-wordmark .vault-brand-art");
     const wordmark = document.querySelector<HTMLElement>(".vault-sidebar-wordmark");
     const wordmarkRect = wordmark?.getBoundingClientRect();
     return {
-      src: sidebarArtwork?.getAttribute("src"),
+      backgroundImage: sidebarArtwork ? getComputedStyle(sidebarArtwork).backgroundImage : "",
       width: wordmarkRect?.width,
       height: wordmarkRect?.height,
     };
   });
 
-  expect(artwork).toEqual({ src: "/brand/Frame%208.png", width: 200, height: 96 });
+  expect(artwork.width).toBe(200);
+  expect(artwork.height).toBe(96);
+  expect(artwork.backgroundImage).toContain("/brand/Frame%208.png");
   await page.getByRole("link", { name: "Home", exact: true }).click();
   await expect(page.getByRole("heading", { name: "Home" })).toBeVisible();
 
@@ -3093,7 +3095,13 @@ test("settings never starts a computer model scan while polling", async ({ page 
   await expect(page.getByRole("heading", { name: "Local chat model" })).toBeVisible();
   await page.waitForTimeout(1_000);
   expect(discoveryRequests).toBe(0);
-  await page.getByRole("button", { name: "Manage models" }).click();
+  const manageModels = page.getByRole("button", { name: /(?:Manage|Hide) models/ });
+  await expect(async () => {
+    if ((await manageModels.getAttribute("aria-expanded")) !== "true") {
+      await manageModels.click();
+    }
+    await expect(manageModels).toHaveAttribute("aria-expanded", "true");
+  }).toPass();
   await expect(page.getByRole("button", { name: /scan this computer/i })).toBeVisible();
   expect(discoveryRequests).toBe(0);
 });

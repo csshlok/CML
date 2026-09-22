@@ -133,7 +133,7 @@ test("presets and keyboard reorder keep a complete, stable section list", () => 
   assert.equal(new Set(moved.sectionOrder).size, moved.sectionOrder.length);
 });
 
-test("sidebar uses the requested artwork while startup keeps the opening wordmark", () => {
+test("sidebar and startup use the requested canonical artwork", () => {
   const brandSource = fs.readFileSync(
     path.join(desktopRoot, "src", "components", "BrandLogo.tsx"),
     "utf8",
@@ -144,11 +144,11 @@ test("sidebar uses the requested artwork while startup keeps the opening wordmar
   );
   const startupSource = fs.readFileSync(path.join(__dirname, "startup.html"), "utf8");
 
-  assert.match(brandSource, /VAULT_OPENING_WORDMARK\s*=\s*"\/brand\/Container\.svg"/);
   assert.match(brandSource, /VAULT_SIDEBAR_WORDMARK\s*=\s*"\/brand\/Frame%208\.png"/);
+  assert.match(brandSource, /VAULT_OPENING_WORDMARK\s*=\s*VAULT_SIDEBAR_WORDMARK/);
   assert.doesNotMatch(brandSource, /brand\/logo\.svg|variant/);
   assert.match(shellSource, /<SidebarBrandLogo/);
-  assert.match(startupSource, /brand\/Container\.svg/);
+  assert.match(startupSource, /brand\/Frame%208\.png/);
 });
 
 test("long-lived views invalidate data when the desktop backend generation changes", () => {

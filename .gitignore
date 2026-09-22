@@ -176,3 +176,6 @@ docs/ODIN_PROJECT_INTELLIGENCE_IMPLEMENTATION_PLAN_2026-07-31.md
 /docs/FEATURE_AND_QUALITY_CATALOG.md
 !/docs/STABILITY_AND_SECURITY_REMEDIATION_PLAN.md
 brag-output/
+# Deterministic, mock-data-only theme baselines are release regression fixtures.
+!apps/desktop/e2e/__screenshots__/
+!apps/desktop/e2e/__screenshots__/**
