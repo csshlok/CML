@@ -32,6 +32,7 @@ permissions:
 jobs:
   dependency-audit:
     name: Dependency audit
+    if: github.event_name != 'workflow_dispatch' || !inputs.publish_release
     runs-on: windows-latest
     timeout-minutes: 15
     steps:
@@ -56,6 +57,7 @@ jobs:
 
   desktop:
     name: Desktop typecheck, shell tests, and build
+    if: github.event_name != 'workflow_dispatch' || !inputs.publish_release
     runs-on: windows-latest
     timeout-minutes: 20
     steps:
@@ -82,6 +84,7 @@ jobs:
 
   backend:
     name: Backend ${{ matrix.tier }}
+    if: github.event_name != 'workflow_dispatch' || !inputs.publish_release
     runs-on: windows-latest
     timeout-minutes: 25
     strategy:
@@ -125,7 +128,7 @@ jobs:
 
   odin-scale:
     name: Odin scale gate
-    if: github.event_name == 'workflow_dispatch'
+    if: github.event_name == 'workflow_dispatch' && !inputs.publish_release
     runs-on: windows-latest
     timeout-minutes: 30
     steps:
@@ -159,6 +162,12 @@ jobs:
         with:
           python-version: "3.12"
       - run: npm ci
+      - name: Provision packaging virtual environment
+        shell: pwsh
+        run: |
+          python -m venv .venv
+          .\.venv\Scripts\python.exe -m pip install --upgrade pip
+          .\.venv\Scripts\python.exe -m pip install -r requirements\contributors-backend.txt
       - run: python -m pip install -e "./backend[test]" playwright==1.60.0 psutil==7.2.2
       - name: Build Windows package
         shell: pwsh
